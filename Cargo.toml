@@ -1,0 +1,10 @@
+[package]
+name = "Ntx"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+wasmtime = "38.0.4"
+wasmtime-wasi = "38.0.4"
+wit-bindgen = "0.47.0"

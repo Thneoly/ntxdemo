@@ -1,0 +1,25 @@
+package component:http-client;
+
+/// An example world for the component to target.
+
+interface logging {
+    enum level {
+        debug,
+        info,
+        error,
+    }
+    log: func(level: level, msg: string);
+}
+
+interface protocol {
+    register: func() -> string;
+    init: func() -> string;
+    do-action: func() -> string;
+    release: func() -> string;
+    un-register: func() -> string;
+
+}
+world http-client {
+    import logging;
+    export protocol;
+}

@@ -1,0 +1,7 @@
+package component:http-send;
+use wasi:http/types@0.2.8;
+/// An example world for the component to target.
+world example {
+    import types;
+    export fun: func() -> string;
+}
