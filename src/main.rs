@@ -1,43 +1,46 @@
 use anyhow::{Context, Ok, Result, bail};
 use wasmtime::{
-    Engine, Store,
-    component::{Component, ComponentExportIndex, Func, HasSelf, Instance, Linker, ResourceTable, Val,types::ComponentItem}
+    Config, Engine, Store,
+    component::{
+        Component, ComponentExportIndex, Func, HasSelf, Instance, Linker, ResourceTable, Val,
+        types::ComponentItem,
+    },
 };
-use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView, p2::{add_to_linker_sync}};
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView, p2::add_to_linker_sync};
 
-wasmtime::component::bindgen!({
-    path: "wit/host",
-    world: "host",
-});
+// wasmtime::component::bindgen!({
+//     path: "wit/host",
+//     world: "host",
+// });
 
-use crate::host::core::hostitf::Host;
+// use crate::host::core::hostitf::Host;
 
 struct State {
     wasi: WasiCtx,
     table: ResourceTable,
 }
 
-impl Host for State {
-    fn log(&mut self, msg: String) {
-        println!("Guest says: {}", msg);
-    }
-    fn connect(&mut self, addr: String) -> String {
-        println!("Connecting to {}", addr);
-        format!("Connection to {}", addr)
-    }
-    fn read(&mut self) -> String {
-        // Placeholder implementation
-        format!("Data from read")
-    }
-    fn write(&mut self, data: String) -> u32{
-        println!("Writing data: {}", data);
-        0
-    } 
-    fn close(&mut self) -> bool {
-        println!("Closing connection");
-        true
-    }
-}
+// impl Host for State {
+//     fn log(&mut self, msg: String) {
+//         println!("Guest says: {}", msg);
+//     }
+//     fn connect(&mut self, addr: String) -> String {
+//         println!("Connecting to {}", addr);
+//         format!("Connection to {}", addr)
+//     }
+//     fn read(&mut self) -> String {
+//         // Placeholder implementation
+//         format!("Data from read")
+//     }
+//     fn write(&mut self, data: String) -> u32 {
+//         println!("Writing data: {}", data);
+//         0
+//     }
+//     fn close(&mut self) -> bool {
+//         println!("Closing connection");
+//         true
+//     }
+// }
 
 impl WasiView for State {
     fn ctx(&mut self) -> WasiCtxView<'_> {
@@ -49,42 +52,58 @@ impl WasiView for State {
 }
 
 fn main() -> Result<()> {
-    let engine = Engine::default();
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    config.async_support(false);
+    
+    let engine = Engine::new(&config)?;
     let mut store = Store::new(
         &engine,
         State {
-            wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+            wasi: WasiCtxBuilder::new()
+                .inherit_stdio()
+                .inherit_network()
+                .build(),
             table: ResourceTable::default(),
         },
     );
     let mut linker: Linker<State> = Linker::new(&engine);
     add_to_linker_sync(&mut linker)?;
-    Host_::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s)?;
-    let component = Component::from_file(&engine, "plugins/tcp/target/wasm32-wasip2/debug/tcp.wasm")
-        .context("failed to create component from file")?;
+    // Host_::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s)?;
+    let component = Component::from_file(
+        &engine,
+        "plugins/http-send/target/wasm32-wasip2/debug/http_send.wasm",
+    )
+    .context("failed to create component from file")?;
 
     let instance = linker
         .instantiate(&mut store, &component)
         .context("failed to instantiate component")?;
-    println!("Instance:\n{:#?}", instance);
-    let tcpitf = find_iface_parent(&mut store, &instance, &["customer:tcp/tcpitf@0.1.0"])?;
-    println!("找到接口命名空间：{tcpitf:?}");
-    let connect = get_func_from_iface(&mut store, &instance, &tcpitf, "connect")
-        .context("failed to find `connect` function in interface")?;
-    println!("找到 connect 函数：{connect:?}");
-    let mut result = [Val::String("".to_string())];
-    connect.call(&mut store, &[], &mut result).context("failed to call `connect`")?;
-    let _ = connect.post_return(&mut store);
-    let params = [Val::U32(10086)];
-    let start = get_func_from_iface(&mut store, &instance, &tcpitf, "start")
-        .context("failed to find `start` function in interface")?;
-    let mut result_start = [Val::Bool(false)];
-    start.call(&mut store, &params, &mut result_start).context("failed to call `start`")?;
-
+    // println!("Instance:\n{:#?}", instance);
+    // let tcpitf = find_iface_parent(&mut store, &instance, &["customer:tcp/tcpitf@0.1.0"])?;
+    // println!("找到接口命名空间：{tcpitf:?}");
+    // let connect = get_func_from_iface(&mut store, &instance, &tcpitf, "connect")
+    //     .context("failed to find `connect` function in interface")?;
+    // println!("找到 connect 函数：{connect:?}");
+    // let mut result = [Val::String("".to_string())];
+    // connect
+    //     .call(&mut store, &[], &mut result)
+    //     .context("failed to call `connect`")?;
+    // let _ = connect.post_return(&mut store);
+    // let params = [Val::U32(10086)];
+    // let start = get_func_from_iface(&mut store, &instance, &tcpitf, "start")
+    //     .context("failed to find `start` function in interface")?;
+    // let mut result_start = [Val::Bool(false)];
+    // start
+    //     .call(&mut store, &params, &mut result_start)
+    //     .context("failed to call `start`")?;
+    let start = find_top_level_func(&mut store, &instance, &["start"])?;
+    let mut res = [Val::String("".to_string())];
+    start.call(&mut store, &[], &mut res)?;
     Ok(())
 }
 
-// 顶层找接口导出的“父索引”，用于进入接口命名空间
+// 顶层找接口导出的"父索引"，用于进入接口命名空间
 #[allow(unused)]
 fn find_iface_parent(
     store: &mut Store<State>,
@@ -123,7 +142,9 @@ fn find_top_level_func(
             }
         }
     }
-    bail!("找不到顶层函数导出：候选 = {candidates:?}。请用 `wasm-tools component wit <你的 wasm>` 确认实际导出名。");
+    bail!(
+        "找不到顶层函数导出：候选 = {candidates:?}。请用 `wasm-tools component wit <你的 wasm>` 确认实际导出名。"
+    );
 }
 
 // 从接口命名空间获取函数
@@ -136,4 +157,4 @@ fn get_func_from_iface(
 ) -> Option<Func> {
     let (_item, func_idx) = inst.get_export(&mut *store, Some(parent), func_name)?;
     inst.get_func(&mut *store, func_idx)
-} 
+}
