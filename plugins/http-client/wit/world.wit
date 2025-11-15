@@ -1,7 +1,5 @@
 package component:http-client;
 
-/// An example world for the component to target.
-
 interface logging {
     enum level {
         debug,
@@ -10,15 +8,55 @@ interface logging {
     }
     log: func(level: level, msg: string);
 }
+interface config {
+    resource config {
+        constructor();
+        get-config: func() -> string;
+    }
+}
+interface respool {
+    resource script {
+
+    }
+}
+
+interface flow {
+    record action {
+        id: u32,
+    }
+    record control {
+        id: u32,
+    }
+    enum status {
+        success,
+        failure,
+    }
+    record workbook {
+        actions: list<action>,
+        control: control,
+        status: status,
+    }
+    resource res {
+        constructor();
+        execute: func(wb: workbook) -> workbook;
+    }
+}
 
 interface protocol {
-    register: func() -> string;
-    init: func() -> string;
-    do-action: func() -> string;
-    release: func() -> string;
-    un-register: func() -> string;
-
+    use flow.{res, action};
+    use respool.{script};
+    use config.{config};
+    type handler = u32;
+    resource protocol-http-client {
+        constructor(name: string);
+        register: func(res: res, config: config) -> handler;
+        init: func();
+        do-action: func();
+        release: func();
+        un-register: func();
+    }
 }
+
 world http-client {
     import logging;
     export protocol;
