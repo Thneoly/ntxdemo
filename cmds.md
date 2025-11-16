@@ -1,4 +1,6 @@
 ```shell
+cargo binstall wac-cli
+
 cargo component add wasi:http@0.2.8
 cargo component update
 cargo component build --target wasm32-wasip2

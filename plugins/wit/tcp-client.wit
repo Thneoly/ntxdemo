@@ -1,8 +1,8 @@
 package component:tcp-client;
-use wasi:sockets/tcp-create-socket@0.2.8;
-use wasi:sockets/tcp@0.2.8;
-use wasi:sockets/network@0.2.8;
-use wasi:sockets/instance-network@0.2.8;
+use wasi:sockets/tcp-create-socket@0.2.6;
+use wasi:sockets/tcp@0.2.6;
+use wasi:sockets/network@0.2.6;
+use wasi:sockets/instance-network@0.2.6;
 
 interface logging {
     enum level {
@@ -26,42 +26,43 @@ interface respool {
     }
 }
 
-interface flow {
-    record action {
-        id: u32,
-    }
-    record control {
-        id: u32,
-    }
-    enum status {
-        success,
-        failure,
-    }
-    record workbook {
-        actions: list<action>,
-        control: control,
-        status: status,
-    }
-    resource res {
-        constructor();
-        execute: func(wb: workbook) -> workbook;
-    }
-}
+// interface flow {
+//     record action {
+//         id: u32,
+//     }
+//     record control {
+//         id: u32,
+//     }
+//     enum status {
+//         success,
+//         failure,
+//     }
+//     record workbook {
+//         actions: list<action>,
+//         control: control,
+//         status: status,
+//     }
+//     resource res {
+//         constructor();
+//         execute: func(wb: workbook) -> workbook;
+//     }
+// }
 
 interface protocol {
-    use flow.{res, action};
-    use respool.{script};
+    // use flow.{res, action};
+    // use respool.{script};
     use config.{config};
     type handler = u32;
     resource protocol-tcp-client {
         constructor(name: string);
-        register: func(res: option<res>, config: option<config>) -> handler;
+        register: func(res: option<u32>, config: option<u32>) -> handler;
         init: func();
         do-action: func();
         release: func();
         un-register: func();
     }
 }
+
 interface sock {
     resource sock {
         constructor(name: string);
@@ -71,10 +72,12 @@ interface sock {
         recv: func(id: u32, len: u32) -> list<u8>;
     }
 }
+
 world tcp-client {
+    // import flow;
+    import respool;
     import logging;
     import sock;
-    // import sock;
     export protocol;
 }
 
@@ -84,15 +87,15 @@ world core {
     import tcp;
     import network;
     import instance-network;
-
     export sock;
     export logging;
     export config;
-    export flow;
+    // export flow;
     export respool;
 }
 
 world demo {
+    import logging;
     import protocol;
     export start: func();
 }

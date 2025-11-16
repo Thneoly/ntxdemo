@@ -10,8 +10,8 @@ struct Demo;
 
 impl Guest for Demo {
     fn start() {
-        let mut client = ProtocolTcpClient::new("DemoTcp");
-        let handler = client.register(None, None);
+        let client = ProtocolTcpClient::new("DemoTcp");
+        let _ = client.register(None, None);
         client.init();
         client.do_action();
         client.release();

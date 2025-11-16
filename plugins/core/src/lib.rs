@@ -6,8 +6,8 @@ generate!({
     generate_all,
 });
 use exports::component::tcp_client::config::{Guest as ConfigGuest, GuestConfig};
-use exports::component::tcp_client::flow::Workbook;
-use exports::component::tcp_client::flow::{Guest as FlowGuest, GuestRes};
+// use exports::component::tcp_client::flow::Workbook;
+// use exports::component::tcp_client::flow::{Guest as FlowGuest, GuestRes};
 use exports::component::tcp_client::logging::{Guest as LoggingGuest, Level};
 use exports::component::tcp_client::respool::{Guest as RespoolGuest, GuestScript};
 use exports::component::tcp_client::sock::{Guest as SockGuest, GuestSock};
@@ -21,7 +21,7 @@ use wasi::sockets::tcp_create_socket::{IpAddressFamily, TcpSocket, create_tcp_so
 struct Core;
 struct ConfigConfig;
 struct RespoolScript;
-struct FlowRes;
+// struct FlowRes;
 struct SockSock {
     id: RefCell<u32>,
     sock_type: RefCell<u32>,
@@ -147,23 +147,25 @@ impl GuestConfig for ConfigConfig {
         String::from("core_config")
     }
 }
-impl GuestRes for FlowRes {
-    fn new() -> Self {
-        FlowRes {}
-    }
-    fn execute(&self, wb: Workbook) -> Workbook {
-        wb
-    }
-}
+// impl GuestRes for FlowRes {
+//     fn new() -> Self {
+//         FlowRes {}
+//     }
+//     fn execute(&self, wb: Workbook) -> Workbook {
+//         wb
+//     }
+// }
 
 impl RespoolGuest for Core {
     type Script = RespoolScript;
 }
-impl FlowGuest for Core {
-    type Res = FlowRes;
-}
+// impl FlowGuest for Core {
+//     type Res = FlowRes;
+// }
 impl LoggingGuest for Core {
-    fn log(_level: Level, _message: String) {}
+    fn log(level: Level, message: String) {
+        println!("{:#?} -- {}", level, message);
+    }
 }
 impl SockGuest for Core {
     type Sock = SockSock;

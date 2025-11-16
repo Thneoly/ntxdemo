@@ -5,8 +5,8 @@ generate!({
 });
 
 use crate::exports::component::tcp_client::protocol::{Guest, GuestProtocolTcpClient};
-use component::tcp_client::config::Config;
-use component::tcp_client::flow::Res;
+// use component::tcp_client::config::Config;
+// use component::tcp_client::flow::Res;
 
 use component::tcp_client::logging::{Level, log};
 use component::tcp_client::sock::Sock;
@@ -21,7 +21,7 @@ impl GuestProtocolTcpClient for TcpClient {
             sock: Sock::new("Tcp Client"),
         }
     }
-    fn register(&self, res: Option<Res>, config: Option<Config>) -> u32 {
+    fn register(&self, res: Option<u32>, config: Option<u32>) -> u32 {
         log(
             Level::Info,
             &format!(

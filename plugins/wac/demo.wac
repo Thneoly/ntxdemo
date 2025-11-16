@@ -1,0 +1,5 @@
+package component:demo;
+
+let core = new component:tcp-client{...};
+
+export demo;
