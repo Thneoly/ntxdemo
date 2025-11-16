@@ -3,6 +3,12 @@ use wasi:sockets/tcp-create-socket@0.2.6;
 use wasi:sockets/tcp@0.2.6;
 use wasi:sockets/network@0.2.6;
 use wasi:sockets/instance-network@0.2.6;
+use wasi:cli/environment@0.2.6;
+use wasi:cli/exit@0.2.6;
+use wasi:cli/stderr@0.2.6;
+use wasi:cli/stdout@0.2.6;
+use wasi:io/error@0.2.6;
+use wasi:io/streams@0.2.6;
 
 interface logging {
     enum level {
@@ -74,7 +80,13 @@ interface sock {
 }
 
 world tcp-client {
-    // import flow;
+    import environment;
+    import exit;
+    import stderr;
+    import stdout;
+    import error;
+    import streams;
+
     import respool;
     import logging;
     import sock;
@@ -82,20 +94,32 @@ world tcp-client {
 }
 
 world core {
-    import protocol;
     import tcp-create-socket;
     import tcp;
     import network;
     import instance-network;
+    import environment;
+    import exit;
+    import stderr;
+    import stdout;
+    import error;
+    import streams;
     export sock;
     export logging;
     export config;
-    // export flow;
     export respool;
 }
 
 world demo {
-    import logging;
+    import environment;
+    import exit;
+    import stderr;
+    import stdout;
+    import error;
+    import streams;
     import protocol;
+    import respool;
+    import logging;
+    import sock;
     export start: func();
 }

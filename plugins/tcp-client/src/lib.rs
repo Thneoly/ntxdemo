@@ -2,6 +2,7 @@ use wit_bindgen::generate;
 generate!({
     world: "tcp-client",
     path: ["../wit",],
+    generate_all,
 });
 
 use crate::exports::component::tcp_client::protocol::{Guest, GuestProtocolTcpClient};

@@ -61,4 +61,9 @@ textnc [选项] [主机] [端口]
 
 UDP 模式：textnc -u -l -p 8080  # 服务器 UDP 监听
 nc -u 127.0.0.1 8080  # 客户端连接用于 UDP 数据传输。
+
+
+wac targets tcp_client.wasm --world tcp-client --wit ../wit/
+
+wasm-tools component wit
 ```
