@@ -9,27 +9,45 @@ use component::tcp_client::config::Config;
 use component::tcp_client::flow::Res;
 
 use component::tcp_client::logging::{Level, log};
+use component::tcp_client::sock::Sock;
 struct Protocol;
-struct TcpClient;
+struct TcpClient {
+    sock: Sock,
+}
 
 impl GuestProtocolTcpClient for TcpClient {
     fn new(_name: String) -> Self {
-        TcpClient
+        TcpClient {
+            sock: Sock::new("Tcp Client"),
+        }
     }
-    fn register(&self, res: Res, config: Config) -> u32 {
+    fn register(&self, res: Option<Res>, config: Option<Config>) -> u32 {
         log(
             Level::Info,
             &format!(
-                "Registering HTTP client with resource: {:?} and config: {:?}",
+                "Registering TCP client with resource: {:?} and config: {:?}",
                 res, config
             ),
         );
         42 // Placeholder handler ID
     }
-    fn init(&self) {}
-    fn do_action(&self) {}
-    fn release(&self) {}
-    fn un_register(&self) {}
+    fn init(&self) {
+        log(Level::Info, "Initializing TCP client");
+    }
+    fn do_action(&self) {
+        self.sock.newsock(1); // 1 for TCP
+        self.sock.bind(1, "127.0.0.1", 8080);
+        self.sock.send(42, b"Hello, TCP Server!");
+        let data = self.sock.recv(42, 1024);
+        log(Level::Info, &format!("Received data: {:?}", data));
+        log(Level::Info, "Doing TCP client action");
+    }
+    fn release(&self) {
+        log(Level::Info, "Releasing TCP client");
+    }
+    fn un_register(&self) {
+        log(Level::Info, "Unregistering TCP client");
+    }
 }
 impl Guest for Protocol {
     type ProtocolTcpClient = TcpClient;

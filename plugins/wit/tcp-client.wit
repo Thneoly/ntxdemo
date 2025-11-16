@@ -55,7 +55,7 @@ interface protocol {
     type handler = u32;
     resource protocol-tcp-client {
         constructor(name: string);
-        register: func(res: res, config: config) -> handler;
+        register: func(res: option<res>, config: option<config>) -> handler;
         init: func();
         do-action: func();
         release: func();
@@ -64,15 +64,16 @@ interface protocol {
 }
 interface sock {
     resource sock {
-        constructor();
+        constructor(name: string);
         newsock: func(sock-type: u32) -> u32;
         bind: func(id: u32, ip: string, port: u16);
         send: func(id: u32, data: list<u8>);
-        recv: func(id: u32) -> list<u8>;
+        recv: func(id: u32, len: u32) -> list<u8>;
     }
 }
 world tcp-client {
     import logging;
+    import sock;
     // import sock;
     export protocol;
 }
