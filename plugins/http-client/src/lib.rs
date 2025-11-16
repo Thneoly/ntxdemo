@@ -1,8 +1,9 @@
 use wit_bindgen::generate;
 generate!({
     world: "http-client",
-    path: ["wit/world.wit",],
+    path: ["../wit/http-client.wit",],
 });
+
 use crate::exports::component::http_client::protocol::{Guest, GuestProtocolHttpClient};
 use component::http_client::config::Config;
 use component::http_client::flow::Res;

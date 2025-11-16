@@ -1,4 +1,8 @@
 package component:http-client;
+use wasi:sockets/tcp-create-socket@0.2.8;
+use wasi:sockets/tcp@0.2.8;
+use wasi:sockets/network@0.2.8;
+use wasi:sockets/instance-network@0.2.8;
 
 interface logging {
     enum level {
@@ -8,15 +12,17 @@ interface logging {
     }
     log: func(level: level, msg: string);
 }
+
 interface config {
     resource config {
         constructor();
         get-config: func() -> string;
     }
 }
+
 interface respool {
     resource script {
-
+        constructor();
     }
 }
 
@@ -56,8 +62,32 @@ interface protocol {
         un-register: func();
     }
 }
-
+interface sock {
+    resource sock {
+        constructor();
+        newsock: func(sock-type: u32) -> u32;
+        bind: func(id: u32, ip: string, port: u16);
+        send: func(id: u32, data: list<u8>);
+        recv: func(id: u32) -> list<u8>;
+    }
+}
 world http-client {
     import logging;
+    // import sock;
     export protocol;
+}
+
+world core {
+    import protocol;
+    import tcp-create-socket;
+    import tcp;
+    import network;
+    import instance-network;
+
+    export start: func();
+    export sock;
+    export logging;
+    export config;
+    export flow;
+    export respool;
 }

@@ -1,0 +1,5 @@
+# wit/deps.toml
+# Use `wit-deps update` to pull in latest changes from "dynamic" branch references
+clocks = "https://github.com/WebAssembly/wasi-clocks/archive/main.tar.gz"
+http = "https://github.com/WebAssembly/wasi-http/archive/main.tar.gz"
+sockets = "https://github.com/WebAssembly/wasi-sockets/archive/main.tar.gz"
