@@ -4,12 +4,12 @@ generate!({
     path: ["../wit",],
     generate_all,
 });
-use exports::component::http_client::config::{Guest as ConfigGuest, GuestConfig};
-use exports::component::http_client::flow::Workbook;
-use exports::component::http_client::flow::{Guest as FlowGuest, GuestRes};
-use exports::component::http_client::logging::{Guest as LoggingGuest, Level};
-use exports::component::http_client::respool::{Guest as RespoolGuest, GuestScript};
-use exports::component::http_client::sock::{Guest as SockGuest, GuestSock};
+use exports::component::tcp_client::config::{Guest as ConfigGuest, GuestConfig};
+use exports::component::tcp_client::flow::Workbook;
+use exports::component::tcp_client::flow::{Guest as FlowGuest, GuestRes};
+use exports::component::tcp_client::logging::{Guest as LoggingGuest, Level};
+use exports::component::tcp_client::respool::{Guest as RespoolGuest, GuestScript};
+use exports::component::tcp_client::sock::{Guest as SockGuest, GuestSock};
 
 struct Core;
 struct ConfigConfig;

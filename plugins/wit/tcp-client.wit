@@ -1,4 +1,4 @@
-package component:http-client;
+package component:tcp-client;
 use wasi:sockets/tcp-create-socket@0.2.8;
 use wasi:sockets/tcp@0.2.8;
 use wasi:sockets/network@0.2.8;
@@ -53,7 +53,7 @@ interface protocol {
     use respool.{script};
     use config.{config};
     type handler = u32;
-    resource protocol-http-client {
+    resource protocol-tcp-client {
         constructor(name: string);
         register: func(res: res, config: config) -> handler;
         init: func();
@@ -71,7 +71,7 @@ interface sock {
         recv: func(id: u32) -> list<u8>;
     }
 }
-world http-client {
+world tcp-client {
     import logging;
     // import sock;
     export protocol;
@@ -89,4 +89,9 @@ world core {
     export config;
     export flow;
     export respool;
+}
+
+world demo {
+    import protocol;
+    export start: func();
 }

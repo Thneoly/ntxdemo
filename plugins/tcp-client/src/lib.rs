@@ -1,19 +1,20 @@
 use wit_bindgen::generate;
 generate!({
-    world: "http-client",
-    path: ["../wit/http-client.wit",],
+    world: "tcp-client",
+    path: ["../wit",],
 });
 
-use crate::exports::component::http_client::protocol::{Guest, GuestProtocolHttpClient};
-use component::http_client::config::Config;
-use component::http_client::flow::Res;
+use crate::exports::component::tcp_client::protocol::{Guest, GuestProtocolTcpClient};
+use component::tcp_client::config::Config;
+use component::tcp_client::flow::Res;
 
-use component::http_client::logging::{Level, log};
+use component::tcp_client::logging::{Level, log};
 struct Protocol;
-struct HttpClient;
-impl GuestProtocolHttpClient for HttpClient {
+struct TcpClient;
+
+impl GuestProtocolTcpClient for TcpClient {
     fn new(_name: String) -> Self {
-        HttpClient
+        TcpClient
     }
     fn register(&self, res: Res, config: Config) -> u32 {
         log(
@@ -31,7 +32,7 @@ impl GuestProtocolHttpClient for HttpClient {
     fn un_register(&self) {}
 }
 impl Guest for Protocol {
-    type ProtocolHttpClient = HttpClient;
+    type ProtocolTcpClient = TcpClient;
 }
 
 export!(Protocol);
