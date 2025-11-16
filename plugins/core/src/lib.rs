@@ -69,7 +69,4 @@ impl ConfigGuest for Core {
     type Config = ConfigConfig;
 }
 
-impl Guest for Core {
-    fn start() {}
-}
 export!(Core);

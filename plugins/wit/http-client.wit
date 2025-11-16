@@ -84,7 +84,6 @@ world core {
     import network;
     import instance-network;
 
-    export start: func();
     export sock;
     export logging;
     export config;
