@@ -60,8 +60,6 @@ DISABLE_PLUGIN_BUILDS=1 cargo build
 - `*.git`、`node_modules`（任意位置），
 - 严格忽略 `target` 目录（尤其是 `plugins/*/target` 下的子目录）。
 
-如果你的项目结构包含其他需要忽略的目录，请告知，我会加入到忽略列表中。
-
 ## 故障排查
 
 - 如果子插件构建失败，当前实现会让顶层构建失败（panic），并在终端输出子进程的退出状态与错误信息。
