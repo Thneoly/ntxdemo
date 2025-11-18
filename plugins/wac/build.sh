@@ -13,4 +13,5 @@ popd
 
 cp ../demo/target/wasm32-wasip2/debug/demo.wasm ../core/target/wasm32-wasip2/debug/core.wasm ../tcp-client/target/wasm32-wasip2/debug/tcp_client.wasm ./
 
-wac plug demo.wasm  --plug core.wasm  --plug tcp_client.wasm -o mydemo.wasm
+wac plug --plug core.wasm tcp_client.wasm -o mydemo.wasm
+wac plug --plug mydemo.wasm demo.wasm -o mydemo.wasm

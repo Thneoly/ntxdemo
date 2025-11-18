@@ -70,11 +70,8 @@ fn main() -> Result<()> {
     let mut linker: Linker<State> = Linker::new(&engine);
     add_to_linker_sync(&mut linker)?;
     // Host_::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s)?;
-    let component = Component::from_file(
-        &engine,
-        "plugins/http-send/target/wasm32-wasip2/debug/http_send.wasm",
-    )
-    .context("failed to create component from file")?;
+    let component = Component::from_file(&engine, "plugins/wac/mydemo.wasm")
+        .context("failed to create component from file")?;
 
     let instance = linker
         .instantiate(&mut store, &component)
@@ -98,7 +95,7 @@ fn main() -> Result<()> {
     //     .call(&mut store, &params, &mut result_start)
     //     .context("failed to call `start`")?;
     let start = find_top_level_func(&mut store, &instance, &["start"])?;
-    let mut res = [Val::String("".to_string())];
+    let mut res = [];
     start.call(&mut store, &[], &mut res)?;
     Ok(())
 }
