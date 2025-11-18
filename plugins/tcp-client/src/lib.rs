@@ -37,11 +37,13 @@ impl GuestProtocolTcpClient for TcpClient {
     }
     fn do_action(&self) {
         self.sock.newsock(1); // 1 for TCP
-        self.sock.bind(1, "127.0.0.1", 8080);
+        self.sock.bind(0, "127.0.0.1", 8080);
+        log(Level::Info, "Connecting to server: 127.0.0.1:8080");
         self.sock.send(42, b"Hello, TCP Server!");
         let data = self.sock.recv(42, 1024);
         log(Level::Info, &format!("Received data: {:?}", data));
         log(Level::Info, "Doing TCP client action");
+        self.sock.close(42);
     }
     fn release(&self) {
         log(Level::Info, "Releasing TCP client");

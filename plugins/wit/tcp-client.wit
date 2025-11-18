@@ -76,6 +76,7 @@ interface sock {
         bind: func(id: u32, ip: string, port: u16);
         send: func(id: u32, data: list<u8>);
         recv: func(id: u32, len: u32) -> list<u8>;
+        close: func(id: u32);
     }
 }
 

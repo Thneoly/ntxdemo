@@ -27,6 +27,7 @@ struct SockSock {
     sock_type: RefCell<u32>,
     ip: RefCell<String>,
     port: RefCell<u16>,
+    sock: RefCell<Option<TcpSocket>>,
     input: RefCell<Option<streams::InputStream>>,
     output: RefCell<Option<streams::OutputStream>>,
 }
@@ -44,6 +45,7 @@ impl GuestSock for SockSock {
             id: RefCell::new(0),
             ip: RefCell::new(String::new()),
             port: RefCell::new(0),
+            sock: RefCell::new(None),
             input: RefCell::new(None),
             output: RefCell::new(None),
         }
@@ -101,6 +103,7 @@ impl GuestSock for SockSock {
                 Err(e) => panic!("Failed to finish connect: {:?}", e),
             }
         };
+        self.sock.replace(Some(sock));
         self.input.replace(Some(input));
         self.output.replace(Some(output));
     }
@@ -136,6 +139,13 @@ impl GuestSock for SockSock {
                 vec![]
             }
         }
+    }
+    fn close(&self, _id: u32) {
+        drop(self.input.borrow_mut().take());
+        drop(self.output.borrow_mut().take());
+        drop(self.sock.borrow_mut().take());
+
+        println!("Closing");
     }
 }
 
