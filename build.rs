@@ -104,7 +104,7 @@ fn main() {
             "wac" => {
                 println!("build.rs: Detected changes in wac -> running run.sh");
                 // Prefer using sh to execute run.sh so it's not required to be executable
-                let status = Command::new("sh").arg("run.sh").current_dir(rel).status();
+                let status = Command::new("sh").arg("build.sh").current_dir(rel).status();
                 match status {
                     Ok(s) if s.success() => println!("build.rs: run.sh succeeded for wac"),
                     Ok(s) => panic!("build.rs: run.sh for wac failed with exit {}", s),
