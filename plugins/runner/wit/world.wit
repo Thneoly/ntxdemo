@@ -1,0 +1,13 @@
+package component:runner;
+
+world runner {
+    export start: func();
+}
+
+world wasi {
+    include wasi:io/imports@0.2.6;
+    include wasi:sockets/imports@0.2.6;
+    include wasi:filesystem/imports@0.2.6;
+    include wasi:clocks/imports@0.2.6;
+    include wasi:random/imports@0.2.6;
+}

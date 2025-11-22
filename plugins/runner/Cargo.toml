@@ -1,0 +1,16 @@
+[package]
+name = "runner"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+slab = "0.4.11"
+wit-bindgen = "0.48.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.component]
+package = "component:runner"
+
+[package.metadata.component.dependencies]
