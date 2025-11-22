@@ -1,26 +1,36 @@
 use crate::mywasi::wasi::io::poll::Pollable;
 use crate::polling::{EventKey, Poller};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::future;
 use std::pin::pin;
 use std::ptr;
+use std::rc::Rc;
+use std::sync::OnceLock;
 use std::task::Context;
 use std::task::Poll;
 use std::task::RawWaker;
 use std::task::RawWakerVTable;
 use std::task::Waker;
-use std::{cell::RefCell, rc::Rc};
 
+// 在单线程WASI环境中，我们可以安全地实现Send和Sync
 #[derive(Debug, Clone)]
 pub struct Reactor {
     inner: Rc<RefCell<InnerReactor>>,
 }
+
+// 为Reactor在单线程环境中实现Send和Sync
+unsafe impl Send for Reactor {}
+unsafe impl Sync for Reactor {}
 
 #[derive(Debug)]
 struct InnerReactor {
     poller: Poller,
     wakers: HashMap<EventKey, Waker>,
 }
+
+// Global reactor instance
+static GLOBAL_REACTOR: OnceLock<Reactor> = OnceLock::new();
 
 impl Reactor {
     pub(crate) fn new() -> Self {
@@ -31,6 +41,12 @@ impl Reactor {
             })),
         }
     }
+    
+    /// Get or initialize the global reactor
+    pub fn get_global() -> &'static Reactor {
+        GLOBAL_REACTOR.get_or_init(|| Reactor::new())
+    }
+    
     pub async fn wait_for(&self, pollable: Pollable) {
         let mut pollable = Some(pollable);
         let mut key = None;
@@ -51,6 +67,7 @@ impl Reactor {
         })
         .await
     }
+    
     pub(crate) fn block_until(&self) {
         let mut reactor = self.inner.borrow_mut();
         for key in reactor.poller.block_until() {
@@ -62,21 +79,32 @@ impl Reactor {
     }
 }
 
-fn noop_waker() -> Waker {
-    const VTABLE: RawWakerVTable = RawWakerVTable::new(|_| RAW, |_| {}, |_| {}, |_| {});
-    const RAW: RawWaker = RawWaker::new(ptr::null(), &VTABLE);
+// Extension trait to create a no-op waker
+pub trait WakerExt {
+    fn noop() -> Self;
+}
 
-    unsafe { Waker::from_raw(RAW) }
+impl WakerExt for Waker {
+    fn noop() -> Self {
+        const VTABLE: RawWakerVTable = RawWakerVTable::new(|_| RAW, |_| {}, |_| {}, |_| {});
+        const RAW: RawWaker = RawWaker::new(ptr::null(), &VTABLE);
+
+        unsafe { Waker::from_raw(RAW) }
+    }
+}
+
+fn noop_waker() -> Waker {
+    Waker::noop().clone()
 }
 
 pub fn block_on<F, Fut>(f: F) -> Fut::Output
 where
-    F: FnOnce(Reactor) -> Fut,
+    F: FnOnce(&Reactor) -> Fut,
     Fut: Future,
 {
-    let reactor = Reactor::new();
-
-    let fut = (f)(reactor.clone());
+    let reactor = Reactor::get_global();
+    
+    let fut = (f)(reactor);
     let mut fut = pin!(fut);
 
     let waker = noop_waker();

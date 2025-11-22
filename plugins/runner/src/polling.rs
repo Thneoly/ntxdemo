@@ -31,6 +31,11 @@ impl Poller {
     }
 
     pub fn block_until(&mut self) -> Vec<EventKey> {
+        // If there are no targets, return an empty vector
+        if self.targets.is_empty() {
+            return vec![];
+        }
+        
         let mut indexes = vec![];
         let mut targets = vec![];
 
