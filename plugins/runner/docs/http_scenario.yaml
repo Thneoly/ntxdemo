@@ -65,6 +65,19 @@ resources:
     capacity:
       size: 1000
       guard: exclusive
+    health-check:
+      interval: 30s
+      timeout: 5s
+      probe:
+        action: http.health
+        with:
+          target: "{{resource.ip}}:{{resource.port}}"
+      on-failure:
+        - action: progress.rollback
+          to: last-stable-point
+        - action: resource.release
+          handles:
+            - "{{resource.ip}}:{{resource.port}}"
     metadata:
       owner: resource-manager
       guarding-domain: network
@@ -97,6 +110,12 @@ workbook:
       description: 负责对齐 PMP 进度基线，记录阶段、里程碑与状态流转。
       defaults:
         phase: initiating.idle
+        process_groups:
+          initiating: 0
+          planning: 0
+          executing: 0
+          monitoring: 0
+          closing: 0
         start_at: null
         last_transition_at: null
         target_deadline_at: null
@@ -112,6 +131,8 @@ workbook:
           description: 对齐计划基线的目标完成时间
         - name: transition_trace
           description: 状态机轨迹 [{from,to,at,trigger}]，支持审计
+        - name: process_groups
+          description: PMP 五大过程组完成度 {initiating, planning, executing, monitoring, closing}
     execution:
       process-group: executing
       description: 记录当前责任人、动作、重试预算与证据快照。
@@ -128,6 +149,7 @@ workbook:
           last_event: null
           reason: null
         action_log: []
+        resource_lease: null
       fields:
         - name: owner
           description: Scheduler/Adapter 等责任主体
@@ -141,6 +163,8 @@ workbook:
           description: 最近一次事件的快照（payload、reason）
         - name: action_log
           description: [{action,result,duration,owner}] # 动作执行清单
+        - name: resource_lease
+          description: 当前绑定的资源租约句柄（ip:port/file 等），支撑进度感知的资源释放
     governance:
       process-group: planning
       description: 承载 WBS 维度、干系人和责任矩阵信息。
@@ -163,15 +187,29 @@ workbook:
           success: 0
           failure: 0
           timeout: 0
+          workload_units: 0
         latency_ms:
           last: 0
           p90: 0
           p99: 0
+        milestones:
+          achieved: []
+          pending:
+            - probe
+            - push
+            - purge
+        health:
+          score: 1.0
+          trend: stable
       fields:
         - name: counters
-          description: success/failure/timeout 等计数器
+          description: success/failure/timeout/workload 等计数器
         - name: latency_ms
           description: 最近一次与分位数延迟（last/p90/p99）
+        - name: milestones
+          description: 里程碑完成情况 {achieved[], pending[]}
+        - name: health
+          description: 健康度评分（score/trend）
     registers:
       process-group: risk
       description: 风险与问题登记簿，映射 PMP 风险/质量域。
@@ -181,6 +219,10 @@ workbook:
           entries: []
         issue:
           entries: []
+        stakeholder:
+          concerns: []
+        procurement:
+          plugins: []
       fields:
         - name: risk.flag
           description: none/identified/mitigating/escalated
@@ -188,6 +230,10 @@ workbook:
           description: [{id,severity,response_plan,owner,status}]
         - name: issue.entries
           description: [{id,description,owner,eta,status}]
+        - name: stakeholder.concerns
+          description: 干系人关注点或约束，支撑沟通管理
+        - name: procurement.plugins
+          description: 插件/组件采购管理记录（version, compatibility, expiry）
     communications:
       process-group: communications
       description: 记录对外同步与升级信息，支撑沟通管理。
@@ -217,6 +263,39 @@ workbook:
     risk_register: registers.risk.entries
     issue_register: registers.issue.entries
     communications_log: communications.log
+
+progress:
+  batching:
+    max-batch-size: 100
+    flush-interval: 100ms
+    priority-threshold: 0.7
+  poller:
+    progress_pollable: true
+    rebuild-future-each-iteration: true
+    priorities:
+      - name: critical-checks
+        match:
+          timeline.phase:
+            - monitoring
+            - closing
+        weight: 1.0
+      - name: routine-checks
+        match:
+          timeline.phase:
+            - planning
+            - executing
+        weight: 0.6
+      - name: backlog
+        weight: 0.2
+  errors:
+    transient:
+      - network-timeout
+      - resource-unavailable
+      - lease-expired
+    permanent:
+      - invalid-configuration
+      - schema-violation
+      - unauthorized
 
 actions:
   probe-get:
@@ -398,9 +477,44 @@ load:
           session: new
         context:
           scope_trace: [ProgramA, HTTP, Scenario:http-bulk-refresh]
+          process_groups:
+            initiating: 1.0
+            planning: 0.8
+            executing: 0.0
+            monitoring: 0.0
+            closing: 0.0
+          stakeholder:
+            concerns:
+              - latency budget <= 1s
+              - recovery < 3 retries
+          procurement:
+            plugins:
+              - name: http
+                version: 0.2.1
+                expiry: 2024-12-31
+              - name: resource-manager
+                version: 0.4.0
+                expiry: 2024-12-31
       exits:
         timeout: timeout_out
         error: error_out
+      milestones:
+        - name: probe
+          node: init_probe
+          edge: probe_ok
+          weight: 0.3
+        - name: push
+          node: post_push
+          edge: push_done
+          weight: 0.4
+        - name: purge
+          node: delete_purge
+          edge: purge_exit
+          weight: 0.3
+      health_threshold:
+        telemetry_field: telemetry.health.score
+        min_score: 0.85
+        consecutive_breach: 3
 
 monitoring:
   timeout_out:
@@ -411,11 +525,23 @@ monitoring:
           message: "{{workbook.user_id}} timed out"
   error_out:
     owner: closing
+    classification:
+      catalog: progress.errors
+      field: "{{workbook.execution.evidence.last_event}}"
+      default: transient
     actions:
-      - action: logger.error
+      - when: transient
+        action: logger.warn
         with:
-          message: "{{workbook.user_id}} failed"
-      - action: resource.release
+          message: "{{workbook.user_id}} transient failure"
+      - when: permanent
+        action: logger.error
+        with:
+          message: "{{workbook.user_id}} permanent failure"
+      - when: any
+        action: resource.release
         with:
           handles:
+            - "{{workbook.execution.resource_lease}}"
             - "{{resource.ip}}:{{resource.port}}"
+        note: progress-aware release

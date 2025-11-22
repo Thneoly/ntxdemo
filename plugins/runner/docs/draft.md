@@ -432,3 +432,29 @@ load:
 4. **知识沉淀**：自动把 Workbook 结果归档至“经验库”，作为下一次 Scenario 的基线（契合 PMP 持续改进）。
 
 通过把 PMP 的过程治理能力与 DSL/FSM 的执行能力结合，本方案既能支持复杂协议的并发调度，又能提供全过程可审计的运行视图，为 wasm32-wasip2 平台上的调度器与动作编排奠定统一的架构基础。
+
+## 12. 优化路线图与反馈采纳
+
+### Phase 1：进度模型与内存效率
+- **稀疏存储 + 脏字段跟踪**：Runner Core 将 Workbook 切分为“高频字段缓存 + 低频快照”，只写入发生变化的 section，并提供定期快照压缩接口。
+- **条件预编译与 Progress Bus**：在 `parse2wbs` 阶段对 `{{...}}` 表达式构建 AST 并缓存，运行期由事件驱动的 progress bus 决定哪些节点需要重新计算，避免轮询。
+- **资源-进度绑定**：在 Workbook `execution`/`governance` 中引入 `resource_lease`，并在 `resource.release` 前校验关联进度状态，确保“进度感知的资源释放”。
+- **资源健康检查 + 回滚钩子**：为 `resources.*` 增加 `health-check {interval, timeout, probe, on-failure}`，当资源退出健康状态时自动触发 `progress.rollback → last-stable-point` 与租约释放，实现资源治理与进度模型的紧耦合。
+- **进度批处理参数化**：DSL 新增 `progress.batching {max-batch-size, flush-interval, priority-threshold}`，把 batched updates 的阈值与刷新策略显式暴露给 Scenario，方便按业务压力调优。
+- **DSL 校验与缓存**：引入 schema 校验及 bundle 级缓存，减少重复解析；并计划接入 `wac validate` 以保证组件接口匹配（先在构建阶段执行）。
+
+### Phase 2：WASI 环境适配
+- **单线程状态治理**：采用“版本化状态 + batched updates”的扁平结构，降低 `Rc<RefCell<T>>` 的嵌套和 borrow 开销，并支持状态合并策略。
+- **Progress Pollable**：为进度跟踪器实现专用 `progress_pollable` 资源，每次轮询迭代重建 future，结合优先级队列确保关键进度优先执行；DSL 的 `progress.poller.priorities` 可声明 {phase→权重}，Runner Poller 依此调度。
+- **延迟级联与错误分级**：构建进度依赖图、级联传播权重与回滚点，在 `on_error` 中区分可恢复/致命错误并自动生成快照。
+- **错误分类与出口联动**：通过 `progress.errors {transient, permanent}` 建立全局错误字典，并在 `monitoring.error_out` 中引用，分别触发告警、日志与资源释放策略，形成可扩展的错误治理框架。
+
+### Phase 3：高级度量与动态调优
+- **多维度进度与里程碑**：在 Workbook `telemetry` 内扩展工作量、里程碑达成度与健康度评分；`load.scenarios` 支持定义里程碑节点及权重。
+- **预测与资源再分配**：基于历史执行数据实现进度预测算法和资源优先级继承，动态调整 `spawn-rate` 与资源租约。
+- **二进制 DSL & 类型安全绑定**：提供 YAML→二进制编译器与类型安全绑定代码，确保与 WebAssembly 组件接口一致。
+
+### 验证与风险控制
+- **验证点**：`wac validate` 用于接口一致性，`get_problems`／CI 静态分析保障代码规范，1000+ 用户压测验证稀疏存储收益。
+- **兼容策略**：新旧 Workbook 结构通过 `workbook.expose` 并行运行，可按场景灰度启用；Resource/Progress 特性默认关闭，确保可回滚。
+- **监控指标**：新增稀疏命中率、进度级联耗时、Pollable 延迟等指标，帮助评估优化成效。
