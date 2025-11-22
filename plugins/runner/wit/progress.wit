@@ -1,0 +1,55 @@
+package runner:progress;
+
+/// Phase + workflow status snapshots that subscribers consume from the progress bus.
+type ProgressPhase = enum {
+    initiating,
+    planning,
+    executing,
+    monitoring,
+    closing,
+};
+
+type ProgressField = record {
+    section: string,
+    key: string,
+    value: string,
+};
+
+type ProgressUpdate = record {
+    user_id: string,
+    task_id: string,
+    phase: ProgressPhase,
+    timestamp_ms: u64,
+    dirty_fields: list<ProgressField>,
+    aggregation: option<f32>,
+    resource_lease: option<string>,
+    error_class: option<string>,
+};
+
+type ProgressSubscription = record {
+    /// unique subscription id returned by subscribe
+    id: u64,
+    /// optional filter on user/task scope
+    filter_scope: option<string>,
+};
+
+interface bus {
+    /// push a single progress update (Runner Core -> bus)
+    push: func(update: ProgressUpdate);
+
+    /// subscribe to updates, optionally filtering by workbook scope
+    subscribe: func(filter_scope: option<string>) -> ProgressSubscription;
+
+    /// pull the next available update for a subscription
+    poll: func(sub: ProgressSubscription) -> option<ProgressUpdate>;
+
+    /// remove subscription and free resources
+    unsubscribe: func(sub: ProgressSubscription);
+
+    /// report heartbeat metrics for telemetry backends
+    heartbeat: func(active_subscriptions: u32, queue_depth: u32, avg_latency_ms: f32);
+}
+
+world progress {
+    export bus;
+}

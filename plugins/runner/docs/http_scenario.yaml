@@ -515,6 +515,15 @@ load:
         telemetry_field: telemetry.health.score
         min_score: 0.85
         consecutive_breach: 3
+      progress-aggregation:
+        method: weighted-average
+        sources:
+          - node: init_probe
+            weight: 0.3
+          - node: post_push
+            weight: 0.4
+          - node: delete_purge
+            weight: 0.3
 
 monitoring:
   timeout_out:

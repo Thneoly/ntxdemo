@@ -23,6 +23,10 @@
 - [ ] 在`http_scenario.yaml`中定义`resource_lease`字段，建立资源与进度的绑定 (模块：DSL Parser)
 - [ ] 实现progress.batching参数：`max-batch-size`、`flush-interval`、`priority-threshold` (模块：Runner Core)
 - [ ] 状态条件预编译：在parse2wbs阶段生成AST并缓存，支持`{{...}}`条件表达式 (模块：DSL Parser，依赖：稀疏状态存储)
+- [ ] 实现最简进度级联算法：支持任务级→用户级单向聚合 (模块：Runner Core)
+- [ ] 为进度级联关系预留权重配置接口，Phase 3 可扩展为多级传播 (模块：Runner Core)
+- [ ] 实现基础错误分类：transient/permanent，并提供查询接口 (模块：Runner Core)
+- [ ] 在 rollback 机制中接入错误类型判断逻辑 (模块：Runner Core)
 
 #### 进度事件与资源
 - [ ] 实现进度事件总线基础框架，替代轮询检查 (模块：Runner Core)
@@ -30,11 +34,16 @@
 - [ ] 为resource-manager添加进度感知释放钩子 (模块：Resource Manager)
 - [ ] 在ip-port-pool中实现health-check配置块，支持interval、timeout和on-failure处理 (模块：Resource Manager)
 
+#### 接口与规范
+- [ ] 在 Phase 1 第 1 周完成 `progress.wit` 接口定义 (模块：DSL Parser + Runner Core)
+- [ ] 通过 `wac validate` 验证 progress 相关核心接口，在实现阶段开启接口变更审查 (模块：CI Pipeline)
+
 #### 验证与质量保证
 - [ ] 添加workbook稀疏存储的单元测试，验证内存效率 (模块：Test Framework)
 - [ ] 实现progress.batching参数的集成测试 (模块：Test Framework)
 - [ ] 验证resource_lease与资源生命周期的正确关联 (模块：Test Framework)
 - [ ] 通过`wac validate`验证进度相关接口一致性 (模块：CI Pipeline)
+- [ ] 验证 `http_tri_phase_demo` 中任务级→用户级进度聚合结果符合权重配置 (模块：Test Framework)
 
 ### 阶段交付物
 - 稀疏状态存储设计文档
@@ -137,9 +146,14 @@
 - [ ] 实现性能监控仪表板 (模块：Dashboard)
 - [ ] 设置性能阈值告警 (模块：Telemetry)
 - [ ] 制定性能回滚预案 (模块：Operations)
+- [ ] 在 Phase 1 第 1 周完成 timeline section 稀疏存储 PoC（100 用户规模内存降低 ≥15%），不达标则启用 `Cow` 渐进式方案 (模块：Runner Core)
 
 ### 质量保障
 - [ ] 每个功能点必须有明确的验证标准 (模块：QA Process)
 - [ ] 采用`get_problems`验证代码规范符合性 (模块：CI Pipeline)
 - [ ] 通过`wac validate`验证组件接口一致性 (模块：CI Pipeline)
 - [ ] 建立自动化测试套件，覆盖关键场景 (模块：Test Framework)
+
+### 事件总线与 WASI 适配保障
+- [ ] 进度事件总线采用 `wasmtime` 异步通道并预留 `progress_pollable` 兼容层 (模块：Runner Core)
+- [ ] 在 Telemetry 中新增事件延迟指标（目标 <50ms），监控 bounded channel backpressure (模块：Telemetry)
