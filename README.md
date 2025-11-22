@@ -36,6 +36,20 @@ cargo run
 
 这些命令会触发顶层构建并执行 `build.rs`。当 `plugins/*` 下有变更时，`build.rs` 可能会在对应子目录执行 `cargo build --target wasm32-wasip2` 或 `sh run.sh`。
 
+### Runner 组件
+- 详细运行手册：`plugins/runner/docs/plan/runbook.md`
+- 数据模型说明：`plugins/runner/docs/plan/sparse_model.md`
+- 特性开关策略：`plugins/runner/docs/plan/feature_flags.md`
+- 快速构建：
+	```bash
+	cargo build -p runner --target wasm32-wasip2
+	```
+- 快速运行：
+	```bash
+	cd plugins/runner
+	RUNTIME_SCENARIO=http_tri_phase_demo ./run.sh
+	```
+
 ## 控制插件构建（跳过/启用）
 
 如果你想在 CI 或快速本地开发时跳过插件自动构建（仅构建顶层），可以设置环境变量 `DISABLE_PLUGIN_BUILDS`：
