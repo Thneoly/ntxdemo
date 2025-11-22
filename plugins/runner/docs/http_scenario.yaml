@@ -1,0 +1,421 @@
+version: "1.0"
+name: http_tri_phase_demo
+components:
+  - name: http
+    version: "0.2.1"
+    kind: wasi-component
+    entry: plugins/http/send.wasm
+    wit: wit/http/world.wit
+    capabilities:
+      - get
+      - post
+      - delete
+    metadata:
+      owner: integration
+      tags:
+        - http
+        - asset-refresh
+  - name: logger
+    version: "0.1.0"
+    kind: service-adapter
+    entry: plugins/logger/stdio.wasm
+    wit: wit/logger/world.wit
+    capabilities:
+      - log
+    metadata:
+      owner: observability
+      tags:
+        - audit
+        - monitoring
+  - name: resource-manager
+    version: "0.4.0"
+    kind: wasi-component
+    entry: plugins/resource/manager.wasm
+    wit: wit/resource/world.wit
+    capabilities:
+      - allocate_pair
+      - release_pair
+      - mount_file
+      - track_lease
+    metadata:
+      owner: platform
+      tags:
+        - governance
+        - resource
+
+resources:
+  ip-port-pool:
+    type: pair_pool
+    provider:
+      component: resource-manager
+      calls:
+        acquire: allocate_pair
+        release: release_pair
+      leasing:
+        ttl: 120s
+        auto-renew: true
+        strategy: round-robin
+    config:
+      manifest: ./resource.yaml
+      parser:
+        format: csv
+        fields:
+          - ip
+          - port
+    capacity:
+      size: 1000
+      guard: exclusive
+    metadata:
+      owner: resource-manager
+      guarding-domain: network
+      tags:
+        - ip
+        - port
+        - critical
+  http-payload:
+    type: file_blob
+    provider:
+      component: resource-manager
+      calls:
+        mount: mount_file
+      leasing:
+        mode: read-only
+    config:
+      file: ./payloads/asset.json
+      checksum: auto
+    metadata:
+      owner: integration
+      guarding-domain: data
+      tags:
+        - payload
+        - asset
+
+workbook:
+  sections:
+    timeline:
+      process-group: monitoring
+      description: 负责对齐 PMP 进度基线，记录阶段、里程碑与状态流转。
+      defaults:
+        phase: initiating.idle
+        start_at: null
+        last_transition_at: null
+        target_deadline_at: null
+        transition_trace: []
+      fields:
+        - name: phase
+          description: 当前所处 PMP 阶段/状态（initiating/planning/.../closing）
+        - name: start_at
+          description: 任务进入执行态的 UTC 时间戳
+        - name: last_transition_at
+          description: 最近一次状态流转的时间
+        - name: target_deadline_at
+          description: 对齐计划基线的目标完成时间
+        - name: transition_trace
+          description: 状态机轨迹 [{from,to,at,trigger}]，支持审计
+    execution:
+      process-group: executing
+      description: 记录当前责任人、动作、重试预算与证据快照。
+      defaults:
+        owner: scheduler
+        current_action: none
+        current_action_started_at: null
+        last_action: none
+        last_action_at: null
+        timeout_at: null
+        retry_budget: 2
+        evidence:
+          snapshot: null
+          last_event: null
+          reason: null
+        action_log: []
+      fields:
+        - name: owner
+          description: Scheduler/Adapter 等责任主体
+        - name: current_action
+          description: 正在执行的动作 ID
+        - name: timeout_at
+          description: 当前动作或任务的绝对超时点
+        - name: retry_budget
+          description: 剩余重试次数，请求质量域策略
+        - name: evidence
+          description: 最近一次事件的快照（payload、reason）
+        - name: action_log
+          description: [{action,result,duration,owner}] # 动作执行清单
+    governance:
+      process-group: planning
+      description: 承载 WBS 维度、干系人和责任矩阵信息。
+      defaults:
+        scope_trace: []
+        raci_matrix: []
+        stakeholder_notes: []
+      fields:
+        - name: scope_trace
+          description: Program→Scenario→Workflow→Task→Action 的路径
+        - name: raci_matrix
+          description: Responsible/Accountable/Consulted/Informed 映射
+        - name: stakeholder_notes
+          description: 干系人关注点或约束
+    telemetry:
+      process-group: monitoring
+      description: 性能/质量度量，支持 PMP 质量管理域。
+      defaults:
+        counters:
+          success: 0
+          failure: 0
+          timeout: 0
+        latency_ms:
+          last: 0
+          p90: 0
+          p99: 0
+      fields:
+        - name: counters
+          description: success/failure/timeout 等计数器
+        - name: latency_ms
+          description: 最近一次与分位数延迟（last/p90/p99）
+    registers:
+      process-group: risk
+      description: 风险与问题登记簿，映射 PMP 风险/质量域。
+      defaults:
+        risk:
+          flag: none
+          entries: []
+        issue:
+          entries: []
+      fields:
+        - name: risk.flag
+          description: none/identified/mitigating/escalated
+        - name: risk.entries
+          description: [{id,severity,response_plan,owner,status}]
+        - name: issue.entries
+          description: [{id,description,owner,eta,status}]
+    communications:
+      process-group: communications
+      description: 记录对外同步与升级信息，支撑沟通管理。
+      defaults:
+        log: []
+        last_synced_at: null
+      fields:
+        - name: log
+          description: 干系人同步摘要 [{msg,channel,owner,at}]
+        - name: last_synced_at
+          description: 最近一次沟通时间
+  expose:
+    state: timeline.phase
+    owner: execution.owner
+    scope_trace: governance.scope_trace
+    timeout_at: execution.timeout_at
+    evidence: execution.evidence
+    retry_left: execution.retry_budget
+    start_at: timeline.start_at
+    last_action: execution.last_action
+    last_action_at: execution.last_action_at
+    last_state_change_at: timeline.last_transition_at
+    transition_trace: timeline.transition_trace
+    action_log: execution.action_log
+    metrics: telemetry.counters
+    risk_flag: registers.risk.flag
+    risk_register: registers.risk.entries
+    issue_register: registers.issue.entries
+    communications_log: communications.log
+
+actions:
+  probe-get:
+    id: probe-get
+    name: probe-get
+    component: http
+    call: get
+    wbs-level: L5
+    with:
+      url: "http://{{resource.ip}}:{{resource.port}}/asset"
+      headers:
+        x-scope-trace: "{{workbook.scope_trace}}"
+    save-as:
+      var: asset
+      scope: workbook
+      persist:
+        type: file
+        dir: ./runtime/artifacts/assets
+        filename: "{{workbook.user_id}}-asset.json"
+  push-post:
+    id: push-post
+    name: push-post
+    component: http
+    call: post
+    wbs-level: L5
+    with:
+      url: "http://{{resource.ip}}:{{resource.port}}/asset"
+      headers:
+        content-type: application/json
+      body: "{{asset.body}}"
+    save-as:
+      var: result
+      scope: workbook
+      persist:
+        type: file
+        dir: ./runtime/artifacts/results
+        filename: "{{workbook.user_id}}-result.json"
+  purge-delete:
+    id: purge-delete
+    name: purge-delete
+    component: http
+    call: delete
+    wbs-level: L5
+    with:
+      url: "http://{{resource.ip}}:{{resource.port}}/asset"
+  audit-warn:
+    id: audit-warn
+    name: audit-warn
+    component: logger
+    call: warn
+    with:
+      message: "{{workbook.scope_trace}} audit"
+
+workflows:
+  http_tri_phase:
+    type: graph
+    wbs-level: L3
+    controls:
+      timeout: 5s
+      on-error:
+        - goto: error_out
+      on-timeout:
+        - goto: timeout_out
+    nodes:
+      - id: init_probe
+        type: action
+        action: probe-get
+        controls:
+          flow:
+            type: serial
+          exec:
+            timeout: 600ms
+            rate-limit:
+              per-user: 50 req/s
+            on-error:
+              - update-workbook:
+                  state: monitoring.error_detected
+                  evidence: "probe failed"
+              - goto: error_out
+            transitions:
+              - edge: probe_ok
+                to: post_push
+                condition: "{{asset.status == 200}}"
+              - edge: probe_retry
+                to: monitor_checkpoint
+                condition: "{{asset.status != 200}}"
+      - id: post_push
+        type: action
+        action: push-post
+        controls:
+          flow:
+            type: serial
+          exec:
+            timeout: 800ms
+            on-error:
+              - goto: error_out
+            transitions:
+              - edge: push_done
+                to: delete_purge
+                condition: always
+      - id: delete_purge
+        type: action
+        action: purge-delete
+        controls:
+          flow:
+            type: serial
+          exec:
+            timeout: 800ms
+            transitions:
+              - edge: purge_exit
+                to: fork_cleanup
+                condition: always
+      - id: fork_cleanup
+        type: parallel
+        controls:
+          flow:
+            type: parallel
+            strategy: fan-out
+            branches:
+              - to: monitor_checkpoint
+              - to: audit_stream
+            join:
+              policy: wait-all
+              to: closing
+      - id: audit_stream
+        type: action
+        action: audit-warn
+        controls:
+          flow:
+            type: serial
+            transitions:
+              - edge: audit_done
+                to: closing
+                condition: always
+      - id: monitor_checkpoint
+        type: checkpoint
+        metrics:
+          - http.status
+          - http.latency
+        controls:
+          flow:
+            type: serial
+            transitions:
+              - edge: monitor_timeout
+                to: timeout_out
+                condition: "{{workbook.state == 'monitoring.timeout'}}"
+              - edge: monitor_error
+                to: error_out
+                condition: "{{workbook.state == 'monitoring.error_detected'}}"
+              - edge: monitor_close
+                to: closing
+                condition: otherwise
+      - id: closing
+        type: terminus
+        state: closing.success
+
+load:
+  profiles:
+    ramp-1000:
+      type: ramp
+      start-users: 0
+      end-users: 1000
+      duration: 60s
+    constant-hold:
+      type: constant
+      users: 1000
+      duration: 120s
+  scenarios:
+    - name: http-bulk-refresh
+      wbs-level: L2
+      workflow: http_tri_phase
+      user-count: 1000
+      spawn-rate: 200/s
+      task-duration: 120s
+      user:
+        inherit:
+          - ip-port-pool
+        resources:
+          session: new
+        context:
+          scope_trace: [ProgramA, HTTP, Scenario:http-bulk-refresh]
+      exits:
+        timeout: timeout_out
+        error: error_out
+
+monitoring:
+  timeout_out:
+    owner: closing
+    actions:
+      - action: logger.warn
+        with:
+          message: "{{workbook.user_id}} timed out"
+  error_out:
+    owner: closing
+    actions:
+      - action: logger.error
+        with:
+          message: "{{workbook.user_id}} failed"
+      - action: resource.release
+        with:
+          handles:
+            - "{{resource.ip}}:{{resource.port}}"
