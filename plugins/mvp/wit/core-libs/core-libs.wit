@@ -95,7 +95,7 @@ interface core-progress {
     snapshot: func(scope-json: string) -> workbook-status;
 }
 
-world core-runtime {
+world core-libs {
     import wall-clock;
     import monotonic-clock;
     import wasi-network;

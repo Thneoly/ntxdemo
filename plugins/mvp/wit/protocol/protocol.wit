@@ -1,4 +1,4 @@
-package ntx:runner;
+package ntx:protocol;
 
 interface protocol-component {
     use types.{protocol-init-ctx, action-ctx, action-result, pf-error};
