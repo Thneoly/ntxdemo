@@ -5,8 +5,14 @@ wit_bindgen::generate!({
     debug: true,
 });
 
-struct CoreLib;
+mod call_model;
+mod logger;
+mod network;
+mod progress;
+mod random;
+mod timer;
+
+use call_model::CallModel;
+pub struct CoreLib;
 
 export!(CoreLib);
-
-impl Guest for CoreLib {}

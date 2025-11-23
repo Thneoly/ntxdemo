@@ -32,31 +32,7 @@ interface respool {
     }
 }
 
-// interface flow {
-//     record action {
-//         id: u32,
-//     }
-//     record control {
-//         id: u32,
-//     }
-//     enum status {
-//         success,
-//         failure,
-//     }
-//     record workbook {
-//         actions: list<action>,
-//         control: control,
-//         status: status,
-//     }
-//     resource res {
-//         constructor();
-//         execute: func(wb: workbook) -> workbook;
-//     }
-// }
-
 interface protocol {
-    // use flow.{res, action};
-    // use respool.{script};
     use config.{config};
     type handler = u32;
     resource protocol-tcp-client {
