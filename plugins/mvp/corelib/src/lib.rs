@@ -12,7 +12,6 @@ mod progress;
 mod random;
 mod timer;
 
-use call_model::CallModel;
 pub struct CoreLib;
 
 export!(CoreLib);

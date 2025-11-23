@@ -6,9 +6,9 @@ impl Guest for CoreLib {
     fn log(
         level: LogLevel,
         message: String,
-        task: Option<TaskId>,
-        user: Option<UserId>,
-        action: Option<ActionId>,
+        _task: Option<TaskId>,
+        _user: Option<UserId>,
+        _action: Option<ActionId>,
     ) {
         match level {
             LogLevel::Trace => println!("{}", message),

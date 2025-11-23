@@ -103,7 +103,7 @@ world core-libs {
     import wasi-random;
 
     export core-logger;
-    // export core-timer;
+    export core-timer;
     // export core-network;
     // export core-random;
     export core-call-model;
