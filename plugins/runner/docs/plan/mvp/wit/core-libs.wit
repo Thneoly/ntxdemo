@@ -1,0 +1,111 @@
+package ntx:runner;
+
+use wasi:clocks/wall-clock@0.2.6 as wall-clock;
+use wasi:clocks/monotonic-clock@0.2.6 as monotonic-clock;
+use wasi:sockets/network@0.2.6 as wasi-network;
+use wasi:sockets/tcp@0.2.6 as wasi-tcp;
+use wasi:random/random@0.2.6 as wasi-random;
+
+interface core-logger {
+    use types.{task-id, user-id, action-id};
+
+    enum log-level { trace, debug, info, warn, error, critical }
+
+    /// Emit a structured log entry tagged with execution context.
+    log: func(level: log-level, message: string, task: option<task-id>, user: option<user-id>, action: option<action-id>);
+}
+
+interface core-timer {
+    use types.{scheduler-error};
+    use monotonic-clock.{instant, duration};
+    use wall-clock.{datetime};
+
+    resource timer-handle {}
+
+    /// Returns the monotonic clock instant (passthrough to WASI).
+    now: func() -> instant;
+
+    /// Returns the wall clock timestamp for auditing.
+    utc-now: func() -> datetime;
+
+    /// Schedule a timer that fires at a specific monotonic instant.
+    schedule-at: func(at: instant, token: string) -> result<timer-handle, scheduler-error>;
+
+    /// Schedule a timer relative to the current instant.
+    schedule-after: func(delay: duration, token: string) -> result<timer-handle, scheduler-error>;
+
+    /// Cancel a pending timer. No-op if already fired.
+    cancel: func(timer: borrow<timer-handle>);
+}
+
+interface core-network {
+    use types.{endpoint};
+    use wasi-network.{network, error-code, ip-socket-address};
+    use wasi-tcp.{tcp-socket, input-stream, output-stream};
+
+    resource session {}
+
+    /// Attempt to connect to an endpoint using an existing WASI network.
+    connect: func(net: borrow<network>, remote: endpoint, timeout-ns: option<u64>) -> result<session, error-code>;
+
+    /// Send bytes on an open session.
+    send: func(sess: borrow<session>, bytes: list<u8>) -> result<u32, error-code>;
+
+    /// Receive bytes (bounded by max).
+    recv: func(sess: borrow<session>, max: u32) -> result<list<u8>, error-code>;
+
+    /// Close session and underlying socket.
+    close: func(sess: own<session>);
+}
+
+interface core-random {
+    /// Fill the provided buffer with random bytes.
+    fill: func(len: u32) -> list<u8>;
+
+    /// Sample a random u64; direct passthrough to WASI random.
+    sample-u64: func() -> u64;
+}
+
+interface core-call-model {
+    use types.{user-id, rate-profile};
+
+    record user-state {
+        user: user-id,
+        desired-phase: string,
+        rate: option<rate-profile>,
+    }
+
+    /// Request the next batch of user state transitions for a tick.
+    step: func(tick: u64, desired-online: u32) -> list<user-state>;
+}
+
+interface core-progress {
+    use progress-bridge.{subscription as progress-subscription, workbook-status};
+
+    /// Subscribe to progress events with a JSON filter shared with Host observers.
+    proxy-subscribe: func(filter-json: string) -> result<progress-subscription, string>;
+
+    /// Receive serialized event payloads from the progress bus.
+    proxy-recv: func(sub: borrow<progress-subscription>) -> option<string>;
+
+    /// Acknowledge processed updates to advance the cursor.
+    proxy-ack: func(sub: borrow<progress-subscription>, update-id: u64);
+
+    /// Proxy covering workbook snapshot operations for ProtocolFrame.
+    snapshot: func(scope-json: string) -> workbook-status;
+}
+
+world core-runtime {
+    import wall-clock;
+    import monotonic-clock;
+    import wasi-network;
+    import wasi-tcp;
+    import wasi-random;
+
+    export core-logger;
+    export core-timer;
+    export core-network;
+    export core-random;
+    export core-call-model;
+    export core-progress;
+}

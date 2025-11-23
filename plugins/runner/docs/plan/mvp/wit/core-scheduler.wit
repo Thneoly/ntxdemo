@@ -1,0 +1,29 @@
+package ntx:runner;
+
+interface core-scheduler {
+    use types.{scheduler-config, task-meta, action-ctx, action-result, enqueue-result, scheduler-error};
+
+    resource instance {}
+
+    /// Initialize scheduler state for a workflow plus its static tasks.
+    init: func(cfg: scheduler-config, tasks: list<task-meta>) -> result<instance, scheduler-error>;
+
+    /// Fetch the next runnable action context, respecting the provided budget.
+    poll-action: func(inst: borrow<instance>, max-users: u32) -> result<option<action-ctx>, scheduler-error>;
+
+    /// Commit the outcome of an action run by a Protocol.
+    complete-action: func(inst: borrow<instance>, outcome: action-result) -> result<_, scheduler-error>;
+
+    /// Enqueue a new (possibly dynamic) task originating from ProtocolFrame.
+    enqueue: func(inst: borrow<instance>, task: task-meta) -> result<enqueue-result, scheduler-error>;
+
+    /// Return a snapshot of registered tasks for observability or debugging.
+    snapshot: func(inst: borrow<instance>) -> list<task-meta>;
+
+    /// Gracefully drain pending work and release scheduler resources.
+    drain: func(inst: own<instance>) -> result<_, scheduler-error>;
+}
+
+world scheduler-world {
+    export core-scheduler;
+}

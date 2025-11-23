@@ -1,0 +1,85 @@
+package component:ftp;
+
+interface types {
+    /// FTP command verbs supported by the component.
+    enum ftp-verb {
+        user,
+        pass,
+        stor,
+        retr,
+        list-dir,
+        cwd,
+        pwd,
+        quit,
+    }
+
+    record ftp-command {
+        command-id: u64,
+        verb: ftp-verb,
+        args: list<string>,
+        payload: option<list<u8>>,
+    }
+
+    record ftp-response {
+        command-id: u64,
+        code: u16,
+        message: string,
+        payload: option<list<u8>>,
+    }
+
+    enum ftp-error-kind { transient, permanent, auth, timeout }
+
+    record ftp-error {
+        kind: ftp-error-kind,
+        message: string,
+    }
+
+    record passive-ports {
+        start: u16,
+        end: u16,
+    }
+
+    record session-config {
+        bind: string,
+        passive-ports: option<passive-ports>,
+        max-sessions: u32,
+        allow-anonymous: bool,
+    }
+
+    type chunk = list<u8>;
+    type ack = tuple<>;
+}
+
+interface control {
+    use types.{session-config, ftp-error, ftp-command, ftp-response, ack};
+
+    resource session {}
+
+    /// Start accepting FTP control connections.
+    start-server: func(config: session-config) -> result<session, ftp-error>;
+
+    /// Shut down the server and release all resources.
+    stop-server: func(handle: session);
+
+    /// Poll next FTP command for processing.
+    poll-command: func(handle: borrow<session>) -> option<ftp-command>;
+
+    /// Send a response to the client for a prior command.
+    send-response: func(handle: borrow<session>, response: ftp-response) -> result<ack, ftp-error>;
+}
+
+interface data-plane {
+    use types.{ftp-error, chunk, ack};
+    use control.{session};
+
+    /// Push file contents to the client (for RETR).
+    send-data: func(handle: borrow<session>, command-id: u64, chunk: chunk) -> result<ack, ftp-error>;
+
+    /// Receive next chunk uploaded by the client (for STOR).
+    recv-data: func(handle: borrow<session>, command-id: u64) -> option<chunk>;
+}
+
+world ftp-component {
+    export control;
+    export data-plane;
+}

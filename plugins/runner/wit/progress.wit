@@ -1,55 +1,108 @@
 package runner:progress;
 
-/// Phase + workflow status snapshots that subscribers consume from the progress bus.
-type ProgressPhase = enum {
-    initiating,
-    planning,
-    executing,
-    monitoring,
-    closing,
-};
+interface types {
+    /// Standardized workflow phases used across Runner components.
+    enum progress-phase {
+        initiating,
+        planning,
+        executing,
+        monitoring,
+        closing,
+    }
 
-type ProgressField = record {
-    section: string,
-    key: string,
-    value: string,
-};
+    /// Structured field updates produced by Runner Core.
+    record progress-field {
+        section: string,
+        key: string,
+        value: string,
+    }
 
-type ProgressUpdate = record {
-    user_id: string,
-    task_id: string,
-    phase: ProgressPhase,
-    timestamp_ms: u64,
-    dirty_fields: list<ProgressField>,
-    aggregation: option<f32>,
-    resource_lease: option<string>,
-    error_class: option<string>,
-};
+    /// Scoped workbook identifier (user/task pair or broader aggregate).
+    record scope {
+        user-id: option<string>,
+        task-id: option<string>,
+        tenant: option<string>,
+    }
 
-type ProgressSubscription = record {
-    /// unique subscription id returned by subscribe
-    id: u64,
-    /// optional filter on user/task scope
-    filter_scope: option<string>,
-};
+    record rollback-point {
+        name: string,
+        timestamp-ns: u64,
+    }
 
-interface bus {
-    /// push a single progress update (Runner Core -> bus)
-    push: func(update: ProgressUpdate);
+    enum progress-error-kind { transient, permanent, conflict }
 
-    /// subscribe to updates, optionally filtering by workbook scope
-    subscribe: func(filter_scope: option<string>) -> ProgressSubscription;
+    record progress-error {
+        code: u32,
+        kind: progress-error-kind,
+        message: string,
+    }
 
-    /// pull the next available update for a subscription
-    poll: func(sub: ProgressSubscription) -> option<ProgressUpdate>;
+    record workbook-status {
+        scope: scope,
+        phase: progress-phase,
+        progress: f32,
+        updated-at-ns: u64,
+        errors: list<progress-error>,
+    }
 
-    /// remove subscription and free resources
-    unsubscribe: func(sub: ProgressSubscription);
+    record update-patch {
+        scope: scope,
+        phase: option<progress-phase>,
+        delta-progress: option<f32>,
+        dirty-fields: list<progress-field>,
+        correlation-id: option<string>,
+    }
 
-    /// report heartbeat metrics for telemetry backends
-    heartbeat: func(active_subscriptions: u32, queue_depth: u32, avg_latency_ms: f32);
+    record progress-update {
+        scope: scope,
+        phase: progress-phase,
+        progress: f32,
+        timestamp-ns: u64,
+        dirty-fields: list<progress-field>,
+        aggregation: option<f32>,
+        error-class: option<string>,
+        update-id: u64,
+    }
 }
 
-world progress {
-    export bus;
+interface workbook {
+    use types.{scope, workbook-status, progress-error, update-patch, rollback-point};
+
+    /// Obtain the current immutable snapshot for a workbook scope.
+    get-status: func(scope: scope) -> result<workbook-status, progress-error>;
+
+    /// Apply a partial update produced by Runner Core.
+    update: func(patch: update-patch) -> result<workbook-status, progress-error>;
+
+    /// Roll the workbook back to a named checkpoint.
+    rollback: func(scope: scope, to: rollback-point) -> result<workbook-status, progress-error>;
+}
+
+interface events {
+    use types.{scope, progress-error, progress-update};
+
+    resource subscription {}
+
+    /// Open a subscription stream filtered by scope (None = broadcast).
+    subscribe: func(filter: option<scope>) -> result<subscription, progress-error>;
+
+    /// Retrieve the next progress update, if available.
+    recv: func(sub: borrow<subscription>) -> option<progress-update>;
+
+    /// Provide readiness information for integration with async runtimes.
+    ready: func(sub: borrow<subscription>) -> bool;
+
+    /// Acknowledge completion so the bus can advance cursors.
+    ack: func(sub: borrow<subscription>, update-id: u64);
+}
+
+interface telemetry {
+    heartbeat: func(active-subscriptions: u32, queue-depth: u32, avg-latency-ms: f32);
+    flush-metrics: func(snapshot-time-ns: u64);
+}
+
+world progress-runner {
+    export workbook;
+    export events;
+    export telemetry;
 }

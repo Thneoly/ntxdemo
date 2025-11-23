@@ -1,0 +1,16 @@
+package ntx:runner;
+
+/// Lightweight progress channel types for Core runtime proxies.
+interface progress-bridge {
+    /// Simplified workbook snapshot payload for documentation purposes.
+    record workbook-status {
+        scope-json: string,
+        phase: string,
+        progress: f32,
+        updated-at-ns: u64,
+        error-json: option<string>,
+    }
+
+    /// Opaque subscription handle surfaced by the progress bus.
+    resource subscription {}
+}

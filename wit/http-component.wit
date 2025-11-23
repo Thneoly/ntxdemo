@@ -1,0 +1,95 @@
+package component:http;
+
+interface types {
+    /// HTTP methods supported by the component.
+    enum http-method {
+        get,
+        head,
+        post,
+        put,
+        delete,
+        patch,
+        options,
+    }
+
+    /// Simplified header representation.
+    record header {
+        name: string,
+        value: string,
+    }
+
+    type body-chunk = list<u8>;
+
+    enum http-error-kind { transient, permanent, timeout }
+
+    record http-error {
+        kind: http-error-kind,
+        code: option<u16>,
+        message: string,
+    }
+
+    record tls-config {
+        cert-path: string,
+        key-path: string,
+    }
+
+    record listener-config {
+        bind: string,
+        tls: option<tls-config>,
+        max-connections: u32,
+    }
+
+    record outbound-request {
+        method: http-method,
+        uri: string,
+        headers: list<header>,
+        body: body-chunk,
+        trace-id: option<string>,
+    }
+
+    record http-response {
+        status: u16,
+        headers: list<header>,
+        body: body-chunk,
+    }
+
+    record inbound-request {
+        request-id: u64,
+        method: http-method,
+        path: string,
+        headers: list<header>,
+        body: body-chunk,
+    }
+
+    type ack = tuple<>;
+}
+
+interface server {
+    use types.{listener-config, http-error, inbound-request, http-response, ack};
+
+    resource listener {}
+
+    /// Start an inbound listener and return a handle.
+    start-listen: func(config: listener-config) -> result<listener, http-error>;
+
+    /// Stop the listener and close all active connections.
+    stop-listen: func(handle: listener);
+
+    /// Poll for the next inbound request.
+    accept: func(handle: borrow<listener>) -> option<inbound-request>;
+
+    /// Send a response for the given inbound request id.
+    respond: func(handle: borrow<listener>, request-id: u64, response: http-response) -> result<ack, http-error>;
+}
+
+interface client {
+    use types.{outbound-request, http-response, http-error};
+
+    /// Issue an outbound HTTP request via the host networking stack.
+    send: func(request: outbound-request) -> result<http-response, http-error>;
+}
+
+world http-component {
+    export server;
+    export client;
+}

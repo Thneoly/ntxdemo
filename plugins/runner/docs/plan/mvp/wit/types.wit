@@ -1,0 +1,137 @@
+package ntx:runner;
+
+/// Common data structures shared across Core, ProtocolFrame, and Protocol definitions.
+interface types {
+    /// Stable identifier for a workflow task.
+    type task-id = string;
+    /// Stable identifier for a single logical user.
+    type user-id = string;
+    /// Identifier for an action node within a task tree.
+    type action-id = string;
+
+    /// Supported protocol flavors.
+    enum protocol-kind { http, ftp, tcp-probe, custom }
+
+    /// Tracks whether an action originates from Host scripts or runtime extensions.
+    enum action-origin { host-script, runtime-generated }
+
+    /// Scheduler lifecycle markers for actions.
+    enum action-phase { pending, running, waiting, retrying, completed, failed }
+
+    /// Result classification produced by Protocol implementations.
+    enum action-result-kind { success, skipped, failed }
+
+    /// High-level errors surfaced by the scheduler.
+    enum scheduler-error-kind { invalid-ctx, capacity, io, timeout, internal }
+
+    /// Errors emitted by ProtocolFrame services.
+    enum pf-error-kind { invalid-request, throttled, not-found, internal }
+
+    /// Capability flags advertised by ProtocolFrame to Protocol implementations.
+    flags pf-capability {
+        logger,
+        timer,
+        socket,
+        rate-guard,
+        progress,
+        call-model,
+    }
+
+    /// Configures scheduler invariants for a workflow.
+    record scheduler-config {
+        workflow-id: string,
+        tick-duration-ms: u32,
+        max-concurrency: u32,
+        warmup-ticks: option<u32>,
+    }
+
+    /// Describes the rate settings Core applies per action.
+    record rate-profile {
+        bytes-per-tick: u32,
+        max-burst-bytes: option<u32>,
+        max-inflight: option<u32>,
+    }
+
+    /// Canonical metadata for a task registered with the scheduler.
+    record task-meta {
+        task-id: task-id,
+        workflow-id: string,
+        protocol: protocol-kind,
+        priority: u8,
+        template-ref: option<string>,
+        origin: action-origin,
+    }
+
+    /// Network endpoint definition reused by Core libs.
+    record endpoint {
+        host: string,
+        port: u16,
+        tls: option<bool>,
+    }
+
+    /// Serialized payload description Core hands to Protocol.
+    record payload-ref {
+        path: string,
+        checksum: option<string>,
+        format: string,
+    }
+
+    /// Fully hydrated action context that Scheduler/PF deliver to Protocol.
+    record action-ctx {
+        task-id: task-id,
+        action-id: action-id,
+        user-id: user-id,
+        protocol: protocol-kind,
+        origin: action-origin,
+        payload: payload-ref,
+        rate: option<rate-profile>,
+        tick: u64,
+        attempt: u32,
+        dependencies: list<action-id>,
+        deadline-ns: option<u64>,
+    }
+
+    /// Outcome reported by Protocol (via PF) back to Core.
+    record action-result {
+        ctx: action-ctx,
+        phase: action-phase,
+        outcome: action-result-kind,
+        progress: f32,
+        error-message: option<string>,
+    }
+
+    /// Scheduler response when enqueuing runtime tasks.
+    record enqueue-result {
+        task-id: task-id,
+        accepted: bool,
+        reason: option<string>,
+    }
+
+    /// Canonical scheduler error container.
+    record scheduler-error {
+        kind: scheduler-error-kind,
+        message: string,
+    }
+
+    /// ProtocolFrame level errors.
+    record pf-error {
+        kind: pf-error-kind,
+        message: string,
+    }
+
+    /// Metadata used when ProtocolFrame hands runtime context to Protocol.
+    record protocol-init-ctx {
+        pf-id: string,
+        workflow-id: string,
+        capabilities: list<pf-capability>,
+        resource-dir: string,
+        user-count: u32,
+    }
+
+    /// Describes the storage slots PF can persist for each user.
+    record user-store-entry {
+        user-id: user-id,
+        blob-path: string,
+        updated-at-ns: u64,
+    }
+}

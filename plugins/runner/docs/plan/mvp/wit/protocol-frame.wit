@@ -1,0 +1,38 @@
+package ntx:runner;
+
+interface protocol-frame {
+    use types.{protocol-init-ctx, task-meta, action-ctx, action-result, enqueue-result, pf-error, user-store-entry, user-id};
+
+    resource frame {}
+
+    /// Initialize a ProtocolFrame instance with the capabilities prepared by Core.
+    init: func(ctx: protocol-init-ctx, bootstrap: list<task-meta>) -> result<frame, pf-error>;
+
+    /// Borrow an action context from the scheduler via PF arbitration.
+    claim: func(pf: borrow<frame>) -> result<option<action-ctx>, pf-error>;
+
+    /// Commit a finished action back to Core.
+    commit: func(pf: borrow<frame>, outcome: action-result) -> result<_, pf-error>;
+
+    /// Persist per-user context blobs for crash recovery.
+    store-user: func(pf: borrow<frame>, entry: user-store-entry) -> result<_, pf-error>;
+
+    /// Restore per-user context when Protocol rehydrates state.
+    load-user: func(pf: borrow<frame>, user: user-id) -> option<user-store-entry>;
+
+    /// Request the scheduler to enqueue new tasks derived from runtime feedback.
+    request-task: func(pf: borrow<frame>, descriptor: task-meta) -> result<enqueue-result, pf-error>;
+
+    /// Emit structured progress back to Core/Host observers.
+    emit-progress: func(pf: borrow<frame>, payload-json: string);
+
+    /// Surface a protocol-level failure that requires Core intervention.
+    fail: func(pf: borrow<frame>, err: pf-error);
+
+    /// Release resources once the workflow completes.
+    release: func(pf: own<frame>);
+}
+
+world protocol-frame-world {
+    export protocol-frame;
+}

@@ -1,0 +1,23 @@
+package ntx:runner;
+
+interface protocol-component {
+    use types.{protocol-init-ctx, action-ctx, action-result, pf-error};
+
+    resource instance {}
+
+    /// Initialize internal protocol state. Called once per workflow deployment.
+    init: func(ctx: protocol-init-ctx) -> result<instance, pf-error>;
+
+    /// Execute a single action as provided by Core/PF.
+    run-action: func(inst: borrow<instance>, action: action-ctx) -> result<action-result, pf-error>;
+
+    /// Receive asynchronous error notifications originating from PF/Core.
+    on-error: func(inst: borrow<instance>, err: pf-error);
+
+    /// Release all protocol-owned resources.
+    release: func(inst: own<instance>);
+}
+
+world protocol-world {
+    export protocol-component;
+}
