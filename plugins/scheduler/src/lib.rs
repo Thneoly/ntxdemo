@@ -10,5 +10,5 @@ pub use engine::SchedulerPipeline;
 pub use error::SchedulerError;
 pub use executor::{
     ActionComponent, ActionContext, ActionOutcome, ActionStatus, ActionTrace,
-    DefaultActionComponent,
+    DefaultActionComponent, SchedulerEvent,
 };

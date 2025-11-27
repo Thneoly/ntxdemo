@@ -1,4 +1,5 @@
 use anyhow::Error as AnyError;
+use ctrlc::Error as CtrlcError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -38,5 +39,11 @@ pub enum SchedulerError {
     ActionComponentRelease {
         #[source]
         source: AnyError,
+    },
+
+    #[error("failed to register signal handler: {source}")]
+    SignalHandler {
+        #[source]
+        source: CtrlcError,
     },
 }

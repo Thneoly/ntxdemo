@@ -83,20 +83,26 @@ Runtime 由 `SchedulerPipeline::run` 驱动，整体分为三个阶段：
 
 1. **`init`**：注入的 `ActionComponent` 先执行 `init()`，可在此处创建连接池、加载配置或完成鉴权。
 2. **`do_action`**：
-        - Pipeline 将 WBSTree 中的 action task 排成队列。
-        - 对每个 task：解析 action → 构造 `ActionContext` → 调用 `component.do_action(action, ctx)`。
-        - `ActionContext` 提供 CRUD 能力，可在执行过程中注册新 action、增删任务或更新 edge。
+        - Pipeline 将 WBSTree 中的 action task 打包成带优先级（0～63）的任务，默认 action priority = 32。
+        - 对每个 task：解析 action → 构造 `ActionContext`（只读视图 + event sink）→ 调用 `component.do_action(action, ctx)`。
+        - `ActionContext` 的 CRUD helper 不再直接落地，而是排队成 `SchedulerEvent`（priority = 4）交给 runtime 处理。
 3. **`release`**：所有任务完成后调用 `component.release()`，用于 flush、关闭句柄或回传统计。
 
-> 任意在 `ActionContext` 上的修改都会同步 StateMachine，因此新增/修改节点立即可见。
+> Event 任务优先级更高，会在下一轮立刻执行，执行完成后才会重新扫描 WBS、同步 StateMachine。
+
+### 优先级 / idle / 信号
+
+- **优先级通道**：总共 64 条，0 为最高。Action task 默认 32，WBS event 采用 4，idle 占用 63。
+- **idle**：当所有队列为空时自动插入 `idle` 任务，执行一次 10ms sleep，避免 CPU 空转。
+- **退出机制**：Runtime 监听 `Ctrl+C`（`SIGINT`），收到后设置 shutdown flag，待当前任务执行完毕后退出循环。
 
 ### 动态扩展场景示例
 
 以 `probe-get → push-post → end` 为例：
 
 1. `component.init()` 打开 HTTP 客户端并缓存目标地址。
-2. 执行 `probe-get`：若返回结果需要额外推送，调用 `ctx.add_task` 新增 `dynamic-node`，并设置指向 `end` 的 edge（带 label `dynamic`）。
-3. Scheduler 发现新的 task ID，会把它加入队列并继续调用 `do_action`，确保动态插入的任务在同一轮次被执行。
+2. 执行 `probe-get`：若返回结果需要额外推送，调用 `ctx.add_task` 新增 `dynamic-node`，并设置指向 `end` 的 edge（带 label `dynamic`）。这些调用会被封装成 event task。
+3. Runtime 先执行高优先级的 event，同步 WBS/FSM，再把新 task 推入 action priority 队列，继续后续 `do_action`。
 4. 所有任务完成后，`component.release()` 关闭客户端、写入 Workbook。
 
 这种循环保证了“运行期策略决定后续拓扑”的能力，无需提前在 DSL 中枚举所有分支。
@@ -105,9 +111,9 @@ Runtime 由 `SchedulerPipeline::run` 驱动，整体分为三个阶段：
 ## 近期实现清单（MVP）
 1. **Parser**：`Scenario::from_yaml` + 基础校验（节点引用、action 是否存在）。
 2. **WBSTree Builder**：生成任务树、资源索引、导出项元数据。
-4. **Runtime Skeleton**：提供 `ActionComponent` Trait（`init → do_action → release`），通过 `SchedulerPipeline::run` 注入，实现 action 执行 + WBS/FSM 动态更新。
-4. **Runtime Skeleton**：提供 `ActionExecutor` Trait，通过 `SchedulerPipeline::run` 注入，实现 action 执行 + WBS/FSM 动态更新。
-5. **WBSTree/StateMachine CRUD**：执行过程中支持新增/删除/修改任务以及 edge，`ActionContext` 同步更新 FSM。
+3. **StateMachine Builder**：构建 FSM 拓扑。
+4. **Runtime Skeleton**：提供 `ActionComponent` Trait（`init → do_action → release`）+ 64 通道的 task loop，负责 action/event/idle 调度与 `Ctrl+C` 退出。
+5. **WBSTree/StateMachine CRUD**：执行过程中支持新增/删除/修改任务以及 edge，`ActionContext` 负责封装事件，runtime 统一落地并同步 FSM。
 6. **Workbook Store**：基于 `IndexMap<String, serde_yaml::Value>` 的轻量实现，后续可替换为 cap-std/fs backend。
 
 ## 验收准则

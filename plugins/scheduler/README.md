@@ -32,17 +32,30 @@ HTTP_TEST_ADDR=0.0.0.0:9000 cargo run --bin http_server
 ## Runtime hooks
 
 - `SchedulerPipeline::run` accepts any `ActionComponent` implementation that exposes the lifecycle `init → do_action → release`. The built-in `DefaultActionComponent` just logs the `call` field, but custom components can perform real IO or maintain external resources.
-- Every component receives an `ActionContext`, which exposes helpers to register new actions, add/remove/update tasks, and edit edges. Each mutating call automatically re-syncs the FSM so downstream transitions stay consistent.
-- The runtime loop monitors the WBSTree for newly inserted tasks and will execute them in the same session, enabling dynamic fan-out workflows.
+- The executor is a single-threaded `loop {}` with 64 priority lanes (0 = highest, 63 = lowest). Actions are wrapped as tasks (default priority 32), WBS mutations become higher-priority **events** (priority 4), and an `idle` task (priority 63) runs whenever the queues are empty so the loop never spins tight.
+- `ActionContext` now enqueues those events instead of mutating the WBSTree directly. When the queued event task runs, it applies the change and re-syncs the FSM, guaranteeing consistent state even when many actions mutate the workflow concurrently.
+- The runtime keeps scanning for newly inserted action tasks after every action/event, so dynamic fan-out workflows continue in the same session. Hitting <kbd>Ctrl+C</kbd> (or sending `SIGINT`) flips a shutdown flag and the loop exits gracefully after the current task completes.
+
+## Task scheduler details
+
+| Concept | Description |
+| --- | --- |
+| Priority lanes | Fixed array of 64 queues. Smaller numbers run first; ties preserve FIFO order within a lane. |
+| Action task | Wraps a WBS node with `action_id`. Default priority = 32 but can be adjusted when constructing a `ScheduledTask`. |
+| Event task | Represents `SchedulerEvent` emitted by `ActionContext` (register/add/remove/update). Uses priority = 4 so mutations are applied before subsequent actions. |
+| Idle task | Automatically injected (priority = 63) when all queues are empty; performs a short sleep (10 ms) to avoid hot spinning. Two consecutive idle spins without new work will end the loop unless a shutdown signal is pending. |
+| Shutdown flag | A shared `AtomicBool` toggled by the Ctrl+C handler; once set, the loop finishes the current task/event and returns the collected traces. |
+
+> TIP: If you need domain-specific priorities (e.g., “probe before push”), you can fork `ScheduledTask::action` to accept a custom `priority: u8` and propagate it through the DSL. The executor already enforces ordering across lanes.
 
 ## Usage walkthrough
 
 1. **Prepare the HTTP demo target**
 	- Run `cargo run --bin http_server` to bring up the sample `/asset` endpoint (or point the scenario to your own service).
 2. **Execute the scheduler runtime**
-	- Run `cargo run` inside this crate. The CLI will load `res/http_scenario.yaml`, print a structural summary, then execute every action using the default component. Execution traces print the task ID, action ID, and status/detail for each step.
+	- Run `cargo run` inside this crate. The CLI will load `res/http_scenario.yaml`, print a structural summary, then execute every action using the default component. Execution traces print the task ID, action ID, and status/detail for each step. Press <kbd>Ctrl+C</kbd> at any time to request a graceful shutdown; the runtime finishes the current task/event and flushes traces.
 3. **Customize execution**
-	- Implement `ActionComponent` to call real services or inject dynamic tasks. Components can allocate resources during `init`, perform the actual RPC/logic in `do_action`, and cleanup handles in `release`. Pass your component to `SchedulerPipeline::run` (see `src/engine.rs` tests for an example). Any tasks inserted during execution will be picked up automatically.
+	- Implement `ActionComponent` to call real services or inject dynamic tasks. Components can allocate resources during `init`, perform the actual RPC/logic in `do_action`, and cleanup handles in `release`. Use the `ActionContext` helpers to enqueue events (register actions, add/remove tasks, edit edges). Pass your component to `SchedulerPipeline::run` (see `src/engine.rs` tests for an example) and the priority loop will pick up any tasks that those events add, preserving ordering guarantees between action/event lanes.
 
 ## Testing
 
