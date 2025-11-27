@@ -104,7 +104,7 @@ world core-libs {
 
     export core-logger;
     export core-timer;
-    // export core-network;
+    export core-network;
     // export core-random;
     export core-call-model;
     // export core-progress;

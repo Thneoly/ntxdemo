@@ -1,0 +1,76 @@
+version: "1.0"
+name: http_tri_phase_demo
+workbook:
+  # snaps:
+  #   - id: asset
+  #     type: json
+  #     properties:
+  #       body:
+  #         id: 12345
+  #         name: "Test Asset"
+  #         type: "Demo"
+  resources:
+    - id: resource
+      type: http_endpoint
+      properties:
+        ip: "{{resource.ip}}"
+        port: "{{resource.port}}"
+
+actions:
+  actions:
+    - id: probe-get
+      call: get
+      with:
+        url: "http://{{resource.ip}}:{{resource.port}}/asset"
+      export:
+        - type: content
+          name: ip
+          default: ""
+        - type: content
+          scope: workbook
+          name: port
+          default: 0
+        - type: content
+          scope: workbook
+          name: status_code
+          default: 0
+
+
+    - id: push-post
+      call: post
+      with:
+        url: "http://{{probe-get.ip}}:{{resource.port}}/asset"
+        headers:
+          content-type: application/json
+        body: "{{asset.body}}"
+      export:
+        - type: assert
+          name: result.json
+          default: "{{asset.body}}"
+
+workflows:
+  nodes:
+    - id: start
+      type: action
+      action: probe-get
+      edges:
+        - to: push-node
+          trigger:
+            condition: "{{probe-get.status_code == 200}}"
+          label: "success"
+        - to: end
+          trigger:
+            condition: "true"
+          label: "fail"
+    - id: push-node
+      type: action
+      action: push-post
+      edges:
+        - to: end
+          trigger:
+            condition: "{{push-post.status_code == 200}}"
+          label: "success"
+    - id: end
+      type: end
+      
+          
