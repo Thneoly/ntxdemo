@@ -1,9 +1,9 @@
 use anyhow::Result;
 
-use crate::dsl::ActionDef;
-use crate::error::SchedulerError;
-use crate::state_machine::StateMachine;
-use crate::wbs::{WbsEdge, WbsTask, WbsTree};
+use scheduler_core::dsl::ActionDef;
+use scheduler_core::error::SchedulerError;
+use scheduler_core::state_machine::StateMachine;
+use scheduler_core::wbs::{WbsEdge, WbsTask, WbsTree};
 
 pub trait ActionComponent {
     fn init(&mut self) -> Result<()>;
@@ -67,7 +67,7 @@ pub enum SchedulerEvent {
 }
 
 impl SchedulerEvent {
-    pub(crate) fn apply(
+    pub fn apply(
         self,
         wbs: &mut WbsTree,
         state_machine: &mut StateMachine,
@@ -122,14 +122,14 @@ pub struct ActionContext<'a> {
 }
 
 impl<'a> ActionContext<'a> {
-    pub(crate) fn new(wbs: &'a WbsTree) -> Self {
+    pub fn new(wbs: &'a WbsTree) -> Self {
         Self {
             wbs,
             pending_events: Vec::new(),
         }
     }
 
-    pub(crate) fn into_events(self) -> Vec<SchedulerEvent> {
+    pub fn into_events(self) -> Vec<SchedulerEvent> {
         self.pending_events
     }
 
@@ -169,26 +169,5 @@ impl<'a> ActionContext<'a> {
             from: from.to_string(),
             target: target.to_string(),
         });
-    }
-}
-
-#[derive(Default)]
-pub struct DefaultActionComponent;
-
-impl ActionComponent for DefaultActionComponent {
-    fn init(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    fn do_action(
-        &mut self,
-        action: &ActionDef,
-        _ctx: &mut ActionContext<'_>,
-    ) -> Result<ActionOutcome> {
-        Ok(ActionOutcome::success().with_detail(format!("call={}", action.call)))
-    }
-
-    fn release(&mut self) -> Result<()> {
-        Ok(())
     }
 }

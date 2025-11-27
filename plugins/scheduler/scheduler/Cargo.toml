@@ -1,0 +1,22 @@
+[package]
+name = "scheduler"
+version = "0.1.0"
+edition = "2024"
+default-run = "scheduler"
+
+[package.metadata.component]
+package = "component:scheduler"
+
+[package.metadata.component.dependencies]
+
+[dependencies]
+anyhow = "1.0"
+axum = "0.7"
+ctrlc = "3.4"
+indexmap = "2.2"
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.41", features = ["macros", "rt-multi-thread"] }
+scheduler-core = { path = "../core-libs" }
+scheduler-executor = { path = "../executor" }
+scheduler-actions-http = { path = "../actions-http" }

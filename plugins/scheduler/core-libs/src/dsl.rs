@@ -153,7 +153,10 @@ mod tests {
     use super::*;
     use indexmap::IndexMap;
 
-    const SAMPLE: &str = include_str!("../res/http_scenario.yaml");
+    const SAMPLE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../res/http_scenario.yaml"
+    ));
 
     #[test]
     fn parses_sample_scenario() {

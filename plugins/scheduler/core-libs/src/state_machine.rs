@@ -125,7 +125,10 @@ mod tests {
     use crate::wbs::WbsTree;
     use indexmap::IndexMap;
 
-    const SAMPLE: &str = include_str!("../res/http_scenario.yaml");
+    const SAMPLE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../res/http_scenario.yaml"
+    ));
 
     fn branchy_tree() -> WbsTree {
         let scenario = Scenario {

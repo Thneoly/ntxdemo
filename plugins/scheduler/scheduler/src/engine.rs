@@ -8,17 +8,12 @@ use std::time::Duration;
 
 use ctrlc;
 use indexmap::IndexSet;
-
-use crate::{
-    dsl::Scenario,
-    error::SchedulerError,
-    executor::{
-        ActionComponent, ActionContext, ActionTrace, DefaultActionComponent, SchedulerEvent,
-    },
-    state_machine::StateMachine,
-    wbs::WbsTree,
+use scheduler_actions_http::HttpActionComponent;
+use scheduler_core::{
+    dsl::Scenario, error::SchedulerError, state_machine::StateMachine, wbs::WbsTree,
     workbook::Workbook,
 };
+use scheduler_executor::{ActionComponent, ActionContext, ActionTrace, SchedulerEvent};
 
 #[derive(Debug, Clone)]
 pub struct SchedulerPipeline {
@@ -74,7 +69,7 @@ impl SchedulerPipeline {
     }
 
     pub fn run_default(&mut self) -> Result<Vec<ActionTrace>, SchedulerError> {
-        let mut component = DefaultActionComponent::default();
+        let mut component = HttpActionComponent::default();
         self.run(&mut component)
     }
 
@@ -325,11 +320,17 @@ enum TaskKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::executor::{ActionComponent, ActionContext, ActionOutcome};
-    use crate::wbs::{WbsEdge, WbsTask, WbsTaskKind};
     use anyhow::Result;
+    use scheduler_core::{
+        dsl::ActionDef,
+        wbs::{WbsEdge, WbsTask, WbsTaskKind},
+    };
+    use scheduler_executor::{ActionComponent, ActionContext, ActionOutcome};
 
-    const SAMPLE: &str = include_str!("../res/http_scenario.yaml");
+    const SAMPLE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../res/http_scenario.yaml"
+    ));
 
     #[test]
     fn pipeline_builds_summary() {
@@ -350,7 +351,7 @@ mod tests {
 
         fn do_action(
             &mut self,
-            action: &crate::dsl::ActionDef,
+            action: &ActionDef,
             ctx: &mut ActionContext<'_>,
         ) -> Result<ActionOutcome> {
             if action.id == "probe-get" && !self.spawned {
