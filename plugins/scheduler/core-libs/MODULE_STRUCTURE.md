@@ -19,6 +19,7 @@ src/
 │   └── mod.rs
 ├── socket/                # Socket API with WASI implementation
 │   ├── mod.rs             # Public socket interface
+│   ├── api.rs             # High-level Socket API with IP binding
 │   └── wasi_impl.rs       # WASI socket implementation
 ├── state_machine/         # State machine logic
 │   └── mod.rs
@@ -42,15 +43,21 @@ src/
 - **API**: IpPool, IpRange, IpBinding, ResourceType
 
 ### socket/
-- **Purpose**: Cross-platform socket API with real WASI networking support
+- **Purpose**: Cross-platform socket API with real WASI networking support and IP binding
 - **Files**: 
-  - `mod.rs`: Public API (14 functions: create, connect, bind, listen, accept, send, receive, etc.)
+  - `mod.rs`: Module definitions and raw socket functions
+  - `api.rs`: High-level Socket struct with state management and IP pool integration
   - `wasi_impl.rs`: Real WASI socket implementation for WASM targets
 - **Features**:
+  - **High-level Socket API**: Object-oriented socket programming (socket/bind/listen/connect/send/recv)
+  - **IP Pool Integration**: Bind sockets to IPs allocated from IP pools
+  - **State Management**: Track socket state (Created/Bound/Listening/Connected/Closed)
   - Conditional compilation for WASM vs native targets
   - WASI Preview 2 socket integration (TCP/UDP)
   - Two-phase locking pattern for resource management
   - Stub implementations for testing on native platforms
+  - **Socket struct**: High-level API with methods like `bind_to_ip()`, `connect()`, `send()`, `recv()`
+  - **Foundation for HTTP component**: Provides base layer for building HTTP client/server
 
 ### dsl/
 - **Purpose**: Domain-specific language parsing and validation
@@ -93,6 +100,22 @@ cargo test
 
 ## Key Design Patterns
 
+### Socket + IP Pool Integration
+```rust
+// 1. Allocate IP from pool
+let ip = pool.allocate("tenant", "resource", ResourceType::Vm("vm1".into()))?;
+
+// 2. Create and bind socket to the IP
+let mut sock = Socket::tcp_v4()?;
+sock.bind_to_ip(ip, 8080)?;
+
+// 3. Use socket for network I/O
+sock.listen(100)?;
+let client = sock.accept()?;
+```
+
+This pattern enables precise control over which IP address a socket uses for sending/receiving packets.
+
 ### Two-Phase Locking (socket/wasi_impl.rs)
 ```rust
 // Phase 1: Get &mut access to ensure network resource exists
@@ -115,22 +138,65 @@ pub use wasm_impl::*;  // Real WASI implementation
 
 Allows the same API to work on both WASM and native platforms.
 
+## Usage Examples
+
+### TCP Server with IP Pool
+```rust
+use scheduler_core::{IpPool, ResourceType, Socket};
+
+let mut pool = IpPool::new("server-pool");
+pool.add_cidr_range("192.168.1.0/24")?;
+
+let ip = pool.allocate("services", "http-server", 
+    ResourceType::Custom("tcp-server".into()))?;
+
+let mut server = Socket::tcp_v4()?;
+server.bind_to_ip(ip, 8080)?;
+server.listen(128)?;
+
+let mut client = server.accept()?;
+let request = client.recv(4096)?;
+client.send(b"HTTP/1.1 200 OK\r\n\r\nHello")?;
+```
+
+### Multi-Tenant Sockets
+```rust
+// Tenant A
+let ip_a = pool.allocate("tenant-a", "web", ResourceType::Vm("vm1".into()))?;
+let mut sock_a = Socket::tcp_v4()?;
+sock_a.bind_to_ip(ip_a, 80)?;
+
+// Tenant B
+let ip_b = pool.allocate("tenant-b", "api", ResourceType::Container("c1".into()))?;
+let mut sock_b = Socket::tcp_v4()?;
+sock_b.bind_to_ip(ip_b, 8080)?;
+```
+
 ## Migration Notes
 
 ### From Previous Structure
 - `src/socket.rs` → `src/socket/mod.rs`
 - `src/socket_wasi_impl.rs` → `src/socket/wasi_impl.rs` (now internal)
+- **New**: `src/socket/api.rs` - High-level Socket API
 - All single-file modules moved to `<module>/mod.rs` pattern
 - Module paths updated: `crate::socket_wasi_impl::` → `wasi_impl::`
 - Import paths changed: `super::Type` → `crate::socket::Type` (in wasi_impl)
 
 ### Breaking Changes
 - `socket_wasi_impl` is no longer a public module (internal to `socket`)
-- All external code should use `socket::` APIs instead
+- All external code should use `Socket` struct for high-level operations
+- Raw socket functions still available for advanced use cases
+
+### New API
+- `Socket` struct - High-level socket programming interface
+- `Socket::bind_to_ip(ip, port)` - Bind socket to IP from pool
+- `Socket::bind_with_binding(binding, port)` - Bind using IpBinding
+- State tracking: `is_bound()`, `is_connected()`, `is_listening()`
 
 ## Testing
 
-All 21 unit tests pass on native targets:
+All 26 unit tests pass on native targets:
+- socket::api: 5 tests (Socket creation, bind, bind_to_ip, lifecycle)
 - ip: 6 tests (range creation, CIDR parsing, allocation, release, resource lookup, stats)
 - socket: 5 tests (TCP creation, connect, bind/listen, UDP creation, send/receive)
 - dsl: 3 tests (parsing, validation)
@@ -140,6 +206,9 @@ All 21 unit tests pass on native targets:
 
 ## Documentation
 
-- **API Documentation**: See individual module `mod.rs` files
-- **WASI Implementation**: `WASI_SOCKET_IMPLEMENTATION.md`
+- **Socket + IP Integration**: `doc/SOCKET_IP_INTEGRATION.md` - Complete guide
+- **Socket Quick Reference**: `doc/SOCKET_QUICK_REFERENCE.md` - API cheat sheet
+- **IP Pool Usage**: `doc/IP_POOL_USAGE.md` - IP pool management guide
+- **WASI Implementation**: `doc/WASI_SOCKET_IMPLEMENTATION.md`
 - **Module Overview**: This document
+- **Examples**: `examples/socket_with_ip_pool.rs` - 4 practical scenarios

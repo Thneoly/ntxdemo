@@ -1,7 +1,10 @@
+mod api;
 /// WASM socket implementation using WASI Preview 2
 ///
 /// This module provides socket functionality by calling WASI socket imports.
 mod wasi_impl;
+
+pub use api::Socket;
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;

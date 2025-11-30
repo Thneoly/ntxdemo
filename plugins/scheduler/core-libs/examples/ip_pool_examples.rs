@@ -142,7 +142,7 @@ fn example_3_mac_binding() -> Result<(), IpPoolError> {
     for (device_id, mac) in &devices {
         let ip = pool.allocate(
             "network-segment-1",
-            device_id,
+            *device_id,
             ResourceType::Mac(mac.to_string()),
         )?;
         println!("Device {} (MAC: {}) -> IP: {}", device_id, mac, ip);
@@ -180,7 +180,11 @@ fn example_4_container_management() -> Result<(), IpPoolError> {
     ];
 
     for (pod_name, pod_type) in &pods {
-        let ip = pool.allocate(namespace, pod_name, ResourceType::Pod(pod_name.to_string()))?;
+        let ip = pool.allocate(
+            namespace,
+            *pod_name,
+            ResourceType::Pod(pod_name.to_string()),
+        )?;
         println!("Pod {} ({}) allocated IP: {}", pod_name, pod_type, ip);
     }
 
