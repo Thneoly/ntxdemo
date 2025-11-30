@@ -15,6 +15,8 @@ src/
 │   └── mod.rs
 ├── error/                 # Error types
 │   └── mod.rs
+├── ip/                    # IP pool management
+│   └── mod.rs
 ├── socket/                # Socket API with WASI implementation
 │   ├── mod.rs             # Public socket interface
 │   └── wasi_impl.rs       # WASI socket implementation
@@ -27,6 +29,17 @@ src/
 ```
 
 ## Module Responsibilities
+
+### ip/
+- **Purpose**: IP address pool management system
+- **Features**:
+  - IP range definition (CIDR notation support)
+  - IP allocation and release
+  - Binding IPs to resources via subinstance/subid/subtype
+  - Support for multiple resource types (MAC, VM, Container, Pod, Custom)
+  - Reserved IP management
+  - Pool statistics and monitoring
+- **API**: IpPool, IpRange, IpBinding, ResourceType
 
 ### socket/
 - **Purpose**: Cross-platform socket API with real WASI networking support
@@ -117,7 +130,8 @@ Allows the same API to work on both WASM and native platforms.
 
 ## Testing
 
-All 15 unit tests pass on native targets:
+All 21 unit tests pass on native targets:
+- ip: 6 tests (range creation, CIDR parsing, allocation, release, resource lookup, stats)
 - socket: 5 tests (TCP creation, connect, bind/listen, UDP creation, send/receive)
 - dsl: 3 tests (parsing, validation)
 - state_machine: 3 tests (transitions, sync, triggers)

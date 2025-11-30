@@ -1,5 +1,6 @@
 pub mod dsl;
 pub mod error;
+pub mod ip;
 pub mod socket;
 pub mod state_machine;
 pub mod wbs;
@@ -10,6 +11,7 @@ pub mod component;
 
 pub use dsl::*;
 pub use error::SchedulerError;
+pub use ip::{IpBinding, IpPool, IpPoolError, IpRange, PoolStats, ResourceType};
 pub use socket::{AddressFamily, SocketAddress, SocketError, SocketHandle, SocketProtocol};
 pub use state_machine::StateMachine;
 pub use wbs::{WbsEdge, WbsTask, WbsTaskKind, WbsTree};

@@ -15,6 +15,17 @@ DSL (Domain Specific Language) 解析器模块
 - `SchedulerError` - 统一的错误类型
 - 错误处理工具
 
+### ip/
+IP 地址池管理模块
+- IP 范围定义（支持 CIDR 表示法）
+- IP 分配和释放
+- 支持绑定 IP 到资源（通过 subinstance/subid/subtype）
+- 支持多种资源类型：MAC 地址、VM、容器、Pod 等
+- 保留 IP 管理
+- 池统计信息
+
+详细使用说明参见：`doc/IP_POOL_USAGE.md`
+
 ### socket/
 网络 socket 抽象层
 - **mod.rs** - 公共 socket API
