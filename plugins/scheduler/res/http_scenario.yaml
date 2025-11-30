@@ -9,6 +9,17 @@ workbook:
   #         id: 12345
   #         name: "Test Asset"
   #         type: "Demo"
+  
+  # IP 资源池配置 - 支持多租户场景
+  ip_pools:
+    - id: eip-pool-1
+      name: "HTTP Client EIP Pool"
+      ranges:
+        - "10.0.1.0/24"    # 254 IPs available
+        - "10.0.2.0/24"    # 254 IPs available
+      allocation_strategy: round_robin  # 可选: round_robin, random, sequential
+      
+  # 目标资源配置
   resources:
     - id: resource
       type: http_endpoint
@@ -16,12 +27,44 @@ workbook:
         ip: "{{resource.ip}}"
         port: "{{resource.port}}"
 
+# 负载配置 - 用户呼叫模型
+load:
+  # 用户增长模式配置
+  ramp_up:
+    phases:
+      - at_second: 1       # 第 1 秒
+        spawn_users: 100   # 上线 100 个用户
+        
+      - at_second: 2       # 第 2 秒
+        spawn_users: 30    # 再上线 30 个用户
+        
+      - at_second: 5       # 第 5 秒
+        spawn_users: 50    # 再上线 50 个用户
+        
+      - at_second: 10      # 第 10 秒
+        spawn_users: 20    # 再上线 20 个用户
+  
+  # 用户生命周期配置
+  user_lifetime:
+    mode: loop           # loop: 循环执行任务, once: 执行一次后退出
+    iterations: 3        # loop 模式下的循环次数 (0 = 无限循环)
+    think_time: 1s       # 每次迭代之间的思考时间
+      
+  # 用户资源绑定配置
+  user_resources:
+    ip_binding:
+      enabled: true
+      pool_id: eip-pool-1
+      strategy: per_user   # per_user: 每用户独占, shared: 共享, per_task: 每任务分配
+      release_on: task_end # task_end: 任务结束释放, user_exit: 用户退出释放
+
 actions:
   actions:
     - id: probe-get
       call: get
       with:
         url: "http://{{resource.ip}}:{{resource.port}}/asset"
+        bind_ip: "{{user.allocated_ip}}"  # 使用为用户分配的 IP
       export:
         - type: content
           name: ip
@@ -40,6 +83,7 @@ actions:
       call: post
       with:
         url: "http://{{probe-get.ip}}:{{resource.port}}/asset"
+        bind_ip: "{{user.allocated_ip}}"  # 使用为用户分配的 IP
         headers:
           content-type: application/json
         body: "{{asset.body}}"
@@ -47,6 +91,7 @@ actions:
         - type: assert
           name: result.json
           default: "{{asset.body}}"
+
 
 workflows:
   nodes:

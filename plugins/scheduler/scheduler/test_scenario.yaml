@@ -1,0 +1,21 @@
+# Simple test scenario for WASM component
+scenario:
+  id: test-001
+  description: Simple HTTP load test
+  load:
+    total_users: 5
+    ramp_duration: 5s
+    test_duration: 30s
+    ip_pool:
+      - 192.168.1.100
+      - 192.168.1.101
+  workflow:
+    - id: step1
+      type: http
+      name: Get Request
+      params:
+        method: GET
+        url: http://httpbin.org/get
+        headers:
+          User-Agent: WasmScheduler/1.0
+      think_time: 1s

@@ -1,0 +1,11 @@
+// Convert scheduler library component to a command
+package scheduler:command@0.1.0;
+
+// Create a command that wraps the scheduler
+export command {
+    let scheduler = new scheduler:main { };
+    
+    // Note: This creates a library export, not a command
+    // We need to create a proper command adapter
+    export scheduler.run-scenario;
+}

@@ -1,0 +1,28 @@
+version: "1.0"
+name: simple_test
+workbook:
+  resources:
+    - id: resource
+      type: http_endpoint
+      properties:
+        ip: "127.0.0.1"
+        port: "8080"
+
+actions:
+  actions:
+    - id: test-action
+      call: get
+      with:
+        url: "http://{{resource.ip}}:{{resource.port}}/test"
+
+workflows:
+  nodes:
+    - id: start
+      type: action
+      action: test-action
+      edges:
+        - to: end
+          trigger:
+            condition: "true"
+    - id: end
+      type: end

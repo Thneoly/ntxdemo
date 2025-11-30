@@ -1,0 +1,17 @@
+// Scheduler WASM Component Composition
+// Combines core-libs, executor, actions-http, and scheduler components
+
+package scheduler:composed@0.1.0;
+
+// Instantiate each component so that WAC performs topological validation.
+// The `...` spread argument forwards any required imports (e.g., WASI) from the
+// composition host; since our components only depend on standard WASI, no extra
+// wiring is necessary.
+
+let core = new scheduler:core-libs { ... };
+let executor = new scheduler:executor { ... };
+let http = new scheduler:actions-http { ... };
+let scheduler = new scheduler:main { ... };
+
+// Export the scheduler entry point; dependencies stay encapsulated inside.
+export scheduler.run-scenario;

@@ -19,6 +19,8 @@ pub struct Scenario {
     pub actions: ActionsSection,
     #[serde(default)]
     pub workflows: WorkflowSection,
+    #[serde(default)]
+    pub load: Option<LoadSection>,
 }
 
 impl Scenario {
@@ -66,6 +68,17 @@ impl Scenario {
 pub struct WorkbookSection {
     #[serde(default)]
     pub resources: Vec<ResourceDef>,
+    #[serde(default)]
+    pub ip_pools: Vec<IpPoolDef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct IpPoolDef {
+    pub id: String,
+    pub name: String,
+    pub ranges: Vec<String>,
+    #[serde(default)]
+    pub allocation_strategy: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -146,6 +159,82 @@ impl Default for WorkflowNodeType {
     fn default() -> Self {
         WorkflowNodeType::Action
     }
+}
+
+// ============================================================================
+// Load Testing Configuration
+// ============================================================================
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LoadSection {
+    pub ramp_up: RampUpConfig,
+    pub user_lifetime: UserLifetimeConfig,
+    pub user_resources: UserResourcesConfig,
+    #[serde(default)]
+    pub concurrency: Option<ConcurrencyConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RampUpConfig {
+    pub phases: Vec<RampUpPhase>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RampUpPhase {
+    pub at_second: u64,
+    pub spawn_users: usize,
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    #[serde(default)]
+    pub ip_pool_override: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserLifetimeConfig {
+    pub mode: UserLifetimeMode,
+    pub iterations: usize,
+    pub think_time: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UserLifetimeMode {
+    Once,
+    Loop,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserResourcesConfig {
+    pub ip_binding: IpBindingConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct IpBindingConfig {
+    pub enabled: bool,
+    pub pool_id: String,
+    pub strategy: IpBindingStrategy,
+    pub release_on: ReleaseOn,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IpBindingStrategy {
+    PerUser,
+    Shared,
+    PerTask,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseOn {
+    TaskEnd,
+    UserExit,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConcurrencyConfig {
+    pub max_concurrent_users: usize,
+    pub spawn_rate_limit: String,
 }
 
 #[cfg(test)]

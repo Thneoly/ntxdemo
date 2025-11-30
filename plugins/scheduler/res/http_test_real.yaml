@@ -1,0 +1,54 @@
+version: "1.0"
+name: http_test_with_real_server
+workbook:
+  ip_pools:
+    - id: eip-pool-1
+      name: "Test EIP Pool"
+      ranges:
+        - "10.0.1.0/28"    # 16 IPs
+      allocation_strategy: round_robin
+      
+  resources:
+    - id: httpbin
+      type: http_endpoint
+      properties:
+        host: "httpbin.org"
+        port: "443"
+
+load:
+  ramp_up:
+    phases:
+      - at_second: 0
+        spawn_users: 5
+  
+  user_lifetime:
+    mode: loop
+    iterations: 2
+    think_time: 500ms
+      
+  user_resources:
+    ip_binding:
+      enabled: true
+      pool_id: eip-pool-1
+      strategy: per_user
+      release_on: user_exit
+
+actions:
+  actions:
+    - id: get-request
+      call: get
+      with:
+        url: "https://httpbin.org/get"
+        bind_ip: "{{user.allocated_ip}}"
+
+workflows:
+  nodes:
+    - id: start
+      type: action
+      action: get-request
+      edges:
+        - to: end
+          trigger:
+            condition: "true"
+    - id: end
+      type: end

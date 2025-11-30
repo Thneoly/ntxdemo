@@ -1,0 +1,70 @@
+version: "1.0"
+name: http_load_test_medium
+workbook:
+  ip_pools:
+    - id: eip-pool-1
+      name: "Load Test EIP Pool"
+      ranges:
+        - "10.0.1.0/26"    # 64 IPs
+      allocation_strategy: round_robin
+      
+  resources:
+    - id: httpbin
+      type: http_endpoint
+      properties:
+        host: "httpbin.org"
+
+load:
+  ramp_up:
+    phases:
+      - at_second: 0
+        spawn_users: 10
+      - at_second: 2
+        spawn_users: 10
+      - at_second: 4
+        spawn_users: 10
+  
+  user_lifetime:
+    mode: loop
+    iterations: 3
+    think_time: 300ms
+      
+  user_resources:
+    ip_binding:
+      enabled: true
+      pool_id: eip-pool-1
+      strategy: per_user
+      release_on: user_exit
+
+actions:
+  actions:
+    - id: get-status
+      call: get
+      with:
+        url: "https://httpbin.org/status/200"
+        bind_ip: "{{user.allocated_ip}}"
+    
+    - id: get-json
+      call: get
+      with:
+        url: "https://httpbin.org/json"
+        bind_ip: "{{user.allocated_ip}}"
+
+workflows:
+  nodes:
+    - id: start
+      type: action
+      action: get-status
+      edges:
+        - to: get-json-node
+          trigger:
+            condition: "true"
+    - id: get-json-node
+      type: action
+      action: get-json
+      edges:
+        - to: end
+          trigger:
+            condition: "true"
+    - id: end
+      type: end

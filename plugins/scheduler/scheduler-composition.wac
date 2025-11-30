@@ -1,0 +1,70 @@
+// WAC Composition for Scheduler Components
+//
+// This composition file shows how to wire together the four scheduler components.
+// Note: Since all components currently use Rust dependencies (not WIT imports),
+// the scheduler.wasm already includes all functionality statically.
+//
+// This composition is for demonstration and future use when we want to:
+// 1. Replace components at runtime
+// 2. Provide different implementations (e.g., different socket providers)
+// 3. Share components between multiple consumers
+
+package scheduler:composed@0.1.0;
+
+// The scheduler.wasm already contains all dependencies via Rust's Cargo,
+// so we primarily just need to export its interface.
+//
+// However, we can still compose them explicitly to demonstrate the pattern:
+
+world scheduler-composed {
+    // Import standard WASI for all components
+    import wasi:io/poll@0.2.6;
+    import wasi:io/error@0.2.6;
+    import wasi:io/streams@0.2.6;
+    import wasi:cli/environment@0.2.6;
+    import wasi:cli/exit@0.2.6;
+    import wasi:cli/stdout@0.2.6;
+    import wasi:cli/stderr@0.2.6;
+    import wasi:clocks/monotonic-clock@0.2.6;
+    import wasi:random/insecure-seed@0.2.6;
+
+    // Since scheduler.wasm includes all dependencies statically,
+    // we just need to export its main function
+    export run-scenario: func(scenario-yaml: string) -> result<string, string>;
+    
+    // Optional: Also export the core-libs interfaces
+    export scheduler:core-libs/types@0.1.0;
+    export scheduler:core-libs/parser@0.1.0;
+    export scheduler:core-libs/socket@0.1.0;
+}
+
+// Alternative composition for future use:
+// When we want dynamic component replacement or sharing:
+//
+// let core = new scheduler:core-libs@0.1.0 { };
+// let executor = new scheduler:executor@0.1.0 { 
+//     // Executor already includes core-libs via Rust deps
+//     // No WIT import wiring needed
+// };
+// let http = new scheduler:actions-http@0.1.0 {
+//     // HTTP actions already include executor and core-libs via Rust deps
+//     // No WIT import wiring needed
+// };
+// let scheduler = new scheduler:main@0.1.0 {
+//     // Scheduler already includes all components via Rust deps
+//     // No WIT import wiring needed
+// };
+//
+// export scheduler.run-scenario;
+
+// Current Status:
+// - All components build successfully as wasm32-wasip2 components
+// - All only import standard WASI interfaces
+// - Dependencies are handled via Rust's Cargo (statically linked)
+// - scheduler.wasm (15M) is the main entry point and includes everything
+//
+// Usage:
+//   wac compose scheduler-composition.wac -o final-scheduler.wasm
+//
+// Or simply use scheduler.wasm directly:
+//   wasmtime run scheduler.wasm -- scenario.yaml

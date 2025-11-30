@@ -2,7 +2,16 @@ mod api;
 /// WASM socket implementation using WASI Preview 2
 ///
 /// This module provides socket functionality by calling WASI socket imports.
-mod wasi_impl;
+// Temporarily using stub - real implementation via wasi_impl needs WASI bindings
+// mod wasi_impl;
+#[cfg(target_arch = "wasm32")]
+mod wasi_stub;
+
+#[cfg(target_arch = "wasm32")]
+use wasi_stub as wasi_impl;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod wasi_impl; // Will fail on wasm32 but that's ok for now
 
 pub use api::Socket;
 

@@ -14,6 +14,15 @@ pub struct WbsTree {
 }
 
 impl WbsTree {
+    pub fn new_empty() -> Self {
+        Self {
+            name: String::new(),
+            resources: IndexMap::new(),
+            actions: IndexMap::new(),
+            tasks: IndexMap::new(),
+        }
+    }
+
     pub fn build(scenario: &Scenario) -> Result<Self, SchedulerError> {
         let mut resources = IndexMap::new();
         for resource in &scenario.workbook.resources {

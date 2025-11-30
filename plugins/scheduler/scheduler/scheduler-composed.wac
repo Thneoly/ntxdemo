@@ -1,0 +1,42 @@
+// WebAssembly Composition for Scheduler Component
+// This composition connects scheduler, actions-http, and core-libs
+
+package scheduler:composed@0.1.0;
+
+// Export the composed scheduler that can run scenarios
+export scheduler-run {
+    // Core libraries component (provides socket, IP pool, etc.)
+    let core = new scheduler:core-libs { };
+    
+    // HTTP action component (uses socket from core-libs)
+    let http-action = new scheduler:actions-http {
+        // Wire socket imports to core-libs exports
+        import scheduler:core-libs/wasi-network = core.wasi-network;
+        import scheduler:core-libs/wasi-tcp = core.wasi-tcp;
+        import scheduler:core-libs/socket = core.socket;
+        import scheduler:core-libs/types = core.types;
+    };
+    
+    // Executor component (uses action components)
+    let executor = new scheduler:executor {
+        import scheduler:actions-http/http-component = http-action.http-component;
+        import scheduler:actions-http/types = http-action.types;
+    };
+    
+    // Scheduler component (orchestrates everything)
+    let scheduler = new scheduler:main {
+        import scheduler:core-libs/wasi-network = core.wasi-network;
+        import scheduler:core-libs/wasi-tcp = core.wasi-tcp;
+        import scheduler:core-libs/socket = core.socket;
+        import scheduler:core-libs/types = core.types;
+        import scheduler:core-libs/parser = core.parser;
+        import scheduler:executor/component-api = executor.component-api;
+        import scheduler:executor/types = executor.types;
+        import scheduler:executor/context = executor.context;
+        import scheduler:actions-http/http-component = http-action.http-component;
+        import scheduler:actions-http/types = http-action.types;
+    };
+    
+    // Export the main run-scenario function
+    export scheduler.run-scenario as run-scenario;
+}

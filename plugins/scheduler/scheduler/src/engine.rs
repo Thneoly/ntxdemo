@@ -6,6 +6,7 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
+#[cfg(not(target_arch = "wasm32"))]
 use ctrlc;
 use indexmap::IndexSet;
 use scheduler_actions_http::HttpActionComponent;
@@ -112,6 +113,7 @@ pub struct PipelineSummary {
     pub edges: usize,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn setup_shutdown_flag() -> Result<Arc<AtomicBool>, SchedulerError> {
     let flag = Arc::new(AtomicBool::new(false));
     let handler_flag = flag.clone();
@@ -120,6 +122,12 @@ fn setup_shutdown_flag() -> Result<Arc<AtomicBool>, SchedulerError> {
     })
     .map_err(|source| SchedulerError::SignalHandler { source })?;
     Ok(flag)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn setup_shutdown_flag() -> Result<Arc<AtomicBool>, SchedulerError> {
+    // Signal handling not available in WASM
+    Ok(Arc::new(AtomicBool::new(false)))
 }
 
 struct TaskExecutor<'a, C> {

@@ -1,0 +1,295 @@
+version: "1.0"
+name: multi_tenant_load_test
+workbook:
+  # 多租户 IP 池配置
+  ip_pools:
+    - id: tenant-a-pool
+      name: "Tenant A IP Pool"
+      ranges:
+        - "10.0.1.0/24"    # Tenant A 专用网段
+      allocation_strategy: sequential
+      
+    - id: tenant-b-pool
+      name: "Tenant B IP Pool"
+      ranges:
+        - "10.0.2.0/24"    # Tenant B 专用网段
+      allocation_strategy: sequential
+      
+    - id: shared-pool
+      name: "Shared IP Pool"
+      ranges:
+        - "10.0.3.0/24"    # 共享网段
+        - "10.0.4.0/24"
+      allocation_strategy: round_robin
+      
+  # 目标资源
+  resources:
+    - id: api-server
+      type: http_endpoint
+      properties:
+        ip: "192.168.1.100"
+        port: "8080"
+        
+    - id: backup-server
+      type: http_endpoint
+      properties:
+        ip: "192.168.1.101"
+        port: "8080"
+
+# 负载配置 - 多租户阶梯式压力测试
+load:
+  # 用户增长模式 - 模拟真实业务高峰
+  ramp_up:
+    phases:
+      # Phase 1: Tenant A 早高峰 (07:00-08:00)
+      - at_second: 0
+        spawn_users: 50
+        tenant_id: "tenant-a"
+        ip_pool_override: tenant-a-pool
+        
+      - at_second: 10
+        spawn_users: 100
+        tenant_id: "tenant-a"
+        ip_pool_override: tenant-a-pool
+        
+      # Phase 2: Tenant B 上线 (08:00-09:00)
+      - at_second: 30
+        spawn_users: 30
+        tenant_id: "tenant-b"
+        ip_pool_override: tenant-b-pool
+        
+      # Phase 3: 共享池用户（内部测试流量）
+      - at_second: 45
+        spawn_users: 20
+        tenant_id: "internal"
+        ip_pool_override: shared-pool
+        
+      # Phase 4: Tenant A 业务高峰
+      - at_second: 60
+        spawn_users: 200
+        tenant_id: "tenant-a"
+        ip_pool_override: tenant-a-pool
+        
+      # Phase 5: Tenant B 业务高峰
+      - at_second: 90
+        spawn_users: 100
+        tenant_id: "tenant-b"
+        ip_pool_override: tenant-b-pool
+        
+  # 用户生命周期配置
+  user_lifetime:
+    mode: loop           # 循环执行
+    iterations: 5        # 每用户执行 5 次
+    think_time: 2s       # 每次执行间隔 2 秒
+      
+  # 用户资源绑定配置
+  user_resources:
+    ip_binding:
+      enabled: true
+      pool_id: tenant-a-pool  # 默认池 (可被 ip_pool_override 覆盖)
+      strategy: per_user      # 每用户独占 IP
+      release_on: user_exit   # 用户退出时释放
+      
+    # IP 池容量管理
+    capacity_management:
+      wait_on_exhaustion: true   # IP 耗尽时等待
+      wait_timeout: 30s          # 等待超时
+      fallback_pool: shared-pool # 备用池
+      
+  # 并发控制
+  concurrency:
+    max_concurrent_users: 600    # 最大并发用户数
+    spawn_rate_limit: 100/s      # 用户创建速率限制
+    action_rate_limit: 1000/s    # 动作执行速率限制
+
+actions:
+  actions:
+    # Action 1: 健康检查
+    - id: health-check
+      call: get
+      with:
+        url: "http://{{resource.ip}}:{{resource.port}}/health"
+        bind_ip: "{{user.allocated_ip}}"
+        timeout: 5s
+      export:
+        - type: content
+          name: status_code
+          default: 0
+        - type: content
+          name: response_time_ms
+          default: 0
+          
+    # Action 2: 获取数据
+    - id: fetch-data
+      call: get
+      with:
+        url: "http://{{resource.ip}}:{{resource.port}}/api/data"
+        bind_ip: "{{user.allocated_ip}}"
+        headers:
+          Authorization: "Bearer {{tenant.token}}"
+          X-Tenant-ID: "{{tenant.id}}"
+        timeout: 10s
+      export:
+        - type: content
+          name: data
+          default: "{}"
+        - type: content
+          name: status_code
+          default: 0
+          
+    # Action 3: 提交数据
+    - id: submit-data
+      call: post
+      with:
+        url: "http://{{resource.ip}}:{{resource.port}}/api/data"
+        bind_ip: "{{user.allocated_ip}}"
+        headers:
+          Content-Type: "application/json"
+          Authorization: "Bearer {{tenant.token}}"
+          X-Tenant-ID: "{{tenant.id}}"
+        body: |
+          {
+            "user_id": "{{user.id}}",
+            "tenant_id": "{{tenant.id}}",
+            "source_ip": "{{user.allocated_ip}}",
+            "data": {{fetch-data.data}}
+          }
+        timeout: 15s
+      export:
+        - type: content
+          name: status_code
+          default: 0
+        - type: content
+          name: result_id
+          default: ""
+          
+    # Action 4: 验证结果（使用备用服务器）
+    - id: verify-result
+      call: get
+      with:
+        url: "http://{{backup-server.ip}}:{{backup-server.port}}/api/verify/{{submit-data.result_id}}"
+        bind_ip: "{{user.allocated_ip}}"
+        headers:
+          Authorization: "Bearer {{tenant.token}}"
+        timeout: 10s
+      export:
+        - type: content
+          name: verified
+          default: false
+
+workflows:
+  nodes:
+    - id: start
+      type: action
+      action: health-check
+      edges:
+        - to: fetch-data-node
+          trigger:
+            condition: "{{health-check.status_code == 200}}"
+          label: "healthy"
+        - to: retry-health
+          trigger:
+            condition: "{{health-check.status_code != 200}}"
+          label: "unhealthy"
+        - to: end
+          trigger:
+            condition: "true"
+          label: "timeout"
+          
+    - id: retry-health
+      type: action
+      action: health-check
+      edges:
+        - to: fetch-data-node
+          trigger:
+            condition: "{{health-check.status_code == 200}}"
+          label: "recovered"
+        - to: end
+          trigger:
+            condition: "true"
+          label: "failed"
+          
+    - id: fetch-data-node
+      type: action
+      action: fetch-data
+      edges:
+        - to: submit-data-node
+          trigger:
+            condition: "{{fetch-data.status_code == 200}}"
+          label: "success"
+        - to: end
+          trigger:
+            condition: "true"
+          label: "fetch_failed"
+          
+    - id: submit-data-node
+      type: action
+      action: submit-data
+      edges:
+        - to: verify-result-node
+          trigger:
+            condition: "{{submit-data.status_code == 201}}"
+          label: "created"
+        - to: end
+          trigger:
+            condition: "{{submit-data.status_code == 409}}"
+          label: "conflict"
+        - to: end
+          trigger:
+            condition: "true"
+          label: "submit_failed"
+          
+    - id: verify-result-node
+      type: action
+      action: verify-result
+      edges:
+        - to: end
+          trigger:
+            condition: "{{verify-result.verified == true}}"
+          label: "verified"
+        - to: end
+          trigger:
+            condition: "true"
+          label: "verification_failed"
+            
+    - id: end
+      type: end
+
+# 监控和告警配置
+monitoring:
+  metrics:
+    enabled: true
+    export_interval: 10s
+    
+  prometheus:
+    labels:
+      environment: "testing"
+      version: "1.0"
+      
+  thresholds:
+    # 成功率告警
+    - metric: success_rate
+      condition: "< 0.95"
+      severity: warning
+      
+    - metric: success_rate
+      condition: "< 0.90"
+      severity: critical
+      
+    # 响应时间告警
+    - metric: response_time_p99
+      condition: "> 1000"  # ms
+      severity: warning
+      
+    - metric: response_time_p99
+      condition: "> 2000"  # ms
+      severity: critical
+      
+    # IP 池使用率告警
+    - metric: ip_pool_usage
+      condition: "> 0.80"
+      severity: warning
+      
+    - metric: ip_pool_usage
+      condition: "> 0.95"
+      severity: critical

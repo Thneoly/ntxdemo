@@ -1,0 +1,65 @@
+version: "1.0"
+name: simple_load_test
+workbook:
+  # IP 资源池配置
+  ip_pools:
+    - id: client-pool
+      name: "HTTP Client IP Pool"
+      ranges:
+        - "10.0.1.0/24"    # 254 IPs available
+      allocation_strategy: round_robin
+      
+  # 目标服务器配置
+  resources:
+    - id: target-server
+      type: http_endpoint
+      properties:
+        ip: "192.168.1.100"
+        port: "8080"
+
+# 负载配置 - 简单场景: 10 用户, 每用户执行 2 次
+load:
+  # 用户增长模式
+  ramp_up:
+    phases:
+      - at_second: 1       # 第 1 秒上线 10 个用户
+        spawn_users: 10
+        
+  # 用户生命周期配置
+  user_lifetime:
+    mode: loop           # 循环执行
+    iterations: 2        # 每用户执行 2 次
+    think_time: 1s       # 每次执行间隔 1 秒
+      
+  # IP 资源绑定
+  user_resources:
+    ip_binding:
+      enabled: true
+      pool_id: client-pool
+      strategy: per_user   # 每个用户独占一个 IP
+      release_on: user_exit # 用户退出时释放 IP
+
+actions:
+  actions:
+    - id: health-check
+      call: get
+      with:
+        url: "http://{{resource.ip}}:{{resource.port}}/health"
+        bind_ip: "{{user.allocated_ip}}"
+      export:
+        - type: content
+          name: status_code
+          default: 0
+
+workflows:
+  nodes:
+    - id: start
+      type: action
+      action: health-check
+      edges:
+        - to: end
+          trigger:
+            condition: "true"
+            
+    - id: end
+      type: end

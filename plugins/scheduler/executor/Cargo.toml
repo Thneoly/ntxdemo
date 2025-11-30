@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "rlib"]  # Component mode
 
 [dependencies]
 anyhow = "1.0"
@@ -13,6 +13,3 @@ wit-bindgen = { version = "0.48", features = ["realloc"] }
 
 [package.metadata.component]
 package = "scheduler:executor"
-
-[package.metadata.component.target]
-path = "wit"
