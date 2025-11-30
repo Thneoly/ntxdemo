@@ -169,6 +169,7 @@ async fn run_load_test(
                 pipeline.scenario().actions.clone(),
                 iterations,
                 think_time,
+                pipeline.template_context().clone(),
             );
 
             // 克隆需要的变量
@@ -200,7 +201,7 @@ async fn run_load_test(
                         all.extend(traces);
                     }
                     Err(e) => {
-                        eprintln!("✗ User-{} failed: {}", user_id, e);
+                        eprintln!("✗ User-{} failed: {:#}", user_id, e);
                     }
                 }
 

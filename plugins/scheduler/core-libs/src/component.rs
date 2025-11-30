@@ -3,6 +3,8 @@
 wit_bindgen::generate!({
     world: "scheduler-core",
     path: "wit",
+    generate_all,
+    debug: true
 });
 
 #[cfg(target_arch = "wasm32")]

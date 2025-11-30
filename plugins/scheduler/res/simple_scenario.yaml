@@ -13,7 +13,25 @@ actions:
     - id: test-action
       call: get
       with:
-        url: "http://{{resource.ip}}:{{resource.port}}/test"
+        url: "http://{{resource.ip}}:{{resource.port}}/asset"
+
+load:
+  ramp_up:
+    phases:
+      - at_second: 0
+        spawn_users: 1
+
+  user_lifetime:
+    mode: once
+    iterations: 1
+    think_time: 0s
+
+  user_resources:
+    ip_binding:
+      enabled: false
+      pool_id: noop
+      strategy: per_user
+      release_on: user_exit
 
 workflows:
   nodes:

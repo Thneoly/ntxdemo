@@ -1,22 +1,24 @@
+#![cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, unused_variables, unused_imports)
+)]
 mod api;
 /// WASM socket implementation using WASI Preview 2
 ///
 /// This module provides socket functionality by calling WASI socket imports.
-// Temporarily using stub - real implementation via wasi_impl needs WASI bindings
-// mod wasi_impl;
 #[cfg(target_arch = "wasm32")]
-mod wasi_stub;
-
-#[cfg(target_arch = "wasm32")]
-use wasi_stub as wasi_impl;
+mod wasi_impl;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod wasi_impl; // Will fail on wasm32 but that's ok for now
+mod wasi_stub;
 
 pub use api::Socket;
 
+#[cfg(not(target_arch = "wasm32"))]
 use once_cell::sync::Lazy;
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Mutex;
 
 /// Socket handle type
@@ -87,6 +89,7 @@ impl std::fmt::Display for SocketError {
 impl std::error::Error for SocketError {}
 
 /// Internal socket state for WASM
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 struct SocketInfo {
     family: AddressFamily,
@@ -98,14 +101,17 @@ struct SocketInfo {
 }
 
 /// Global socket registry
+#[cfg(not(target_arch = "wasm32"))]
 static SOCKET_REGISTRY: Lazy<Mutex<SocketRegistry>> =
     Lazy::new(|| Mutex::new(SocketRegistry::new()));
 
+#[cfg(not(target_arch = "wasm32"))]
 struct SocketRegistry {
     next_handle: SocketHandle,
     sockets: HashMap<SocketHandle, SocketInfo>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl SocketRegistry {
     fn new() -> Self {
         Self {

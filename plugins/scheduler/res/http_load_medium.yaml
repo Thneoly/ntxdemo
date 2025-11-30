@@ -9,10 +9,14 @@ workbook:
       allocation_strategy: round_robin
       
   resources:
-    - id: httpbin
+    - id: target
       type: http_endpoint
       properties:
-        host: "httpbin.org"
+        scheme: "http"
+        ip: "127.0.0.1"
+        port: "8080"
+        health_path: "/health"
+        json_path: "/json"
 
 load:
   ramp_up:
@@ -41,13 +45,13 @@ actions:
     - id: get-status
       call: get
       with:
-        url: "https://httpbin.org/status/200"
+        url: "{{target.scheme}}://{{target.ip}}:{{target.port}}{{target.health_path}}"
         bind_ip: "{{user.allocated_ip}}"
     
     - id: get-json
       call: get
       with:
-        url: "https://httpbin.org/json"
+        url: "{{target.scheme}}://{{target.ip}}:{{target.port}}{{target.json_path}}"
         bind_ip: "{{user.allocated_ip}}"
 
 workflows:

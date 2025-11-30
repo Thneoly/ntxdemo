@@ -81,6 +81,76 @@ fn main() -> Result<()> {
 
 ## Component Details
 
+## Basic Regression: `res/simple_scenario.yaml`
+
+The `res/simple_scenario.yaml` fixture is meant to ensure workbook resources and
+action templates render correctly end-to-end. A minimal smoke test looks like this:
+
+1. **Bring up the demo HTTP endpoint**
+
+  ```bash
+  cd /home/cc/Desktop/code/GitHub/Ntx/plugins/scheduler
+  cargo run --bin http_server
+  ```
+
+  The server listens on `http://127.0.0.1:8080/asset` and echoes the request
+  metadata that the scenario consumes.
+
+2. **Run the scheduler against the simple scenario**
+
+  ```bash
+  cd /home/cc/Desktop/code/GitHub/Ntx/plugins/scheduler
+  cargo run --bin scheduler -- res/simple_scenario.yaml
+  ```
+
+  You should now see the HTTP trace log resolving workbook placeholders, e.g.
+  `GET http://127.0.0.1:8080/asset`.
+
+> ⚠️ The native (non-WASM) build still uses stub socket bindings, so the request
+> will stop after handshake. To exercise the real WASI Preview 2 socket path,
+> compile for `wasm32-wasip2` (`cargo build --target wasm32-wasip2`) and invoke
+> the component through the root runner (`cargo run -- plugins/scheduler/res/simple_scenario.yaml`).
+
+### WASI 端到端验证（http_server + simple_scenario）
+
+以下流程可验证真实 WASI Preview 2 socket 栈能成功返回 HTTP 200：
+
+1. **构建 Scheduler 组件（WASM + 本地 server）**
+
+  ```bash
+  cd /home/cc/Desktop/code/GitHub/Ntx/plugins/scheduler
+  cargo build --target wasm32-wasip2 --lib
+  cargo build --bin http_server
+  ```
+
+2. **启动 demo http_server**（建议单独终端）：
+
+  ```bash
+  cd /home/cc/Desktop/code/GitHub/Ntx/plugins/scheduler
+  cargo run --bin http_server
+  ```
+
+  看到 `HTTP test server listening on http://127.0.0.1:8080` 即表示就绪。
+
+3. **运行顶层 Runner（真实 WASI socket）**：
+
+  ```bash
+  cd /home/cc/Desktop/code/GitHub/Ntx
+  SCHEDULER_COMPONENT=plugins/scheduler/target/wasm32-wasip2/debug/scheduler.wasm \
+    cargo run -- plugins/scheduler/res/simple_scenario.yaml
+  ```
+
+  预期输出（节选）：
+
+  ```
+  [HTTP] GET http://127.0.0.1:8080/asset
+  [User-1] Completed 1 iterations
+  ✓ User-1 completed 1 iterations, 1 actions
+  Total actions executed: 1
+  ```
+
+> 💡 也可以执行 `./scripts/run_wasi_manual.sh`，该脚本会自动完成以上 3 步并在结束后清理 http_server 进程，适合用于手动冒烟回归。
+
 ### scheduler.wasm Interface
 
 **Exported Function:**

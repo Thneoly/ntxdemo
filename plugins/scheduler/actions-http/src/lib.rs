@@ -77,7 +77,7 @@ impl ActionComponent for HttpActionComponent {
 
         let status_code = response.status_code;
         let success = response.is_success();
-        let response_body = response
+        let _response_body = response
             .body_string()
             .unwrap_or_else(|_| format!("<binary data: {} bytes>", response.body.len()));
 
@@ -140,21 +140,40 @@ fn send_http_request(
     let request_bytes = request.build_request_bytes()?;
     socket::send(socket, &request_bytes).map_err(|e| anyhow!("Failed to send request: {}", e))?;
 
-    // Receive response
+    // Receive response (headers + body)
     let mut response_data = Vec::new();
+    let mut header_len: Option<usize> = None;
+    let mut expected_len: Option<usize> = None;
+
+    const EMPTY_READ_RETRIES: usize = 200; // ~1s @ 5ms sleep
+    let mut empty_reads = 0usize;
+
     loop {
         match socket::receive(socket, 8192) {
             Ok(chunk) => {
                 if chunk.is_empty() {
+                    if response_data.is_empty() && empty_reads < EMPTY_READ_RETRIES {
+                        empty_reads += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
+                    }
                     break;
                 }
+                empty_reads = 0;
                 response_data.extend_from_slice(&chunk);
 
-                // Check if we have complete response
-                if response_data.windows(4).any(|w| w == b"\r\n\r\n") {
-                    // Simple check: if we have headers, we're done
-                    // TODO: Properly handle Content-Length and chunked encoding
-                    break;
+                if header_len.is_none() {
+                    if let Some(idx) = find_header_end(&response_data) {
+                        header_len = Some(idx + 4);
+                        expected_len =
+                            content_length(&response_data[..idx]).map(|len| idx + 4 + len);
+                    }
+                }
+
+                if let Some(total) = expected_len {
+                    if response_data.len() >= total {
+                        break;
+                    }
                 }
             }
             Err(e) => {
@@ -169,8 +188,38 @@ fn send_http_request(
     // Close socket
     let _ = socket::close(socket);
 
+    if find_header_end(&response_data).is_none() {
+        return Err(anyhow!(
+            "incomplete HTTP response ({} bytes): {:?}",
+            response_data.len(),
+            String::from_utf8_lossy(&response_data)
+        ));
+    }
+
     // Parse HTTP response
     http_client::HttpResponse::parse(&response_data)
+}
+
+fn find_header_end(data: &[u8]) -> Option<usize> {
+    if data.len() < 4 {
+        return None;
+    }
+    data.windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|idx| idx)
+}
+
+fn content_length(header_bytes: &[u8]) -> Option<usize> {
+    let header = String::from_utf8_lossy(header_bytes);
+    for line in header.lines() {
+        if let Some(rest) = line
+            .strip_prefix("Content-Length:")
+            .or_else(|| line.strip_prefix("content-length:"))
+        {
+            return rest.trim().parse().ok();
+        }
+    }
+    None
 }
 
 /// Extract URL from action definition

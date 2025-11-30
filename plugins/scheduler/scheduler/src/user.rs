@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use indexmap::IndexMap;
-use serde_yaml::Value;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
+use crate::TemplateContext;
 use scheduler_core::dsl::{ActionDef, ActionsSection, WorkflowNodeType, WorkflowSection};
-use scheduler_executor::{ActionComponent, ActionContext, ActionOutcome, ActionStatus};
+use scheduler_executor::{ActionComponent, ActionContext};
 
 /// 用户上下文
 ///
@@ -57,6 +57,7 @@ pub struct UserExecutor {
     actions: ActionsSection,
     iterations: usize,
     think_time: Duration,
+    template: TemplateContext,
 }
 
 impl UserExecutor {
@@ -74,6 +75,7 @@ impl UserExecutor {
         actions: ActionsSection,
         iterations: usize,
         think_time: Duration,
+        template: TemplateContext,
     ) -> Self {
         Self {
             context,
@@ -81,6 +83,7 @@ impl UserExecutor {
             actions,
             iterations,
             think_time,
+            template,
         }
     }
 
@@ -100,6 +103,12 @@ impl UserExecutor {
             self.iterations
         };
 
+        let iterations_label = if self.iterations == 0 {
+            "∞".to_string()
+        } else {
+            self.iterations.to_string()
+        };
+
         for iteration in 0..actual_iterations {
             if iteration > 0 {
                 std::thread::sleep(self.think_time);
@@ -109,11 +118,7 @@ impl UserExecutor {
                 "[User-{}] Starting iteration {}/{}",
                 self.context.id,
                 iteration + 1,
-                if self.iterations == 0 {
-                    "∞".to_string()
-                } else {
-                    self.iterations.to_string()
-                }
+                iterations_label.as_str()
             );
 
             // 执行一次完整的 workflow
@@ -133,11 +138,7 @@ impl UserExecutor {
         println!(
             "[User-{}] Completed {} iterations",
             self.context.id,
-            if self.iterations == 0 {
-                "∞"
-            } else {
-                &self.iterations.to_string()
-            }
+            iterations_label.as_str()
         );
 
         Ok(all_traces)
@@ -236,24 +237,8 @@ impl UserExecutor {
         action: &ActionDef,
         context: &IndexMap<String, String>,
     ) -> Result<ActionDef> {
-        let mut resolved = action.clone();
-
-        // 替换 with 参数中的变量
-        for (key, value) in &mut resolved.with {
-            if let Some(str_val) = value.as_str() {
-                let mut replaced = str_val.to_string();
-
-                // 替换所有 {{variable}} 模式
-                for (var_name, var_value) in context {
-                    let pattern = format!("{{{{{}}}}}", var_name);
-                    replaced = replaced.replace(&pattern, var_value);
-                }
-
-                *value = Value::String(replaced);
-            }
-        }
-
-        Ok(resolved)
+        let merged_ctx = self.template.merged(context);
+        Ok(merged_ctx.render_action(action))
     }
 
     /// 根据条件选择下一个节点
@@ -262,6 +247,7 @@ impl UserExecutor {
         node: &scheduler_core::dsl::WorkflowNode,
         context: &IndexMap<String, String>,
     ) -> Result<String> {
+        let merged_ctx = self.template.merged(context);
         for edge in &node.edges {
             // 如果没有条件，直接选择
             if edge.trigger.is_none() {
@@ -271,7 +257,7 @@ impl UserExecutor {
             // 评估条件（简化版：只支持 "true" 或简单的相等判断）
             if let Some(trigger) = &edge.trigger {
                 if let Some(condition) = &trigger.condition {
-                    if condition == "true" || self.evaluate_condition(condition, context) {
+                    if condition == "true" || self.evaluate_condition(condition, &merged_ctx) {
                         return Ok(edge.to.clone());
                     }
                 }
@@ -284,18 +270,14 @@ impl UserExecutor {
     /// 简单的条件评估
     ///
     /// 支持格式：{{variable}} == value
-    fn evaluate_condition(&self, condition: &str, context: &IndexMap<String, String>) -> bool {
+    fn evaluate_condition(&self, condition: &str, context: &TemplateContext) -> bool {
         // 简化实现：只支持 "true" 和基本的相等比较
         if condition == "true" {
             return true;
         }
 
         // 替换变量后评估
-        let mut resolved = condition.to_string();
-        for (var_name, var_value) in context {
-            let pattern = format!("{{{{{}}}}}", var_name);
-            resolved = resolved.replace(&pattern, var_value);
-        }
+        let resolved = context.render_str(condition);
 
         // 简单的相等判断（如 "200 == 200"）
         if let Some(pos) = resolved.find("==") {
@@ -312,6 +294,8 @@ impl UserExecutor {
 mod tests {
     use super::*;
     use scheduler_core::dsl::{TriggerDef, WorkflowEdge, WorkflowNode};
+    use scheduler_executor::{ActionOutcome, ActionStatus};
+    use serde_yaml::Value;
 
     // 简单的测试 ActionComponent
     struct TestComponent;
@@ -367,7 +351,14 @@ mod tests {
         let workflow = WorkflowSection { nodes: vec![] };
         let actions = ActionsSection { actions: vec![] };
 
-        let executor = UserExecutor::new(context, workflow, actions, 1, Duration::from_secs(0));
+        let executor = UserExecutor::new(
+            context,
+            workflow,
+            actions,
+            1,
+            Duration::from_secs(0),
+            TemplateContext::new(),
+        );
 
         let mut exec_ctx = IndexMap::new();
         exec_ctx.insert("user.allocated_ip".to_string(), "10.0.1.1".to_string());

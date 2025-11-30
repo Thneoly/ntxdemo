@@ -1,5 +1,12 @@
 package scheduler:core-libs@0.1.0;
 
+use wasi:sockets/network@0.2.6;
+use wasi:sockets/tcp@0.2.6;
+use wasi:sockets/udp@0.2.6;
+use wasi:sockets/tcp-create-socket@0.2.6;
+use wasi:sockets/udp-create-socket@0.2.6;
+use wasi:sockets/instance-network@0.2.6;
+
 interface types {
     record scenario {
         version: string,
@@ -87,6 +94,13 @@ interface socket {
 }
 
 world scheduler-core {
+    import wasi:sockets/network@0.2.6;
+    import wasi:sockets/tcp@0.2.6;
+    import wasi:sockets/udp@0.2.6;
+    import wasi:sockets/tcp-create-socket@0.2.6;
+    import wasi:sockets/udp-create-socket@0.2.6;
+    import wasi:sockets/instance-network@0.2.6;
+
     export types;
     export parser;
     export socket;

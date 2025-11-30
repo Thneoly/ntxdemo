@@ -24,3 +24,8 @@ package = "scheduler:core-libs"
 
 [package.metadata.component.target]
 path = "wit"
+
+[package.metadata.component.dependencies]
+"wasi:clocks" = { path = "wit/deps/clocks" }
+"wasi:io" = { path = "wit/deps/io" }
+"wasi:sockets" = { path = "wit/deps/sockets" }

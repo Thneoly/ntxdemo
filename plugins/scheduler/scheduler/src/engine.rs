@@ -6,6 +6,7 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
+use crate::TemplateContext;
 #[cfg(not(target_arch = "wasm32"))]
 use ctrlc;
 use indexmap::IndexSet;
@@ -20,6 +21,7 @@ use scheduler_executor::{ActionComponent, ActionContext, ActionTrace, SchedulerE
 pub struct SchedulerPipeline {
     scenario: Scenario,
     workbook: Workbook,
+    template: TemplateContext,
     wbs: WbsTree,
     state_machine: StateMachine,
 }
@@ -33,12 +35,14 @@ impl SchedulerPipeline {
 
     pub fn from_scenario(scenario: Scenario) -> Result<Self, SchedulerError> {
         let workbook = Workbook::from_scenario(&scenario);
+        let template = TemplateContext::from_workbook(&workbook);
         let wbs = WbsTree::build(&scenario)?;
         let state_machine = StateMachine::from_wbs(&wbs);
 
         Ok(Self {
             scenario,
             workbook,
+            template,
             wbs,
             state_machine,
         })
@@ -50,6 +54,10 @@ impl SchedulerPipeline {
 
     pub fn workbook(&self) -> &Workbook {
         &self.workbook
+    }
+
+    pub fn template_context(&self) -> &TemplateContext {
+        &self.template
     }
 
     pub fn wbs(&self) -> &WbsTree {
@@ -83,8 +91,14 @@ impl SchedulerPipeline {
             .map_err(|source| SchedulerError::ActionComponentInit { source })?;
 
         let shutdown = setup_shutdown_flag()?;
-        let run_result =
-            TaskExecutor::new(component, &mut self.wbs, &mut self.state_machine, shutdown).run();
+        let run_result = TaskExecutor::new(
+            component,
+            &mut self.wbs,
+            &mut self.state_machine,
+            self.template.clone(),
+            shutdown,
+        )
+        .run();
 
         let release_result = component
             .release()
@@ -134,6 +148,7 @@ struct TaskExecutor<'a, C> {
     component: &'a mut C,
     wbs: &'a mut WbsTree,
     state_machine: &'a mut StateMachine,
+    template: TemplateContext,
     queues: PriorityQueues,
     seen_tasks: IndexSet<String>,
     traces: Vec<ActionTrace>,
@@ -148,12 +163,14 @@ where
         component: &'a mut C,
         wbs: &'a mut WbsTree,
         state_machine: &'a mut StateMachine,
+        template: TemplateContext,
         shutdown: Arc<AtomicBool>,
     ) -> Self {
         let mut executor = Self {
             component,
             wbs,
             state_machine,
+            template,
             queues: PriorityQueues::new(),
             seen_tasks: IndexSet::new(),
             traces: Vec::new(),
@@ -213,6 +230,8 @@ where
             .get_action(&action_id)
             .cloned()
             .ok_or_else(|| SchedulerError::ActionNotRegistered(action_id.clone()))?;
+
+        let action = self.template.render_action(&action);
 
         let wbs_view: &WbsTree = &self.wbs;
         let mut ctx = ActionContext::new(wbs_view);

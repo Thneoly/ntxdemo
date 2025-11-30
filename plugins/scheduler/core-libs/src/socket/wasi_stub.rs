@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_variables)]
+
 // Stub implementation for WASI sockets
 // This provides placeholder implementations that return errors
 // Real WASI socket functionality will be provided by the runtime or adapter

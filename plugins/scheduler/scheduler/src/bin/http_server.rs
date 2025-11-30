@@ -36,6 +36,8 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .route("/asset", get(handle_get_asset).post(handle_post_asset))
+        .route("/health", get(handle_health))
+        .route("/json", get(handle_get_json))
         .with_state(state.clone());
 
     let listener = TcpListener::bind(addr)
@@ -76,6 +78,27 @@ async fn handle_get_asset(State(state): State<AppState>) -> Json<AssetResponse> 
             version: "v1".to_string(),
         },
     })
+}
+
+async fn handle_health(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({
+        "ip": state.ip,
+        "port": state.port,
+        "status": "ok",
+        "status_code": 200,
+    }))
+}
+
+async fn handle_get_json(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({
+        "ip": state.ip,
+        "port": state.port,
+        "status_code": 200,
+        "payload": {
+            "message": "hello from demo server",
+            "version": "v1",
+        }
+    }))
 }
 
 async fn handle_post_asset(

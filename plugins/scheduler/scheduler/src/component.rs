@@ -3,7 +3,7 @@
 /// This module implements the scheduler as a WASM component
 use anyhow::{Context, Result};
 
-use crate::{IpPoolManager, UserContext, UserExecutor, parse_duration};
+use crate::{IpPoolManager, TemplateContext, UserContext, UserExecutor, parse_duration};
 use scheduler_actions_http::HttpActionComponent;
 use scheduler_core::dsl::Scenario;
 
@@ -30,6 +30,9 @@ fn run_scenario_impl(scenario_yaml: &str) -> Result<String> {
         Scenario::from_yaml_str(scenario_yaml).context("Failed to parse scenario YAML")?;
 
     scenario.validate().context("Scenario validation failed")?;
+
+    let workbook = scheduler_core::workbook::Workbook::from_scenario(&scenario);
+    let template_ctx = TemplateContext::from_workbook(&workbook);
 
     let scenario_name = scenario.name.clone();
 
@@ -125,6 +128,7 @@ fn run_scenario_impl(scenario_yaml: &str) -> Result<String> {
                 scenario.actions.clone(),
                 iterations,
                 think_time,
+                template_ctx.clone(),
             );
 
             // Create HTTP action component
@@ -142,7 +146,7 @@ fn run_scenario_impl(scenario_yaml: &str) -> Result<String> {
                     all_traces.extend(traces);
                 }
                 Err(e) => {
-                    eprintln!("✗ User-{} failed: {}", user_id, e);
+                    eprintln!("✗ User-{} failed: {:#}", user_id, e);
                 }
             }
 
