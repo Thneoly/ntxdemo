@@ -1,0 +1,69 @@
+package scheduler:core-libs@0.1.0;
+
+/// Core scheduler data structures and DSL parsing
+interface types {
+    /// A workflow scenario parsed from YAML
+    record scenario {
+        version: string,
+        name: string,
+        resources: list<resource-def>,
+        actions: list<action-def>,
+        nodes: list<workflow-node>,
+    }
+
+    /// Resource definition
+    record resource-def {
+        id: string,
+        resource-type: string,
+        properties: string, // JSON string of properties
+    }
+
+    /// Action definition
+    record action-def {
+        id: string,
+        call: string,
+        with-params: string, // JSON string of parameters
+        exports: list<export-def>,
+    }
+
+    /// Export definition
+    record export-def {
+        export-type: string,
+        name: string,
+        scope: option<string>,
+        default-value: option<string>, // JSON string
+    }
+
+    /// Workflow node
+    record workflow-node {
+        id: string,
+        node-type: node-type,
+        action: option<string>,
+        edges: list<workflow-edge>,
+    }
+
+    /// Node type
+    enum node-type {
+        action,
+        end,
+    }
+
+    /// Workflow edge
+    record workflow-edge {
+        to: string,
+        condition: option<string>,
+        label: option<string>,
+    }
+}
+
+interface parser {
+    use types.{scenario};
+
+    parse-scenario: func(yaml: string) -> result<scenario, string>;
+    validate-scenario: func(scenario: scenario) -> result<_, string>;
+}
+
+world scheduler-core {
+    export types;
+    export parser;
+}

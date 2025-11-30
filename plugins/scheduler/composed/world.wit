@@ -1,0 +1,26 @@
+package scheduler:unified@0.1.0;
+
+/// Unified scheduler component that combines core-libs, executor, and actions-http
+world unified-scheduler {
+    // Import and re-export all core types
+    import scheduler:core-libs/types@0.1.0;
+    import scheduler:core-libs/parser@0.1.0;
+
+    // Import and re-export executor functionality
+    import scheduler:executor/types@0.1.0;
+    import scheduler:executor/context@0.1.0;
+    import scheduler:executor/component-api@0.1.0;
+
+    // Import and re-export HTTP actions
+    import scheduler:actions-http/types@0.1.0;
+    import scheduler:actions-http/http-component@0.1.0;
+
+    // Re-export everything for convenience
+    export scheduler:core-libs/types@0.1.0;
+    export scheduler:core-libs/parser@0.1.0;
+    export scheduler:executor/types@0.1.0;
+    export scheduler:executor/context@0.1.0;
+    export scheduler:executor/component-api@0.1.0;
+    export scheduler:actions-http/types@0.1.0;
+    export scheduler:actions-http/http-component@0.1.0;
+}

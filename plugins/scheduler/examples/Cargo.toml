@@ -1,0 +1,13 @@
+[package]
+name = "scheduler-test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+wasmtime = { version = "39", features = ["component-model"] }
+wasmtime-wasi = "39"
+anyhow = "1.0"
+
+[[example]]
+name = "use_unified"
+path = "use_unified.rs"

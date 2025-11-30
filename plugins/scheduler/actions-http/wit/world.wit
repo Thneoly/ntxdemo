@@ -1,0 +1,42 @@
+package scheduler:actions-http@0.1.0;
+
+interface types {
+    /// Re-export types from executor
+    record action-def {
+        id: string,
+        call: string,
+        with-params: string,
+        exports: list<export-def>,
+    }
+
+    record export-def {
+        export-type: string,
+        name: string,
+        scope: option<string>,
+        default-value: option<string>,
+    }
+
+    record action-outcome {
+        status: action-status,
+        detail: option<string>,
+    }
+
+    enum action-status {
+        success,
+        failed,
+    }
+}
+
+interface http-component {
+    use types.{action-def, action-outcome};
+
+    init-component: func() -> result<_, string>;
+    do-http-action: func(action: action-def) -> result<action-outcome, string>;
+    release-component: func() -> result<_, string>;
+}
+
+/// HTTP action component implementation
+world http-action-component {
+    export types;
+    export http-component;
+}

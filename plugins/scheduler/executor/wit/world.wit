@@ -1,0 +1,89 @@
+package scheduler:executor@0.1.0;
+
+interface types {
+    /// Action definition (from core-libs)
+    record action-def {
+        id: string,
+        call: string,
+        with-params: string, // JSON string
+        exports: list<export-def>,
+    }
+
+    record export-def {
+        export-type: string,
+        name: string,
+        scope: option<string>,
+        default-value: option<string>,
+    }
+
+    /// Action execution outcome
+    record action-outcome {
+        status: action-status,
+        detail: option<string>,
+    }
+
+    enum action-status {
+        success,
+        failed,
+    }
+
+    /// WBS task for dynamic insertion
+    record wbs-task {
+        id: string,
+        action-id: option<string>,
+        kind: task-kind,
+        outgoing: list<wbs-edge>,
+    }
+
+    enum task-kind {
+        action,
+        end,
+    }
+
+    record wbs-edge {
+        target: string,
+        condition: option<string>,
+        label: option<string>,
+    }
+}
+
+interface context {
+    use types.{action-def, wbs-task, wbs-edge};
+
+    /// Action execution context (opaque handle for this interface)
+    resource action-context {
+        constructor();
+
+        /// Queue an event to register a new action
+        register-action: func(action: action-def);
+
+        /// Queue an event to add a task
+        add-task: func(task: wbs-task);
+
+        /// Queue an event to remove a task
+        remove-task: func(task-id: string);
+
+        /// Queue an event to update a task
+        update-task: func(task: wbs-task);
+
+        /// Queue an event to add an edge
+        add-edge: func(from-id: string, edge: wbs-edge);
+
+        /// Queue an event to remove an edge
+        remove-edge: func(from-id: string, target: string);
+    }
+}
+
+interface component-api {
+    use types.{action-def, action-outcome};
+    use context.{action-context};
+
+    execute-action: func(action: action-def, ctx: action-context) -> result<action-outcome, string>;
+}
+
+/// Action execution runtime and event model
+world scheduler-executor {
+    export types;
+    export context;
+    export component-api;
+}

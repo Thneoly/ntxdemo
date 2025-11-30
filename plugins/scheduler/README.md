@@ -2,6 +2,27 @@
 
 This directory hosts a mini workspace that assembles four focused crates into a runnable workflow scheduler plus a lightweight HTTP demo server. The scheduler still parses the DSL into a WBSTree → StateMachine pipeline, but the action runtime, HTTP actions, and core data structures now live in their own crates so they can be reused from wasm components or other hosts.
 
+## 🚀 Quick Start
+
+New to the project? Start here:
+
+1. **[📖 QUICKSTART.md](doc/QUICKSTART.md)** - 5-minute quick start guide
+2. **[📚 INDEX.md](doc/INDEX.md)** - Complete documentation index
+3. **Run**: `./scripts/test_unified.sh` - Test the unified component
+
+**Current Status**: ✅ Unified WebAssembly component available (430KB)
+
+```bash
+# Build the unified component
+./scripts/create_unified.sh
+
+# Test it
+./scripts/test_unified.sh
+
+# See what's possible
+./scripts/compose_full.sh
+```
+
 ## Workspace layout
 
 | Crate | Description |
@@ -10,6 +31,87 @@ This directory hosts a mini workspace that assembles four focused crates into a 
 | `scheduler-executor` | Defines the `ActionComponent` lifecycle (`init → do_action → release`), `ActionContext`, and the event model used by the runtime. |
 | `scheduler-actions-http` | Ships the default `HttpActionComponent` plus a simple logging component for tests. These call into the demo HTTP server so you can exercise real IO locally. |
 | `scheduler` | Binaries (`scheduler`, `http_server`) and the priority-loop engine that wires the other crates together. |
+
+Each crate also contains a `wit/` directory defining WebAssembly Component Model interfaces, enabling them to be compiled as standalone wasm32-wasip2 components for use in other runtimes or component compositions.
+
+## Building as wasm components
+
+To compile the scheduler crates as WebAssembly components:
+
+```bash
+# Build all components at once (currently only core-libs is functional)
+./scripts/build_all_components.sh
+
+# Or build individually
+cd core-libs && ./build.sh
+cd executor && ./build.sh    # 🚧 In progress
+cd actions-http && ./build.sh  # 🚧 In progress
+```
+
+**Demo with working component:**
+```bash
+./scripts/compose_demo.sh
+```
+
+Component outputs are generated in:
+- `core-libs/target/wasm32-wasip2/release/scheduler_core.wasm` ✅
+- `executor/target/wasm32-wasip2/release/scheduler_executor.wasm` 🚧
+- `actions-http/target/wasm32-wasip2/release/scheduler_actions_http.wasm` 🚧
+
+**Requirements**: `cargo component` and `wasm-tools` must be installed:
+```bash
+cargo install cargo-component wasm-tools
+```
+
+## Component Composition
+
+The `scheduler-core` component can be used immediately in compositions:
+
+```bash
+# Inspect the component interface
+wasm-tools component wit target/wasm32-wasip2/release/scheduler_core.wasm
+
+# Validate the component
+wasm-tools validate target/wasm32-wasip2/release/scheduler_core.wasm
+```
+
+See `examples/composition.wac` for a WAC composition example. Full multi-component composition will be available once executor and actions-http are complete.
+
+## WIT interface design
+
+Each crate exports typed interfaces defined in its `wit/world.wit`:
+
+- **core-libs** exports `scheduler:core-libs/types` (Scenario, ActionDef, WorkflowNode, etc.) and `scheduler:core-libs/parser` (parse/validate functions).
+- **executor** exports `scheduler:executor/types` (ActionOutcome, WbsTask, etc.), `scheduler:executor/context` (ActionContext resource), and `scheduler:executor/component-api`.
+- **actions-http** exports `scheduler:actions-http/http-component` (init/do_http_action/release functions).
+
+These interfaces allow other wasm runtimes to link or compose scheduler functionality without a full native Rust build.
+
+## 📚 Documentation
+
+### Quick Links
+
+- **[📖 INDEX.md](doc/INDEX.md)** - Complete documentation index
+- **[🚀 QUICKSTART.md](doc/QUICKSTART.md)** - 5-minute quick start
+- **[📊 SUMMARY.md](doc/SUMMARY.md)** - Project status and achievements
+- **[🏗️ ARCHITECTURE.md](doc/ARCHITECTURE.md)** - Architecture diagrams
+- **[🔧 WAC_COMPOSITION.md](doc/WAC_COMPOSITION.md)** - Technical details
+- **[📦 USAGE.md](doc/USAGE.md)** - API integration guide
+- **[📁 FILE_INDEX.md](doc/FILE_INDEX.md)** - File reference
+- **[📂 DIRECTORY_STRUCTURE.md](doc/DIRECTORY_STRUCTURE.md)** - Directory organization
+
+### Component Commands
+
+```bash
+# Build unified component (430KB, includes core-libs)
+./scripts/create_unified.sh
+
+# Test and validate component
+./scripts/test_unified.sh
+
+# View full composition plan
+./scripts/compose_full.sh
+```
 
 ## Binaries
 

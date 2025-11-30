@@ -1,0 +1,10 @@
+// Simplified scheduler composition using only the working core-libs component
+// This creates a "unified" component that wraps the core parser
+
+package scheduler:unified@0.1.0
+
+world unified-scheduler {
+    // Re-export all core-libs functionality
+    export scheduler:core-libs/types@0.1.0
+    export scheduler:core-libs/parser@0.1.0
+}

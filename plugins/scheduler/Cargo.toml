@@ -5,4 +5,5 @@ members = [
 	"actions-http",
 	"scheduler",
 ]
+exclude = ["examples"]
 resolver = "2"

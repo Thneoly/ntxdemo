@@ -1,4 +1,5 @@
 use anyhow::Error as AnyError;
+#[cfg(not(target_arch = "wasm32"))]
 use ctrlc::Error as CtrlcError;
 use thiserror::Error;
 
@@ -41,6 +42,7 @@ pub enum SchedulerError {
         source: AnyError,
     },
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("failed to register signal handler: {source}")]
     SignalHandler {
         #[source]

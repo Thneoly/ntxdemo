@@ -3,6 +3,16 @@ name = "scheduler-executor"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 anyhow = "1.0"
 scheduler-core = { path = "../core-libs" }
+wit-bindgen = { version = "0.38", features = ["realloc"] }
+
+[package.metadata.component]
+package = "scheduler:executor"
+
+[package.metadata.component.target]
+path = "wit"

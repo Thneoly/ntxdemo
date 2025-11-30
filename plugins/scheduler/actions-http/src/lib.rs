@@ -5,6 +5,9 @@ use serde_json::Value as JsonValue;
 use serde_yaml::Value;
 use ureq::Agent;
 
+#[cfg(target_arch = "wasm32")]
+pub mod component;
+
 /// 真实业务组件：根据 DSL action 描述发起 HTTP 请求。
 pub struct HttpActionComponent {
     agent: Agent,
@@ -94,7 +97,7 @@ impl ActionComponent for LoggingActionComponent {
     }
 }
 
-fn extract_url(action: &ActionDef) -> Result<String> {
+pub fn extract_url(action: &ActionDef) -> Result<String> {
     action
         .with
         .get("url")
@@ -103,7 +106,7 @@ fn extract_url(action: &ActionDef) -> Result<String> {
         .ok_or_else(|| anyhow!("action `{}` missing `with.url`", action.id))
 }
 
-fn extract_headers(action: &ActionDef) -> Vec<(String, String)> {
+pub fn extract_headers(action: &ActionDef) -> Vec<(String, String)> {
     action
         .with
         .get("headers")
@@ -120,7 +123,7 @@ fn extract_headers(action: &ActionDef) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-fn extract_body(action: &ActionDef) -> Result<Option<String>> {
+pub fn extract_body(action: &ActionDef) -> Result<Option<String>> {
     let Some(body) = action.with.get("body") else {
         return Ok(None);
     };

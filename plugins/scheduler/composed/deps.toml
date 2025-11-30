@@ -1,0 +1,4 @@
+# Dependencies for the composed component
+core-libs = { path = "../core-libs/wit" }
+executor = { path = "../executor/wit" }
+actions-http = { path = "../actions-http/wit" }

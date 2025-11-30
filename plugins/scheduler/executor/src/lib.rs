@@ -5,6 +5,9 @@ use scheduler_core::error::SchedulerError;
 use scheduler_core::state_machine::StateMachine;
 use scheduler_core::wbs::{WbsEdge, WbsTask, WbsTree};
 
+#[cfg(target_arch = "wasm32")]
+pub mod component;
+
 pub trait ActionComponent {
     fn init(&mut self) -> Result<()>;
     fn do_action(

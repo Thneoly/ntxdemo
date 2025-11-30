@@ -1,0 +1,38 @@
+// Example WAC composition using the scheduler-core component
+// 
+// This demonstrates how to use the scheduler-core wasm component
+// in a larger composition
+
+// Load the scheduler-core component
+let core = scheduler-core("./target/wasm32-wasip2/release/scheduler_core.wasm");
+
+// Example: Define a simple host that uses the parser
+world example-host {
+    // Import the scheduler types and parser
+    import scheduler:core-libs/types@0.1.0;
+    import scheduler:core-libs/parser@0.1.0;
+    
+    // Your host application logic would go here
+    // For example, you might:
+    // 1. Read YAML from a file
+    // 2. Call parse-scenario
+    // 3. Process the resulting Scenario structure
+    // 4. Execute workflows based on the parsed data
+}
+
+// When executor and actions-http are ready, the composition would look like:
+//
+// let core = scheduler-core("./scheduler_core.wasm");
+// let executor = scheduler-executor("./scheduler_executor.wasm");  
+// let http = scheduler-actions-http("./scheduler_actions_http.wasm");
+//
+// world unified-scheduler {
+//     // Wire up the components
+//     export core.parser.*;
+//     export executor.component-api.*;
+//     export http.http-component.*;
+//     
+//     // Connect internal dependencies
+//     executor.types = core.types;
+//     http.types = executor.types;
+// }

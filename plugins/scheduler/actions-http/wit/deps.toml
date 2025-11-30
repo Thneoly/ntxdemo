@@ -1,0 +1,6 @@
+# Dependencies
+executor = { path = "../../executor/wit" }
+
+# WASI dependencies
+http = "https://github.com/WebAssembly/wasi-http/archive/main.tar.gz"
+io = "https://github.com/WebAssembly/wasi-io/archive/main.tar.gz"
