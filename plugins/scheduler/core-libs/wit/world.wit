@@ -1,5 +1,118 @@
 package scheduler:core-libs@0.1.0;
 
+// WASI Socket Interfaces - Minimal subset for TCP/UDP operations
+// Based on WASI Preview 2 specification
+
+/// Network types and errors
+interface wasi-network {
+    /// IP address types
+    variant ip-address {
+        ipv4(tuple<u8, u8, u8, u8>),
+        ipv6(tuple<u16, u16, u16, u16, u16, u16, u16, u16>),
+    }
+
+    enum ip-address-family {
+        ipv4,
+        ipv6,
+    }
+
+    /// Network resource (opaque handle to the network)
+    resource network;
+
+    /// Error types
+    enum error-code {
+        access-denied,
+        address-in-use,
+        address-not-available,
+        already-connected,
+        connection-refused,
+        connection-reset,
+        connection-aborted,
+        host-unreachable,
+        network-unreachable,
+        timeout,
+        would-block,
+        invalid-argument,
+        not-supported,
+        out-of-memory,
+        unknown,
+    }
+
+    /// Get the default network instance
+    get-network: func() -> network;
+}
+
+/// TCP Socket operations
+interface wasi-tcp {
+    use wasi-network.{network, ip-address, ip-address-family, error-code};
+
+    resource tcp-socket {
+        /// Create a new TCP socket
+        new: static func(address-family: ip-address-family) -> result<tcp-socket, error-code>;
+
+        /// Connect to remote address
+        connect: func(net: borrow<network>, remote-address: ip-address, remote-port: u16) -> result<_, error-code>;
+
+        /// Bind to local address
+        bind: func(net: borrow<network>, local-address: ip-address, local-port: u16) -> result<_, error-code>;
+
+        /// Listen for incoming connections
+        listen: func(backlog: u32) -> result<_, error-code>;
+
+        /// Accept an incoming connection
+        accept: func() -> result<tuple<tcp-socket, ip-address, u16>, error-code>;
+
+        /// Send data
+        send: func(data: list<u8>) -> result<u64, error-code>;
+
+        /// Receive data
+        receive: func(max-length: u64) -> result<list<u8>, error-code>;
+
+        /// Get local address
+        local-address: func() -> result<tuple<ip-address, u16>, error-code>;
+
+        /// Get remote address
+        remote-address: func() -> result<tuple<ip-address, u16>, error-code>;
+
+        /// Set SO_REUSEADDR option
+        set-reuse-address: func(value: bool) -> result<_, error-code>;
+
+        /// Shutdown socket
+        shutdown: func(how: shutdown-type) -> result<_, error-code>;
+    }
+
+    enum shutdown-type {
+        receive,
+        send,
+        both,
+    }
+}
+
+/// UDP Socket operations
+interface wasi-udp {
+    use wasi-network.{network, ip-address, ip-address-family, error-code};
+
+    resource udp-socket {
+        /// Create a new UDP socket
+        new: static func(address-family: ip-address-family) -> result<udp-socket, error-code>;
+
+        /// Bind to local address
+        bind: func(net: borrow<network>, local-address: ip-address, local-port: u16) -> result<_, error-code>;
+
+        /// Send datagram
+        send-to: func(data: list<u8>, net: borrow<network>, remote-address: ip-address, remote-port: u16) -> result<u64, error-code>;
+
+        /// Receive datagram
+        receive-from: func(max-length: u64) -> result<tuple<list<u8>, ip-address, u16>, error-code>;
+
+        /// Get local address
+        local-address: func() -> result<tuple<ip-address, u16>, error-code>;
+
+        /// Set SO_REUSEADDR option
+        set-reuse-address: func(value: bool) -> result<_, error-code>;
+    }
+}
+
 /// Core scheduler data structures and DSL parsing
 interface types {
     /// A workflow scenario parsed from YAML
@@ -63,7 +176,141 @@ interface parser {
     validate-scenario: func(scenario: scenario) -> result<_, string>;
 }
 
+/// WASI socket abstraction for network communication
+interface socket {
+    /// Socket address family
+    enum address-family {
+        ipv4,
+        ipv6,
+    }
+
+    /// Socket protocol type
+    enum socket-protocol {
+        tcp,
+        udp,
+    }
+
+    /// Socket address
+    record socket-address {
+        host: string,
+        port: u16,
+    }
+
+    /// Socket handle (opaque resource ID)
+    type socket-handle = u32;
+
+    /// Socket error types
+    enum socket-error {
+        connection-refused,
+        connection-reset,
+        connection-aborted,
+        network-unreachable,
+        address-in-use,
+        address-not-available,
+        timeout,
+        would-block,
+        invalid-input,
+        other,
+    }
+
+    /// Create a new socket
+    /// Returns a socket handle or error
+    create-socket: func(
+        family: address-family,
+        protocol: socket-protocol
+    ) -> result<socket-handle, socket-error>;
+
+    /// Connect to a remote address (TCP)
+    connect: func(
+        socket: socket-handle,
+        address: socket-address
+    ) -> result<_, socket-error>;
+
+    /// Bind socket to local address
+    bind: func(
+        socket: socket-handle,
+        address: socket-address
+    ) -> result<_, socket-error>;
+
+    /// Listen for incoming connections (TCP)
+    listen: func(
+        socket: socket-handle,
+        backlog: u32
+    ) -> result<_, socket-error>;
+
+    /// Accept an incoming connection (TCP)
+    /// Returns new socket handle for the connection
+    accept: func(
+        socket: socket-handle
+    ) -> result<socket-handle, socket-error>;
+
+    /// Send data through socket
+    /// Returns number of bytes sent
+    send: func(
+        socket: socket-handle,
+        data: list<u8>
+    ) -> result<u64, socket-error>;
+
+    /// Receive data from socket
+    /// Returns received data
+    receive: func(
+        socket: socket-handle,
+        max-len: u64
+    ) -> result<list<u8>, socket-error>;
+
+    /// Send data to specific address (UDP)
+    send-to: func(
+        socket: socket-handle,
+        data: list<u8>,
+        address: socket-address
+    ) -> result<u64, socket-error>;
+
+    /// Receive data with sender address (UDP)
+    /// Returns (data, sender-address)
+    receive-from: func(
+        socket: socket-handle,
+        max-len: u64
+    ) -> result<tuple<list<u8>, socket-address>, socket-error>;
+
+    /// Close socket
+    close: func(socket: socket-handle) -> result<_, socket-error>;
+
+    /// Set socket option: read timeout in milliseconds
+    set-read-timeout: func(
+        socket: socket-handle,
+        timeout-ms: option<u64>
+    ) -> result<_, socket-error>;
+
+    /// Set socket option: write timeout in milliseconds
+    set-write-timeout: func(
+        socket: socket-handle,
+        timeout-ms: option<u64>
+    ) -> result<_, socket-error>;
+
+    /// Set socket option: reuse address
+    set-reuse-address: func(
+        socket: socket-handle,
+        reuse: bool
+    ) -> result<_, socket-error>;
+
+    /// Get local address of socket
+    get-local-address: func(
+        socket: socket-handle
+    ) -> result<socket-address, socket-error>;
+
+    /// Get peer address of socket (for connected sockets)
+    get-peer-address: func(
+        socket: socket-handle
+    ) -> result<socket-address, socket-error>;
+}
+
 world scheduler-core {
+    // Import WASI socket interfaces
+    import wasi-network;
+    import wasi-tcp;
+    import wasi-udp;
+
     export types;
     export parser;
+    export socket;
 }
