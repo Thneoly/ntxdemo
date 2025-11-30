@@ -1,36 +1,25 @@
 // Component bindings for scheduler-actions-http
 #[cfg(target_arch = "wasm32")]
 mod bindings {
-    use crate::{HttpActionComponent, extract_body, extract_headers, extract_url};
+    use crate::extract_url;
     use indexmap::IndexMap;
     use scheduler_core::dsl::ActionDef;
-    use scheduler_executor::{ActionComponent, ActionOutcome};
 
     wit_bindgen::generate!({
         world: "http-action-component",
-        path: "../wit",
+        path: "wit",
     });
 
-    struct HttpActionComponentImpl {
-        component: HttpActionComponent,
-    }
+    struct HttpActionComponentImpl;
 
-    impl HttpActionComponentImpl {
-        fn new() -> Self {
-            Self {
-                component: HttpActionComponent::default(),
-            }
-        }
-    }
-
-    impl Guest for HttpActionComponentImpl {
+    impl exports::scheduler::actions_http::http_component::Guest for HttpActionComponentImpl {
         fn init_component() -> Result<(), String> {
             Ok(())
         }
 
         fn do_http_action(
-            action: exports::types::ActionDef,
-        ) -> Result<exports::types::ActionOutcome, String> {
+            action: exports::scheduler::actions_http::types::ActionDef,
+        ) -> Result<exports::scheduler::actions_http::types::ActionOutcome, String> {
             // Convert wit action to native ActionDef
             let with_params: IndexMap<String, serde_yaml::Value> =
                 serde_json::from_str(&action.with_params)
@@ -58,16 +47,16 @@ mod bindings {
                 extract_url(&native_action).map_err(|e| format!("failed to extract url: {}", e))?;
 
             if url.contains("{{") {
-                return Ok(exports::types::ActionOutcome {
-                    status: exports::types::ActionStatus::Success,
+                return Ok(exports::scheduler::actions_http::types::ActionOutcome {
+                    status: exports::scheduler::actions_http::types::ActionStatus::Success,
                     detail: Some(format!("skip unresolved template url={}", url)),
                 });
             }
 
             // For wasm32, we'd use wasi:http imports instead of ureq
             // This is a simplified stub
-            Ok(exports::types::ActionOutcome {
-                status: exports::types::ActionStatus::Success,
+            Ok(exports::scheduler::actions_http::types::ActionOutcome {
+                status: exports::scheduler::actions_http::types::ActionStatus::Success,
                 detail: Some(format!("HTTP {} {} (wasm stub)", method, url)),
             })
         }

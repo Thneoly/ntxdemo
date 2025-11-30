@@ -3,16 +3,20 @@ use scheduler_core::dsl::ActionDef;
 use scheduler_executor::{ActionComponent, ActionContext, ActionOutcome};
 use serde_json::Value as JsonValue;
 use serde_yaml::Value;
+
+#[cfg(not(target_arch = "wasm32"))]
 use ureq::Agent;
 
 #[cfg(target_arch = "wasm32")]
 pub mod component;
 
 /// 真实业务组件：根据 DSL action 描述发起 HTTP 请求。
+#[cfg(not(target_arch = "wasm32"))]
 pub struct HttpActionComponent {
     agent: Agent,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for HttpActionComponent {
     fn default() -> Self {
         let agent = Agent::new();
@@ -20,12 +24,14 @@ impl Default for HttpActionComponent {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl HttpActionComponent {
     pub fn new() -> Self {
         Self::default()
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ActionComponent for HttpActionComponent {
     fn init(&mut self) -> Result<()> {
         Ok(())
