@@ -9,7 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 anyhow = "1.0"
 scheduler-core = { path = "../core-libs" }
-wit-bindgen = { version = "0.38", features = ["realloc"] }
+wit-bindgen = { version = "0.48", features = ["realloc"] }
 
 [package.metadata.component]
 package = "scheduler:executor"
