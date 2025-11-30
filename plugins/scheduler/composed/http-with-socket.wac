@@ -1,0 +1,20 @@
+// WebAssembly Composition for HTTP Action using Core-Libs Socket
+// This composition connects the actions-http component with core-libs socket implementation
+
+// Package declarations
+package scheduler:http-with-socket@0.1.0 {
+    
+    // Core libraries component (provides socket and IP pool)
+    let core = new scheduler:core-libs { }
+    
+    // HTTP action component (uses socket from core-libs)
+    let http-action = new scheduler:actions-http {
+        // Wire socket imports to core-libs exports
+        import scheduler:core-libs/socket = core.socket,
+        import scheduler:core-libs/types = core.types,
+    }
+    
+    // Export the HTTP action interface
+    export http-action.http-component
+    export http-action.types
+}

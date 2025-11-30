@@ -36,7 +36,12 @@ interface http-component {
 }
 
 /// HTTP action component implementation
+/// Note: This component uses core-libs socket API via Rust dependency (not WIT import)
+/// For component composition, see ARCHITECTURE.md
 world http-action-component {
+    // Socket functionality is provided through Rust dependency on scheduler-core
+    // not through WIT imports (see ARCHITECTURE.md for rationale)
+
     export types;
     export http-component;
 }

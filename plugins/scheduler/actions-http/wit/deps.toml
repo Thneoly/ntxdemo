@@ -1,5 +1,6 @@
 # Dependencies
 executor = { path = "../../executor/wit" }
+core-libs = { path = "../../core-libs/wit" }
 
 # WASI dependencies
 http = "https://github.com/WebAssembly/wasi-http/archive/main.tar.gz"
