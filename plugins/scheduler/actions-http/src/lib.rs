@@ -1,239 +1,105 @@
-use anyhow::{Context, Result, anyhow};
-use scheduler_core::dsl::ActionDef;
-use scheduler_core::socket::{self, AddressFamily, SocketAddress, SocketProtocol};
-use scheduler_executor::{ActionComponent, ActionContext, ActionOutcome, ActionStatus};
-use serde_json::Value as JsonValue;
-use serde_yaml::Value;
-
-// HTTP client using raw sockets
 pub mod http_client;
 
-#[cfg(target_arch = "wasm32")]
-pub mod component;
+wit_bindgen::generate!({
+    world: "http-action-component",
+    path: "wit",
+    generate_all,
+    debug: true,
+});
 
-/// HTTP Action 组件（基于 core-libs socket）
-///
-/// 使用 core-libs 的 socket API 执行 HTTP 请求
-pub struct HttpActionComponent {
-    // No state needed for socket-based implementation
+use crate::http_client::{HttpRequest, HttpResponse};
+use indexmap::IndexMap;
+use serde_json::Value as JsonValue;
+use serde_yaml::Value;
+use std::{net::IpAddr, time::Duration};
+
+use crate::exports::scheduler::executor_types::types::{ActionOutcome, ActionStatus};
+use scheduler::core_libs::socket::{
+    self as core_socket, AddressFamily, SocketAddress, SocketError, SocketProtocol,
+};
+use scheduler::core_libs::types::ActionDef;
+
+struct HttpActionComponentImpl;
+
+#[derive(Clone)]
+struct LocalActionDef {
+    id: String,
+    call: String,
+    with: IndexMap<String, Value>,
 }
 
-impl HttpActionComponent {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
+/// Lightweight TCP socket wrapper backed by scheduler-core WIT imports
+struct WasiSocket(u32);
 
-impl Default for HttpActionComponent {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ActionComponent for HttpActionComponent {
-    fn init(&mut self) -> Result<()> {
-        Ok(())
+impl WasiSocket {
+    fn tcp_v4() -> Result<Self, String> {
+        let handle = core_socket::create_socket(AddressFamily::Ipv4, SocketProtocol::Tcp)
+            .map_err(|e| socket_err("create_socket", e))?;
+        Ok(Self(handle))
     }
 
-    fn do_action(
-        &mut self,
-        action: &ActionDef,
-        _ctx: &mut ActionContext<'_>,
-    ) -> Result<ActionOutcome> {
-        // 提取请求参数
-        let url = extract_url(action)?;
-        let headers = extract_headers(action);
-        let body = extract_body(action)?;
-        let bind_ip = extract_bind_ip(action);
-
-        // 构建 HTTP 请求
-        let mut http_request = http_client::HttpRequest::new(&action.call, &url);
-
-        // 添加请求头
-        for (key, value) in headers {
-            http_request = http_request.header(key, value);
-        }
-
-        // 添加请求体
-        if let Some(body_str) = body {
-            http_request = http_request.body(body_str.into_bytes());
-        }
-
-        // 如果指定了 bind_ip，在日志中显示
-        if let Some(ip) = &bind_ip {
-            println!(
-                "[HTTP] {} {} (bind_ip: {})",
-                action.call.to_uppercase(),
-                url,
-                ip
-            );
-        } else {
-            println!("[HTTP] {} {}", action.call.to_uppercase(), url);
-        }
-
-        // 发送请求（使用 core-libs socket）
-        let response = send_http_request(&http_request, bind_ip.as_deref())
-            .with_context(|| format!("Failed to send {} request to {}", action.call, url))?;
-
-        let status_code = response.status_code;
-        let success = response.is_success();
-        let _response_body = response
-            .body_string()
-            .unwrap_or_else(|_| format!("<binary data: {} bytes>", response.body.len()));
-
-        let status = if success {
-            ActionStatus::Success
-        } else {
-            ActionStatus::Failed
+    fn bind_ip(&self, ip: IpAddr, port: u16) -> Result<(), String> {
+        let addr = SocketAddress {
+            host: ip.to_string(),
+            port,
         };
-
-        let detail = format!(
-            "{} {} -> {} ({} bytes)",
-            action.call.to_uppercase(),
-            url,
-            status_code,
-            response.body.len()
-        );
-
-        Ok(ActionOutcome {
-            status,
-            detail: Some(detail),
-        })
+        core_socket::bind(self.0, &addr).map_err(|e| socket_err("bind", e))
     }
 
-    fn release(&mut self) -> Result<()> {
-        Ok(())
+    fn connect(&self, host: &str, port: u16) -> Result<(), String> {
+        let addr = SocketAddress {
+            host: host.to_string(),
+            port,
+        };
+        core_socket::connect(self.0, &addr).map_err(|e| socket_err("connect", e))
+    }
+
+    fn send(&self, data: &[u8]) -> Result<(), String> {
+        core_socket::send(self.0, data)
+            .map_err(|e| socket_err("send", e))
+            .map(|_| ())
+    }
+
+    fn recv(&self, max_len: u64) -> Result<Vec<u8>, String> {
+        core_socket::receive(self.0, max_len).map_err(|e| socket_err("receive", e))
+    }
+
+    fn close(&self) {
+        let _ = core_socket::close(self.0);
     }
 }
 
-/// Send HTTP request using core-libs socket
-fn send_http_request(
-    request: &http_client::HttpRequest,
-    bind_ip: Option<&str>,
-) -> Result<http_client::HttpResponse> {
-    // Parse URL
-    let (host, port, _path, is_https) = request.parse_url()?;
-
-    if is_https {
-        return Err(anyhow!(
-            "HTTPS not yet supported in socket-based implementation"
-        ));
+impl Drop for WasiSocket {
+    fn drop(&mut self) {
+        self.close();
     }
-
-    // Create TCP socket
-    let socket = socket::create_socket(AddressFamily::Ipv4, SocketProtocol::Tcp)
-        .map_err(|e| anyhow!("Failed to create socket: {}", e))?;
-
-    // Bind to specific IP if requested
-    if let Some(ip_str) = bind_ip {
-        let bind_addr = SocketAddress::new(ip_str, 0);
-        socket::bind(socket, bind_addr)
-            .map_err(|e| anyhow!("Failed to bind to {}: {}", ip_str, e))?;
-    }
-
-    // Connect to remote host
-    let remote_addr = SocketAddress::new(&host, port);
-    socket::connect(socket, remote_addr)
-        .map_err(|e| anyhow!("Failed to connect to {}:{}: {}", host, port, e))?;
-
-    // Send HTTP request
-    let request_bytes = request.build_request_bytes()?;
-    socket::send(socket, &request_bytes).map_err(|e| anyhow!("Failed to send request: {}", e))?;
-
-    // Receive response (headers + body)
-    let mut response_data = Vec::new();
-    let mut header_len: Option<usize> = None;
-    let mut expected_len: Option<usize> = None;
-
-    const EMPTY_READ_RETRIES: usize = 200; // ~1s @ 5ms sleep
-    let mut empty_reads = 0usize;
-
-    loop {
-        match socket::receive(socket, 8192) {
-            Ok(chunk) => {
-                if chunk.is_empty() {
-                    if response_data.is_empty() && empty_reads < EMPTY_READ_RETRIES {
-                        empty_reads += 1;
-                        std::thread::sleep(std::time::Duration::from_millis(5));
-                        continue;
-                    }
-                    break;
-                }
-                empty_reads = 0;
-                response_data.extend_from_slice(&chunk);
-
-                if header_len.is_none() {
-                    if let Some(idx) = find_header_end(&response_data) {
-                        header_len = Some(idx + 4);
-                        expected_len =
-                            content_length(&response_data[..idx]).map(|len| idx + 4 + len);
-                    }
-                }
-
-                if let Some(total) = expected_len {
-                    if response_data.len() >= total {
-                        break;
-                    }
-                }
-            }
-            Err(e) => {
-                if response_data.is_empty() {
-                    return Err(anyhow!("Failed to receive response: {}", e));
-                }
-                break;
-            }
-        }
-    }
-
-    // Close socket
-    let _ = socket::close(socket);
-
-    if find_header_end(&response_data).is_none() {
-        return Err(anyhow!(
-            "incomplete HTTP response ({} bytes): {:?}",
-            response_data.len(),
-            String::from_utf8_lossy(&response_data)
-        ));
-    }
-
-    // Parse HTTP response
-    http_client::HttpResponse::parse(&response_data)
 }
 
-fn find_header_end(data: &[u8]) -> Option<usize> {
-    if data.len() < 4 {
-        return None;
-    }
-    data.windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|idx| idx)
+fn socket_err(op: &str, err: SocketError) -> String {
+    format!("{} failed: {:?}", op, err)
 }
 
-fn content_length(header_bytes: &[u8]) -> Option<usize> {
-    let header = String::from_utf8_lossy(header_bytes);
-    for line in header.lines() {
-        if let Some(rest) = line
-            .strip_prefix("Content-Length:")
-            .or_else(|| line.strip_prefix("content-length:"))
-        {
-            return rest.trim().parse().ok();
-        }
-    }
-    None
+fn parse_action_def(action: ActionDef) -> Result<LocalActionDef, String> {
+    let with: IndexMap<String, Value> = serde_json::from_str(&action.with_params)
+        .map_err(|e| format!("failed to parse with-params: {}", e))?;
+
+    Ok(LocalActionDef {
+        id: action.id,
+        call: action.call,
+        with,
+    })
 }
 
-/// Extract URL from action definition
-pub fn extract_url(action: &ActionDef) -> Result<String> {
+fn extract_url(action: &LocalActionDef) -> Result<String, String> {
     action
         .with
         .get("url")
         .and_then(Value::as_str)
         .map(|s| s.to_string())
-        .ok_or_else(|| anyhow!("action `{}` missing `with.url`", action.id))
+        .ok_or_else(|| format!("action `{}` missing `with.url`", action.id))
 }
 
-/// Extract headers from action definition
-pub fn extract_headers(action: &ActionDef) -> Vec<(String, String)> {
+fn extract_headers(action: &LocalActionDef) -> Vec<(String, String)> {
     action
         .with
         .get("headers")
@@ -250,8 +116,7 @@ pub fn extract_headers(action: &ActionDef) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-/// Extract body from action definition
-pub fn extract_body(action: &ActionDef) -> Result<Option<String>> {
+fn extract_body(action: &LocalActionDef) -> Result<Option<String>, String> {
     let Some(body) = action.with.get("body") else {
         return Ok(None);
     };
@@ -260,16 +125,191 @@ pub fn extract_body(action: &ActionDef) -> Result<Option<String>> {
         return Ok(Some(raw.to_string()));
     }
 
-    let json_value: JsonValue = serde_yaml::from_value(body.clone()).context("body to json")?;
-    let body_str = serde_json::to_string(&json_value).context("json to string")?;
-    Ok(Some(body_str))
+    let json_value: JsonValue =
+        serde_yaml::from_value(body.clone()).map_err(|e| format!("body to json: {}", e))?;
+    serde_json::to_string(&json_value)
+        .map(Some)
+        .map_err(|e| format!("json to string: {}", e))
 }
 
-/// Extract bind_ip from action definition
-pub fn extract_bind_ip(action: &ActionDef) -> Option<String> {
+fn extract_bind_ip(action: &LocalActionDef) -> Option<IpAddr> {
     action
         .with
         .get("bind_ip")
         .and_then(Value::as_str)
-        .map(|s| s.to_string())
+        .and_then(|s| s.parse::<IpAddr>().ok())
 }
+
+/// Execute HTTP request using scheduler-core socket imports
+fn execute_http_request(
+    request: &HttpRequest,
+    bind_ip: Option<IpAddr>,
+) -> Result<HttpResponse, String> {
+    let (host, port, _, is_https) = request
+        .parse_url()
+        .map_err(|e| format!("Failed to parse URL: {}", e))?;
+
+    if is_https {
+        return Err("HTTPS not yet supported (TLS required)".to_string());
+    }
+
+    let socket = WasiSocket::tcp_v4()?;
+
+    if let Some(ip) = bind_ip {
+        socket.bind_ip(ip, 0)?;
+    }
+
+    socket.connect(&host, port)?;
+
+    let request_bytes = request
+        .build_request_bytes()
+        .map_err(|e| format!("Failed to build request: {}", e))?;
+    socket.send(&request_bytes)?;
+
+    let mut response_data = Vec::new();
+    let mut header_end: Option<usize> = None;
+    let mut expected_len: Option<usize> = None;
+
+    const EMPTY_READ_RETRIES: usize = 200;
+    let mut empty_reads = 0usize;
+
+    loop {
+        let chunk = socket.recv(8192)?;
+        if chunk.is_empty() {
+            if response_data.is_empty() && empty_reads < EMPTY_READ_RETRIES {
+                empty_reads += 1;
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            break;
+        }
+
+        empty_reads = 0;
+        response_data.extend_from_slice(&chunk);
+
+        if header_end.is_none() {
+            if let Some(idx) = find_header_end(&response_data) {
+                header_end = Some(idx + 4);
+                expected_len = content_length(&response_data[..idx]).map(|len| idx + 4 + len);
+            }
+        }
+
+        if let Some(total) = expected_len {
+            if response_data.len() >= total {
+                break;
+            }
+        }
+    }
+
+    socket.close();
+
+    if response_data.is_empty() {
+        return Err("No response data received".to_string());
+    }
+
+    HttpResponse::parse(&response_data).map_err(|e| format!("Failed to parse response: {}", e))
+}
+
+fn find_header_end(data: &[u8]) -> Option<usize> {
+    if data.len() < 4 {
+        return None;
+    }
+    data.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+fn content_length(header_bytes: &[u8]) -> Option<usize> {
+    let header = String::from_utf8_lossy(header_bytes);
+    for line in header.lines() {
+        if let Some(rest) = line
+            .strip_prefix("Content-Length:")
+            .or_else(|| line.strip_prefix("content-length:"))
+        {
+            if let Ok(value) = rest.trim().parse::<usize>() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+impl exports::scheduler::actions_http::http_component::Guest for HttpActionComponentImpl {
+    fn init_component() -> Result<(), String> {
+        Ok(())
+    }
+
+    fn do_http_action(action: ActionDef) -> Result<ActionOutcome, String> {
+        let action = parse_action_def(action)?;
+
+        let url = extract_url(&action)?;
+        if url.contains("{{") {
+            return Ok(ActionOutcome {
+                status: ActionStatus::Success,
+                detail: Some(format!("skip unresolved template url={}", url)),
+            });
+        }
+
+        let bind_ip = extract_bind_ip(&action);
+        let method = action.call.to_uppercase();
+        let mut request = HttpRequest::new(&method, &url);
+
+        for (key, value) in extract_headers(&action) {
+            request = request.header(key, value);
+        }
+
+        if let Some(body) = extract_body(&action)? {
+            request = request.body(body.into_bytes());
+        }
+
+        match execute_http_request(&request, bind_ip) {
+            Ok(response) => {
+                let detail = if response.is_success() {
+                    let bind_info = bind_ip
+                        .map(|ip| format!(" from_ip={}", ip))
+                        .unwrap_or_default();
+                    format!(
+                        "{} {} status={} body_len={}{}",
+                        method,
+                        url,
+                        response.status_code,
+                        response.body.len(),
+                        bind_info
+                    )
+                } else {
+                    let body_preview = response
+                        .body_string()
+                        .unwrap_or_else(|_| format!("<binary {} bytes>", response.body.len()));
+                    let truncated = if body_preview.len() > 200 {
+                        format!("{}...", &body_preview[..200])
+                    } else {
+                        body_preview
+                    };
+                    format!(
+                        "{} {} status={} body={}",
+                        method, url, response.status_code, truncated
+                    )
+                };
+
+                let status = if response.is_success() {
+                    ActionStatus::Success
+                } else {
+                    ActionStatus::Failed
+                };
+
+                Ok(ActionOutcome {
+                    status,
+                    detail: Some(detail),
+                })
+            }
+            Err(err) => Ok(ActionOutcome {
+                status: ActionStatus::Failed,
+                detail: Some(format!("HTTP request failed: {}", err)),
+            }),
+        }
+    }
+
+    fn release_component() -> Result<(), String> {
+        Ok(())
+    }
+}
+
+export!(HttpActionComponentImpl);

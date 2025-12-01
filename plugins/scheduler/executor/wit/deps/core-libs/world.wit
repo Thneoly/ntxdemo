@@ -1,0 +1,107 @@
+package scheduler:core-libs@0.1.0;
+
+use wasi:sockets/network@0.2.6;
+use wasi:sockets/tcp@0.2.6;
+use wasi:sockets/udp@0.2.6;
+use wasi:sockets/tcp-create-socket@0.2.6;
+use wasi:sockets/udp-create-socket@0.2.6;
+use wasi:sockets/instance-network@0.2.6;
+
+interface types {
+    record scenario {
+        version: string,
+        name: string,
+        resources: list<resource-def>,
+        actions: list<action-def>,
+        nodes: list<workflow-node>,
+    }
+
+    record resource-def {
+        id: string,
+        resource-type: string,
+        properties: string,
+    }
+
+    record action-def {
+        id: string,
+        call: string,
+        with-params: string,
+        exports: list<export-def>,
+    }
+
+    record export-def {
+        export-type: string,
+        name: string,
+        scope: option<string>,
+        default-value: option<string>,
+    }
+
+    record workflow-node {
+        id: string,
+        node-type: node-type,
+        action: option<string>,
+        edges: list<workflow-edge>,
+    }
+
+    enum node-type {
+        action,
+        end,
+    }
+
+    record workflow-edge {
+        to: string,
+        condition: option<string>,
+        label: option<string>,
+    }
+}
+
+interface parser {
+    use types.{scenario};
+    parse-scenario: func(yaml: string) -> result<scenario, string>;
+    validate-scenario: func(scenario: scenario) -> result<_, string>;
+}
+
+interface socket {
+    enum address-family { ipv4, ipv6 }
+    enum socket-protocol { tcp, udp }
+
+    record socket-address {
+        host: string,
+        port: u16,
+    }
+
+    type socket-handle = u32;
+
+    enum socket-error {
+        connection-refused,
+        connection-reset,
+        connection-aborted,
+        network-unreachable,
+        address-in-use,
+        address-not-available,
+        timeout,
+        would-block,
+        invalid-input,
+        other,
+    }
+
+    create-socket: func(family: address-family, protocol: socket-protocol) -> result<socket-handle, socket-error>;
+    connect: func(socket: socket-handle, address: socket-address) -> result<_, socket-error>;
+    bind: func(socket: socket-handle, address: socket-address) -> result<_, socket-error>;
+    send: func(socket: socket-handle, data: list<u8>) -> result<u64, socket-error>;
+    receive: func(socket: socket-handle, max-length: u64) -> result<list<u8>, socket-error>;
+    close: func(socket: socket-handle) -> result<_, socket-error>;
+}
+
+world scheduler-core {
+    import wasi:sockets/network@0.2.6;
+    import wasi:sockets/tcp@0.2.6;
+    import wasi:sockets/udp@0.2.6;
+    import wasi:sockets/tcp-create-socket@0.2.6;
+    import wasi:sockets/udp-create-socket@0.2.6;
+    import wasi:sockets/instance-network@0.2.6;
+
+    export types;
+    export parser;
+    export socket;
+}

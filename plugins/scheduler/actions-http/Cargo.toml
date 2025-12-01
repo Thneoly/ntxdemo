@@ -8,12 +8,14 @@ crate-type = ["cdylib", "rlib"]  # Component mode
 
 [dependencies]
 anyhow = "1.0"
-indexmap = "2.6"
-scheduler-core = { path = "../core-libs" }
-scheduler-executor = { path = "../executor" }
+indexmap = { version = "2.6", features = ["serde"] }
 serde_json = "1.0"
 serde_yaml = "0.9.34-deprecated"
 wit-bindgen = { version = "0.48", features = ["realloc"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+scheduler-core = { path = "../core-libs" }
+scheduler-executor = { path = "../executor" }
 
 [package.metadata.component]
 package = "scheduler:actions-http"

@@ -1,19 +1,10 @@
 package scheduler:main;
 
-/// Scheduler Component World
-///
-/// This component provides load testing functionality with:
-/// - IP pool management
-/// - User lifecycle management
-/// - HTTP action execution
-/// - Statistics collection
+use scheduler:actions-http/http-component@0.1.0;
+use scheduler:executor-types/types@0.1.0 as exec-types;
+
 world scheduler-component {
-    /// Main entry point - runs a load testing scenario from YAML
-    ///
-    /// Parameters:
-    ///   scenario-yaml: YAML string defining the test scenario
-    ///
-    /// Returns:
-    ///   result<string, string>: Success with summary JSON or error message
+    import http-component;
+    export exec-types;
     export run-scenario: func(scenario-yaml: string) -> result<string, string>;
 }

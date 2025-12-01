@@ -1,5 +1,3 @@
-// Component bindings for scheduler-core
-#[cfg(target_arch = "wasm32")]
 wit_bindgen::generate!({
     world: "scheduler-core",
     path: "wit",
@@ -7,10 +5,8 @@ wit_bindgen::generate!({
     debug: true
 });
 
-#[cfg(target_arch = "wasm32")]
 struct SchedulerCoreImpl;
 
-#[cfg(target_arch = "wasm32")]
 impl exports::scheduler::core_libs::parser::Guest for SchedulerCoreImpl {
     fn parse_scenario(
         yaml: String,
@@ -35,7 +31,6 @@ impl exports::scheduler::core_libs::parser::Guest for SchedulerCoreImpl {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl exports::scheduler::core_libs::socket::Guest for SchedulerCoreImpl {
     fn create_socket(
         family: exports::scheduler::core_libs::socket::AddressFamily,
@@ -114,5 +109,4 @@ impl exports::scheduler::core_libs::socket::Guest for SchedulerCoreImpl {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 export!(SchedulerCoreImpl);

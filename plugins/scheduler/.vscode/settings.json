@@ -5,6 +5,9 @@
         "--workspace",
         "--all-targets",
         "--message-format=json"
+    ],
+    "rust-analyzer.check.extraArgs": [
+        "component",
+        "check"
     ]
-}
 }

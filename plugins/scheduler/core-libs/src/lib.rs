@@ -6,7 +6,6 @@ pub mod state_machine;
 pub mod wbs;
 pub mod workbook;
 
-#[cfg(target_arch = "wasm32")]
 pub mod component;
 
 pub use dsl::*;

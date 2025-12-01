@@ -1,6 +1,3 @@
-/// HTTP client implementation using core-libs socket API
-/// This module provides HTTP request functionality using raw TCP sockets
-/// instead of wasi-http, allowing for IP binding and custom networking.
 use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
 

@@ -7,8 +7,6 @@ use std::thread;
 use std::time::Duration;
 
 use crate::TemplateContext;
-#[cfg(not(target_arch = "wasm32"))]
-use ctrlc;
 use indexmap::IndexSet;
 use scheduler_actions_http::HttpActionComponent;
 use scheduler_core::{

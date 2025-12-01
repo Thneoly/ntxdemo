@@ -8,8 +8,10 @@ crate-type = ["cdylib", "rlib"]  # Component mode
 
 [dependencies]
 anyhow = "1.0"
-scheduler-core = { path = "../core-libs" }
 wit-bindgen = { version = "0.48", features = ["realloc"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+scheduler-core = { path = "../core-libs" }
 
 [package.metadata.component]
 package = "scheduler:executor"
