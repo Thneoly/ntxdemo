@@ -1,5 +1,6 @@
 // WAC composition that wires scheduler, actions-http, and core-libs together.
 // 放到deps文件夹内  ## wac compose wac/scheduler-composition.wac --deps-dir wac/deps -o wac/scheduler-composed.wasm
+// SCENARIO_CONTENT=$(cat res/http_scenario.yaml) && WASMTIME_BACKTRACE_DETAILS=1 wasmtime run -S tcp=y -S inherit-network=y --invoke="run-scenario(string)" wac/scheduler-composed.wasm -- "$SCENARIO_CONTENT"
 package scheduler:composition@0.1.0;
 
 let core = new scheduler:core-libs {

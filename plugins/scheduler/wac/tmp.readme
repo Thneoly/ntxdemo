@@ -1,0 +1,21 @@
+cd /home/cc/Desktop/code/GitHub/Ntx/plugins/scheduler && python - <<'PY'
+import pathlib, subprocess, os
+text = pathlib.Path('res/http_scenario.yaml').read_text()
+text = text.replace('\\', '\\\\')
+text = text.replace('"""', '\\"""')
+call = f'run-scenario("""\n{text}\n""")'
+cmd = [
+    'wasmtime',
+    'run',
+    '--wasi', 'tcp=y',
+    '--wasi', 'inherit-network=y',
+    '--invoke',
+    call,
+    'wac/scheduler-composed.wasm',
+]
+env = os.environ.copy()
+env['WASMTIME_BACKTRACE_DETAILS'] = '1'
+print('Running:', ' '.join(cmd))
+proc = subprocess.run(cmd, env=env)
+print('Process exited with', proc.returncode)
+PY
