@@ -36,6 +36,37 @@ cargo run
 
 这些命令会触发顶层构建并执行 `build.rs`。当 `plugins/*` 下有变更时，`build.rs` 可能会在对应子目录执行 `cargo build --target wasm32-wasip2` 或 `sh run.sh`。
 
+### Scheduler 场景运行
+
+仓库内置了一个 scheduler 组件（`plugins/scheduler`）。你可以通过两种方式运行它：
+
+1. **主程序（自动绑定）**
+
+	```bash
+	# 使用默认场景 plugins/scheduler/res/simple_scenario.yaml
+	cargo run
+
+	# 或指定自定义场景 YAML
+	cargo run -- plugins/scheduler/res/http_scenario.yaml
+	```
+
+	- 默认会加载 `plugins/scheduler/target/wasm32-wasip2/debug/scheduler_composed.wasm`。
+	- 如需替换组件，可设置 `SCHEDULER_COMPONENT` 环境变量：
+
+	  ```bash
+	  SCHEDULER_COMPONENT=path/to/your_scheduler.wasm cargo run -- path/to/scenario.yaml
+	  ```
+
+2. **手动调用模式（`src/bin/call.rs`）**
+
+	该二进制展示了如何不用 bindgen 手动查找并调用组件导出的 `run-scenario` 函数：
+
+	```bash
+	cargo run --bin call -- plugins/scheduler/res/http_scenario.yaml
+	```
+
+	行为与主程序一致，同样支持 `SCHEDULER_COMPONENT` 环境变量来指向不同的 `.wasm` 组件。输出会显示 YAML 文本长度与组件返回的 Summary/错误信息。
+
 ### Runner 组件
 - 详细运行手册：`plugins/runner/docs/plan/runbook.md`
 - 数据模型说明：`plugins/runner/docs/plan/sparse_model.md`
