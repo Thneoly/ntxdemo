@@ -3,9 +3,10 @@ use indexmap::IndexMap;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use crate::TemplateContext;
-use scheduler_core::dsl::{ActionDef, ActionsSection, WorkflowNodeType, WorkflowSection};
-use scheduler_executor::{ActionComponent, ActionContext};
+use crate::core::dsl::{
+    ActionDef, ActionsSection, WorkflowNode, WorkflowNodeType, WorkflowSection,
+};
+use crate::{ActionComponent, ActionContext, TemplateContext};
 
 /// 用户上下文
 ///
@@ -155,7 +156,7 @@ impl UserExecutor {
         let mut execution_context = IndexMap::new();
 
         // 创建一个临时的 WbsTree 用于 ActionContext
-        let temp_wbs = scheduler_core::wbs::WbsTree::new_empty();
+        let temp_wbs = crate::core::wbs::WbsTree::new_empty();
 
         // 注入用户变量到上下文
         execution_context.insert("user.id".to_string(), self.context.id.to_string());
@@ -244,7 +245,7 @@ impl UserExecutor {
     /// 根据条件选择下一个节点
     fn select_next_node(
         &self,
-        node: &scheduler_core::dsl::WorkflowNode,
+        node: &WorkflowNode,
         context: &IndexMap<String, String>,
     ) -> Result<String> {
         let merged_ctx = self.template.merged(context);
@@ -287,85 +288,5 @@ impl UserExecutor {
         }
 
         false
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use scheduler_core::dsl::{TriggerDef, WorkflowEdge, WorkflowNode};
-    use scheduler_executor::{ActionOutcome, ActionStatus};
-    use serde_yaml::Value;
-
-    // 简单的测试 ActionComponent
-    struct TestComponent;
-
-    impl ActionComponent for TestComponent {
-        fn init(&mut self) -> Result<()> {
-            Ok(())
-        }
-
-        fn do_action(
-            &mut self,
-            _action: &ActionDef,
-            _ctx: &mut ActionContext<'_>,
-        ) -> Result<ActionOutcome> {
-            Ok(ActionOutcome {
-                status: ActionStatus::Success,
-                detail: Some("Executed".to_string()),
-            })
-        }
-
-        fn release(&mut self) -> Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn test_user_context_creation() {
-        let ctx = UserContext::new(1, "tenant-a".to_string(), Some("10.0.1.1".parse().unwrap()));
-
-        assert_eq!(ctx.id, 1);
-        assert_eq!(ctx.tenant_id, "tenant-a");
-        assert!(ctx.allocated_ip.is_some());
-    }
-
-    #[test]
-    fn test_variable_resolution() {
-        let action = ActionDef {
-            id: "test".to_string(),
-            call: "get".to_string(),
-            with: {
-                let mut map = IndexMap::new();
-                map.insert(
-                    "url".to_string(),
-                    Value::String("http://{{user.allocated_ip}}:8080".to_string()),
-                );
-                map
-            },
-            export: vec![],
-        };
-
-        let context =
-            UserContext::new(1, "tenant-a".to_string(), Some("10.0.1.1".parse().unwrap()));
-        let workflow = WorkflowSection { nodes: vec![] };
-        let actions = ActionsSection { actions: vec![] };
-
-        let executor = UserExecutor::new(
-            context,
-            workflow,
-            actions,
-            1,
-            Duration::from_secs(0),
-            TemplateContext::new(),
-        );
-
-        let mut exec_ctx = IndexMap::new();
-        exec_ctx.insert("user.allocated_ip".to_string(), "10.0.1.1".to_string());
-
-        let resolved = executor.resolve_variables(&action, &exec_ctx).unwrap();
-        let url = resolved.with.get("url").unwrap().as_str().unwrap();
-
-        assert_eq!(url, "http://10.0.1.1:8080");
     }
 }

@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::net::IpAddr;
 
-use scheduler_core::dsl::IpPoolDef;
-use scheduler_core::ip::{IpPool, ResourceType};
+use crate::core::dsl::IpPoolDef;
+use crate::core::ip::{IpPool, ResourceType};
 
 /// IP 池管理器
 ///

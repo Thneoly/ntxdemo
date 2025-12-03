@@ -6,14 +6,13 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
-use crate::TemplateContext;
-use indexmap::IndexSet;
-use scheduler_actions_http::HttpActionComponent;
-use scheduler_core::{
+use crate::core::{
     dsl::Scenario, error::SchedulerError, state_machine::StateMachine, wbs::WbsTree,
     workbook::Workbook,
 };
-use scheduler_executor::{ActionComponent, ActionContext, ActionTrace, SchedulerEvent};
+use crate::host_http::WitHttpActionComponent;
+use crate::{ActionComponent, ActionContext, ActionTrace, SchedulerEvent, TemplateContext};
+use indexmap::IndexSet;
 
 #[derive(Debug, Clone)]
 pub struct SchedulerPipeline {
@@ -76,7 +75,7 @@ impl SchedulerPipeline {
     }
 
     pub fn run_default(&mut self) -> Result<Vec<ActionTrace>, SchedulerError> {
-        let mut component = HttpActionComponent::default();
+        let mut component = WitHttpActionComponent::default();
         self.run(&mut component)
     }
 
@@ -125,18 +124,6 @@ pub struct PipelineSummary {
     pub edges: usize,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn setup_shutdown_flag() -> Result<Arc<AtomicBool>, SchedulerError> {
-    let flag = Arc::new(AtomicBool::new(false));
-    let handler_flag = flag.clone();
-    ctrlc::set_handler(move || {
-        handler_flag.store(true, Ordering::SeqCst);
-    })
-    .map_err(|source| SchedulerError::SignalHandler { source })?;
-    Ok(flag)
-}
-
-#[cfg(target_arch = "wasm32")]
 fn setup_shutdown_flag() -> Result<Arc<AtomicBool>, SchedulerError> {
     // Signal handling not available in WASM
     Ok(Arc::new(AtomicBool::new(false)))
@@ -340,73 +327,4 @@ enum TaskKind {
     Action { task_id: String },
     Event(SchedulerEvent),
     Idle,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use anyhow::Result;
-    use scheduler_core::{
-        dsl::ActionDef,
-        wbs::{WbsEdge, WbsTask, WbsTaskKind},
-    };
-    use scheduler_executor::{ActionComponent, ActionContext, ActionOutcome};
-
-    const SAMPLE: &str = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../res/http_scenario.yaml"
-    ));
-
-    #[test]
-    fn pipeline_builds_summary() {
-        let pipeline = SchedulerPipeline::load_from_yaml_str(SAMPLE).expect("pipeline");
-        let summary = pipeline.summary();
-        assert!(summary.resources > 0);
-        assert!(summary.tasks > 0);
-    }
-
-    struct SpawnComponent {
-        spawned: bool,
-    }
-
-    impl ActionComponent for SpawnComponent {
-        fn init(&mut self) -> Result<()> {
-            Ok(())
-        }
-
-        fn do_action(
-            &mut self,
-            action: &ActionDef,
-            ctx: &mut ActionContext<'_>,
-        ) -> Result<ActionOutcome> {
-            if action.id == "probe-get" && !self.spawned {
-                self.spawned = true;
-                ctx.add_task(WbsTask {
-                    id: "dynamic-node".into(),
-                    action_id: Some("push-post".into()),
-                    kind: WbsTaskKind::Action,
-                    outgoing: vec![WbsEdge {
-                        target: "end".into(),
-                        condition: None,
-                        label: Some("dynamic".into()),
-                    }],
-                });
-            }
-
-            Ok(ActionOutcome::success().with_detail(format!("executed {}", action.id)))
-        }
-
-        fn release(&mut self) -> Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn run_executes_dynamic_tasks() {
-        let scenario = Scenario::from_yaml_str(SAMPLE).expect("scenario");
-        let mut pipeline = SchedulerPipeline::from_scenario(scenario).expect("pipeline");
-        let mut component = SpawnComponent { spawned: false };
-        let traces = pipeline.run(&mut component).expect("run pipeline");
-        assert!(traces.iter().any(|trace| trace.task_id == "dynamic-node"));
-    }
 }

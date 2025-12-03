@@ -13,6 +13,7 @@ use serde_json::Value as JsonValue;
 use serde_yaml::Value;
 use std::{net::IpAddr, time::Duration};
 
+use crate::exports::scheduler::actions_http::http_component::Guest;
 use crate::exports::scheduler::executor_types::types::{ActionOutcome, ActionStatus};
 use scheduler::core_libs::socket::{
     self as core_socket, AddressFamily, SocketAddress, SocketError, SocketProtocol,
@@ -20,6 +21,43 @@ use scheduler::core_libs::socket::{
 use scheduler::core_libs::types::ActionDef;
 
 struct HttpActionComponentImpl;
+
+pub struct HttpActionComponent {
+    initialized: bool,
+}
+
+impl HttpActionComponent {
+    pub fn new() -> Self {
+        Self { initialized: false }
+    }
+
+    pub fn init_component(&mut self) -> Result<(), String> {
+        if !self.initialized {
+            HttpActionComponentImpl::init_component()?;
+            self.initialized = true;
+        }
+        Ok(())
+    }
+
+    pub fn do_http_action(&mut self, action: ActionDef) -> Result<ActionOutcome, String> {
+        self.init_component()?;
+        HttpActionComponentImpl::do_http_action(action)
+    }
+
+    pub fn release_component(&mut self) -> Result<(), String> {
+        if self.initialized {
+            HttpActionComponentImpl::release_component()?;
+            self.initialized = false;
+        }
+        Ok(())
+    }
+}
+
+impl Default for HttpActionComponent {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Clone)]
 struct LocalActionDef {

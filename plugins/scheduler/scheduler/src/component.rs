@@ -1,12 +1,14 @@
 /// Scheduler WASM Component Implementation
 ///
 /// This module implements the scheduler as a WASM component
-use anyhow::{Context, Result};
-use serde_json as json;
+use anyhow::Result;
 
-use crate::{IpPoolManager, TemplateContext, UserContext, UserExecutor, parse_duration};
-use scheduler_core::dsl::Scenario;
-use scheduler_executor::{ActionComponent, ActionContext, ActionOutcome, ActionStatus};
+use crate::core::dsl::Scenario;
+use crate::core::workbook::Workbook;
+use crate::{
+    IpPoolManager, TemplateContext, UserContext, UserExecutor, host_http::WitHttpActionComponent,
+    parse_duration,
+};
 
 // Generate bindings for the component
 wit_bindgen::generate!({
@@ -16,129 +18,7 @@ wit_bindgen::generate!({
     debug: true,
 });
 
-use scheduler::actions_http::http_component;
-use scheduler::executor_types::types::{
-    ActionDef as WitActionDef, ActionOutcome as WitActionOutcome, ActionStatus as WitActionStatus,
-    ExportDef as WitExportDef,
-};
-
 struct SchedulerComponent;
-
-/// Adapter that forwards ActionComponent calls to the actions-http WIT interface.
-struct WitHttpActionComponent {
-    initialized: bool,
-}
-
-impl WitHttpActionComponent {
-    fn new() -> Self {
-        Self { initialized: false }
-    }
-
-    fn ensure_initialized(&mut self) -> Result<()> {
-        if !self.initialized {
-            http_component::init_component()
-                .map_err(|e| anyhow::anyhow!("http-component init failed: {}", e))?;
-            self.initialized = true;
-        }
-        Ok(())
-    }
-}
-
-impl Default for WitHttpActionComponent {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Drop for WitHttpActionComponent {
-    fn drop(&mut self) {
-        if self.initialized {
-            let _ = http_component::release_component();
-            self.initialized = false;
-        }
-    }
-}
-
-impl ActionComponent for WitHttpActionComponent {
-    fn init(&mut self) -> Result<()> {
-        self.ensure_initialized()
-    }
-
-    fn do_action(
-        &mut self,
-        action: &scheduler_core::dsl::ActionDef,
-        _ctx: &mut ActionContext<'_>,
-    ) -> Result<ActionOutcome> {
-        self.ensure_initialized()?;
-        let wit_action = to_wit_action_def(action)?;
-        let outcome = http_component::do_http_action(wit_action)
-            .map_err(|e| anyhow::anyhow!("http action failed: {}", e))?;
-        Ok(from_wit_outcome(outcome))
-    }
-
-    fn release(&mut self) -> Result<()> {
-        if self.initialized {
-            http_component::release_component()
-                .map_err(|e| anyhow::anyhow!("http-component release failed: {}", e))?;
-            self.initialized = false;
-        }
-        Ok(())
-    }
-}
-
-fn to_wit_action_def(action: &scheduler_core::dsl::ActionDef) -> Result<WitActionDef> {
-    let with_params = json::to_string(&action.with)
-        .context("failed to encode action.with as JSON when calling actions-http")?;
-
-    let exports = action
-        .export
-        .iter()
-        .map(to_wit_export_def)
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok(WitActionDef {
-        id: action.id.clone(),
-        call: action.call.clone(),
-        with_params,
-        exports,
-    })
-}
-
-fn to_wit_export_def(export: &scheduler_core::dsl::ExportDef) -> Result<WitExportDef> {
-    let default_value = export
-        .default
-        .as_ref()
-        .map(yaml_value_to_string)
-        .transpose()?;
-
-    Ok(WitExportDef {
-        export_type: export.export_type.clone(),
-        name: export.name.clone(),
-        scope: export.scope.clone(),
-        default_value,
-    })
-}
-
-fn yaml_value_to_string(value: &serde_yaml::Value) -> Result<String> {
-    if let Some(s) = value.as_str() {
-        Ok(s.to_string())
-    } else {
-        json::to_string(value)
-            .context("failed to encode export.default as JSON when calling actions-http")
-    }
-}
-
-fn from_wit_outcome(outcome: WitActionOutcome) -> ActionOutcome {
-    let status = match outcome.status {
-        WitActionStatus::Success => ActionStatus::Success,
-        WitActionStatus::Failed => ActionStatus::Failed,
-    };
-
-    ActionOutcome {
-        status,
-        detail: outcome.detail,
-    }
-}
 
 impl Guest for SchedulerComponent {
     fn run_scenario(scenario_yaml: String) -> Result<String, String> {
@@ -151,12 +31,14 @@ impl Guest for SchedulerComponent {
 
 fn run_scenario_impl(scenario_yaml: &str) -> Result<String> {
     // Parse scenario
-    let scenario =
-        Scenario::from_yaml_str(scenario_yaml).context("Failed to parse scenario YAML")?;
+    let scenario = Scenario::from_yaml_str(scenario_yaml)
+        .map_err(|e| anyhow::anyhow!("Failed to parse scenario YAML: {e}"))?;
 
-    scenario.validate().context("Scenario validation failed")?;
+    scenario
+        .validate()
+        .map_err(|e| anyhow::anyhow!("Scenario validation failed: {e}"))?;
 
-    let workbook = scheduler_core::workbook::Workbook::from_scenario(&scenario);
+    let workbook = Workbook::from_scenario(&scenario);
     let template_ctx = TemplateContext::from_workbook(&workbook);
 
     let scenario_name = scenario.name.clone();

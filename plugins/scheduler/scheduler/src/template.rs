@@ -1,5 +1,5 @@
+use crate::core::{dsl::ActionDef, workbook::Workbook};
 use indexmap::IndexMap;
-use scheduler_core::{dsl::ActionDef, workbook::Workbook};
 use serde_yaml::{Mapping, Value};
 
 /// Stores template key/value pairs and can render YAML values by replacing

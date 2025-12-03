@@ -1,7 +1,6 @@
 [workspace]
 members = [
 	"core-libs",
-	"executor",
 	"actions-http",
 	"scheduler",
 ]

@@ -8,6 +8,7 @@ use std::{
 use anyhow::{Context, Result};
 use tokio::time::sleep;
 
+use scheduler::core::dsl::{IpBindingStrategy, LoadSection};
 use scheduler::{IpPoolManager, SchedulerPipeline, UserContext, UserExecutor, parse_duration};
 use scheduler_actions_http::HttpActionComponent;
 
@@ -66,12 +67,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_load_test(
-    pipeline: &SchedulerPipeline,
-    load_config: &scheduler_core::dsl::LoadSection,
-) -> Result<()> {
-    use scheduler_core::dsl::IpBindingStrategy;
-
+async fn run_load_test(pipeline: &SchedulerPipeline, load_config: &LoadSection) -> Result<()> {
     // 初始化 IP 池管理器
     let mut ip_manager = IpPoolManager::new();
     if load_config.user_resources.ip_binding.enabled {
