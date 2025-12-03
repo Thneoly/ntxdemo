@@ -77,6 +77,33 @@ wasm-tools validate target/wasm32-wasip2/release/scheduler_core.wasm
 
 See `examples/composition.wac` for a WAC composition example. Full multi-component composition will be available once executor and actions-http are complete.
 
+## Running the composed component with Wasmtime
+
+After generating `wac/scheduler-composed.wasm` (for example via `wac/scheduler-composition.wac`), you can invoke the exported `run-scenario` function directly from Wasmtime. The helper script below loads a scenario file, encodes it as a WAVE multiline string, and forwards it to the component with the required network capabilities enabled.
+
+```bash
+# Default: uses res/http_scenario.yaml and wac/scheduler-composed.wasm
+./scripts/run_scheduler_component.sh
+
+# Custom scenario/component
+./scripts/run_scheduler_component.sh res/simple_scenario.yaml wac/scheduler-composed.wasm
+```
+
+Under the hood the script expands to:
+
+```bash
+WASMTIME_BACKTRACE_DETAILS=1 \
+wasmtime run \
+	--wasi tcp=y \
+	--wasi inherit-network=y \
+	--invoke 'run-scenario("""
+		# YAML contents (escaped as a WAVE multiline string)
+	""")' \
+	wac/scheduler-composed.wasm
+```
+
+> ℹ️ The `--invoke` flag uses the [WAVE](https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasm-wave) text format for component values. Wrapping the YAML payload in a triple-quoted string (`""" ... """`) preserves newlines so `run-scenario` receives the exact scenario text.
+
 ## WIT interface design
 
 Each crate exports typed interfaces defined in its `wit/world.wit`:
