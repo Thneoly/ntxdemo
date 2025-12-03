@@ -5,9 +5,10 @@ use wasmtime::{Config, Engine, Store, component::ResourceTable};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView, p2::add_to_linker_sync};
 
 wasmtime::component::bindgen!({
-    path: "plugins/scheduler/scheduler/wit/world.wit",
+    path: "plugins/scheduler/scheduler/wit",
     world: "scheduler-component",
 });
+
 
 struct HostState {
     wasi: WasiCtx,
