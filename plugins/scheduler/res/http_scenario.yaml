@@ -24,8 +24,8 @@ workbook:
     - id: resource
       type: http_endpoint
       properties:
-        ip: "httpbin.org"
-        port: "80"
+        ip: "127.0.0.1"
+        port: "8080"
 
 # 负载配置 - 用户呼叫模型
 load:
@@ -53,7 +53,7 @@ load:
   # 用户资源绑定配置
   user_resources:
     ip_binding:
-      enabled: true
+      enabled: false
       pool_id: eip-pool-1
       strategy: per_user   # per_user: 每用户独占, shared: 共享, per_task: 每任务分配
       release_on: task_end # task_end: 任务结束释放, user_exit: 用户退出释放

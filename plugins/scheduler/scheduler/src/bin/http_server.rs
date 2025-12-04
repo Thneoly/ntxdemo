@@ -3,7 +3,7 @@ use std::{env, fs, net::SocketAddr, path::PathBuf};
 use anyhow::{Context, Result, anyhow};
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{ConnectInfo, OriginalUri, State},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,7 @@ struct AppState {
     json_payload: Value,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct AssetResponse {
     ip: String,
     port: u16,
@@ -89,7 +89,9 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to bind to {}", addr))?;
     println!("HTTP test server listening on http://{}", addr);
 
-    axum::serve(listener, app)
+    let service = app.into_make_service_with_connect_info::<SocketAddr>();
+
+    axum::serve(listener, service)
         .await
         .context("server terminated unexpectedly")?;
 
@@ -157,44 +159,78 @@ fn print_help() {
     );
 }
 
-async fn handle_get_asset(State(state): State<AppState>) -> Json<AssetResponse> {
-    Json(AssetResponse {
+async fn handle_get_asset(
+    OriginalUri(uri): OriginalUri,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    State(state): State<AppState>,
+) -> Json<AssetResponse> {
+    log_request("GET", uri.path(), &remote, None);
+
+    let response = AssetResponse {
         ip: state.listen_addr.ip().to_string(),
         port: state.listen_addr.port(),
         status_code: state.asset_status,
         asset: state.asset_meta.clone(),
-    })
+    };
+
+    log_asset_response("GET", uri.path(), &remote, &response);
+    Json(response)
 }
 
-async fn handle_health(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({
+async fn handle_health(
+    OriginalUri(uri): OriginalUri,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    State(state): State<AppState>,
+) -> Json<Value> {
+    log_request("GET", uri.path(), &remote, None);
+
+    let body = json!({
         "ip": state.listen_addr.ip().to_string(),
         "port": state.listen_addr.port(),
         "status_code": state.asset_status,
         "payload": state.health_payload.clone(),
-    }))
+    });
+
+    log_response("GET", uri.path(), &remote, state.asset_status, &body);
+    Json(body)
 }
 
-async fn handle_get_json(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({
+async fn handle_get_json(
+    OriginalUri(uri): OriginalUri,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    State(state): State<AppState>,
+) -> Json<Value> {
+    log_request("GET", uri.path(), &remote, None);
+
+    let body = json!({
         "ip": state.listen_addr.ip().to_string(),
         "port": state.listen_addr.port(),
         "status_code": state.asset_status,
         "payload": state.json_payload.clone(),
-    }))
+    });
+
+    log_response("GET", uri.path(), &remote, state.asset_status, &body);
+    Json(body)
 }
 
 async fn handle_post_asset(
+    OriginalUri(uri): OriginalUri,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
     Json(payload): Json<Value>,
 ) -> Json<Value> {
-    Json(json!({
+    log_request("POST", uri.path(), &remote, Some(&payload));
+
+    let body = json!({
         "ip": state.listen_addr.ip().to_string(),
         "port": state.listen_addr.port(),
         "status_code": state.asset_status,
         "result": payload,
         "expected_asset": state.asset_body.clone(),
-    }))
+    });
+
+    log_response("POST", uri.path(), &remote, state.asset_status, &body);
+    Json(body)
 }
 
 fn load_file_config(path: &PathBuf) -> Result<FileConfig> {
@@ -283,6 +319,7 @@ impl From<ServerOptions> for AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{extract::ConnectInfo, http::Uri};
 
     #[tokio::test]
     async fn get_asset_returns_meta() {
@@ -298,7 +335,12 @@ mod tests {
             json_payload: json!({"message": "hello"}),
         };
 
-        let Json(body) = handle_get_asset(axum::extract::State(state.clone())).await;
+        let Json(body) = handle_get_asset(
+            OriginalUri(Uri::from_static("/asset")),
+            ConnectInfo("203.0.113.10:4000".parse().unwrap()),
+            axum::extract::State(state.clone()),
+        )
+        .await;
 
         assert_eq!(body.ip, state.listen_addr.ip().to_string());
         assert_eq!(body.port, state.listen_addr.port());
@@ -327,12 +369,57 @@ mod tests {
             }
         });
 
-        let Json(body) =
-            handle_post_asset(axum::extract::State(state.clone()), Json(payload.clone())).await;
+        let Json(body) = handle_post_asset(
+            OriginalUri(Uri::from_static("/asset")),
+            ConnectInfo("203.0.113.11:5000".parse().unwrap()),
+            axum::extract::State(state.clone()),
+            Json(payload.clone()),
+        )
+        .await;
 
         assert_eq!(body["ip"], state.listen_addr.ip().to_string());
         assert_eq!(body["port"], state.listen_addr.port());
         assert_eq!(body["status_code"], 201);
         assert_eq!(body["result"], payload);
+    }
+}
+
+fn log_request(method: &str, path: &str, remote: &SocketAddr, payload: Option<&Value>) {
+    if let Some(body) = payload {
+        println!(
+            "[http_server] <= {} {} from={} payload={}",
+            method,
+            path,
+            remote,
+            serde_json::to_string(body).unwrap_or_else(|_| "<unprintable>".into())
+        );
+    } else {
+        println!("[http_server] <= {} {} from={}", method, path, remote);
+    }
+}
+
+fn log_response(method: &str, path: &str, remote: &SocketAddr, status: u16, body: &Value) {
+    println!(
+        "[http_server] => {} {} to={} status={} body={}",
+        method,
+        path,
+        remote,
+        status,
+        serde_json::to_string(body).unwrap_or_else(|_| "<unprintable>".into())
+    );
+}
+
+fn log_asset_response(
+    method: &str,
+    path: &str,
+    remote: &SocketAddr,
+    response: &AssetResponse,
+) {
+    match serde_json::to_value(response) {
+        Ok(value) => log_response(method, path, remote, response.status_code, &value),
+        Err(_) => println!(
+            "[http_server] => {} {} to={} status={} body=<serialize error>",
+            method, path, remote, response.status_code
+        ),
     }
 }
