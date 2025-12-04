@@ -76,12 +76,12 @@ impl WasiSocket {
         Ok(Self(handle))
     }
 
-    fn bind_ip(&self, ip: IpAddr, port: u16) -> Result<(), String> {
+    fn bind_ip(&self, ip: IpAddr, port: u16) -> Result<(), SocketError> {
         let addr = SocketAddress {
             host: ip.to_string(),
             port,
         };
-        core_socket::bind(self.0, &addr).map_err(|e| socket_err("bind", e))
+        core_socket::bind(self.0, &addr)
     }
 
     fn connect(&self, host: &str, port: u16) -> Result<(), String> {
@@ -194,7 +194,17 @@ fn execute_http_request(
     let socket = WasiSocket::tcp_v4()?;
 
     if let Some(ip) = bind_ip {
-        socket.bind_ip(ip, 0)?;
+        match socket.bind_ip(ip, 0) {
+            Ok(()) => {
+                println!("[HttpAction] Bound source IP {}", ip);
+            }
+            Err(err) => {
+                println!(
+                    "[HttpAction] WARN: failed to bind {} (error={:?}). Continuing without explicit source IP.",
+                    ip, err
+                );
+            }
+        }
     }
 
     socket.connect(&host, port)?;

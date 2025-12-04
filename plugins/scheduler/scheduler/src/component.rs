@@ -2,6 +2,7 @@
 ///
 /// This module implements the scheduler as a WASM component
 use anyhow::Result;
+use std::env;
 
 use crate::core::dsl::Scenario;
 use crate::core::workbook::Workbook;
@@ -56,9 +57,19 @@ fn run_scenario_impl(scenario_yaml: &str) -> Result<String> {
     println!("Iterations: {}", load_config.user_lifetime.iterations);
     println!("Think time: {}", load_config.user_lifetime.think_time);
 
-    // Initialize IP pool manager
+    // Determine whether source IP binding is permitted in this runtime
+    let ip_binding_requested = load_config.user_resources.ip_binding.enabled;
+    let ip_binding_permitted = ip_binding_requested && source_ip_binding_enabled();
+
+    if ip_binding_requested && !ip_binding_permitted {
+        println!(
+            "⚠️  已请求 IP 绑定，但当前运行环境不支持自定义源 IP，将自动跳过绑定 (设置 NTX_ENABLE_SOURCE_IP_BINDING=1 可启用)。"
+        );
+    }
+
+    // Initialize IP pool manager only when binding is permitted
     let mut ip_manager = IpPoolManager::new();
-    if load_config.user_resources.ip_binding.enabled {
+    if ip_binding_permitted {
         let pool_id = &load_config.user_resources.ip_binding.pool_id;
         let ip_pools: Vec<_> = scenario
             .workbook
@@ -111,7 +122,7 @@ fn run_scenario_impl(scenario_yaml: &str) -> Result<String> {
                 .unwrap_or_else(|| "default-tenant".to_string());
 
             // Allocate IP if enabled
-            let allocated_ip = if load_config.user_resources.ip_binding.enabled {
+            let allocated_ip = if ip_binding_permitted {
                 let pool_id = &load_config.user_resources.ip_binding.pool_id;
 
                 match ip_manager.allocate_ip(pool_id, &tenant_id, &format!("user-{}", user_id)) {
@@ -158,7 +169,7 @@ fn run_scenario_impl(scenario_yaml: &str) -> Result<String> {
             }
 
             // Release IP if needed
-            if load_config.user_resources.ip_binding.enabled {
+            if ip_binding_permitted {
                 if let Some(ip) = allocated_ip {
                     let pool_id = &load_config.user_resources.ip_binding.pool_id;
                     if let Err(e) = ip_manager.release_ip(pool_id, ip) {
@@ -202,7 +213,7 @@ fn run_scenario_impl(scenario_yaml: &str) -> Result<String> {
     }
 
     // IP pool statistics
-    if load_config.user_resources.ip_binding.enabled {
+    if ip_binding_permitted {
         let pool_id = &load_config.user_resources.ip_binding.pool_id;
         if let Some(stats) = ip_manager.get_stats(pool_id) {
             summary.push_str("\nIP Pool Statistics:\n");
@@ -211,6 +222,13 @@ fn run_scenario_impl(scenario_yaml: &str) -> Result<String> {
     }
 
     Ok(summary)
+}
+
+fn source_ip_binding_enabled() -> bool {
+    match env::var("NTX_ENABLE_SOURCE_IP_BINDING") {
+        Ok(value) => matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"),
+        Err(_) => false,
+    }
 }
 
 export!(SchedulerComponent);

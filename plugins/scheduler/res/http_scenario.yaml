@@ -25,7 +25,7 @@ workbook:
       type: http_endpoint
       properties:
         ip: "httpbin.org"
-        port: "443"
+        port: "80"
 
 # 负载配置 - 用户呼叫模型
 load:
