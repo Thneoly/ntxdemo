@@ -7,30 +7,6 @@ wit_bindgen::generate!({
 
 struct SchedulerCoreImpl;
 
-impl exports::scheduler::core_libs::parser::Guest for SchedulerCoreImpl {
-    fn parse_scenario(
-        yaml: String,
-    ) -> Result<exports::scheduler::core_libs::types::Scenario, String> {
-        use crate::dsl::Scenario;
-
-        let scenario = Scenario::from_yaml_str(&yaml).map_err(|e| format!("parse error: {}", e))?;
-
-        Ok(exports::scheduler::core_libs::types::Scenario {
-            version: scenario.version.clone(),
-            name: scenario.name.clone(),
-            resources: vec![],
-            actions: vec![],
-            nodes: vec![],
-        })
-    }
-
-    fn validate_scenario(
-        _scenario: exports::scheduler::core_libs::types::Scenario,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-}
-
 impl exports::scheduler::core_libs::socket::Guest for SchedulerCoreImpl {
     fn create_socket(
         family: exports::scheduler::core_libs::socket::AddressFamily,

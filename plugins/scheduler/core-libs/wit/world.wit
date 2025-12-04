@@ -55,12 +55,6 @@ interface types {
     }
 }
 
-interface parser {
-    use types.{scenario};
-    parse-scenario: func(yaml: string) -> result<scenario, string>;
-    validate-scenario: func(scenario: scenario) -> result<_, string>;
-}
-
 interface socket {
     enum address-family { ipv4, ipv6 }
     enum socket-protocol { tcp, udp }
@@ -102,6 +96,5 @@ world scheduler-core {
     import wasi:sockets/instance-network@0.2.6;
 
     export types;
-    export parser;
     export socket;
 }

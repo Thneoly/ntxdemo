@@ -7,6 +7,24 @@ cd "$ROOT_DIR"
 SCENARIO_FILE=${1:-res/http_scenario.yaml}
 COMPONENT_FILE=${2:-wac/scheduler-composed.wasm}
 
+pushd actions-http
+  cargo build --target wasm32-wasip2
+popd
+
+pushd core-libs
+  cargo build --target wasm32-wasip2
+popd
+
+pushd scheduler
+  cargo build --target wasm32-wasip2
+popd
+
+cp target/wasm32-wasip2/debug/scheduler.wasm wac/deps/scheduler/main.wasm
+cp target/wasm32-wasip2/debug/scheduler_actions_http.wasm wac/deps/scheduler/action-http.wasm
+cp target/wasm32-wasip2/debug/scheduler_core.wasm wac/deps/scheduler/core-libs.wasm
+
+wac compose wac/scheduler-composition.wac --deps-dir wac/deps -o wac/scheduler-composed.wasm
+
 if [[ ! -f "$SCENARIO_FILE" ]]; then
   echo "Scenario file not found: $SCENARIO_FILE" >&2
   exit 1
