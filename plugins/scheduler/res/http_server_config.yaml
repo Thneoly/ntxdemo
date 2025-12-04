@@ -1,0 +1,24 @@
+# Sample configuration for the local HTTP test server.
+# The scheduler can target this endpoint by pointing workbook actions to 127.0.0.1
+# and matching the payloads defined here.
+listen_addr: 127.0.0.1:18080
+asset:
+  path: /asset
+  version: v2
+  status_code: 201
+  body:
+    id: local-demo
+    name: Local Test Asset
+    category: demo
+    attributes:
+      region: loopback
+      owner: ntx
+responses:
+  json:
+    message: "hello from local config"
+    version: local
+    feature: configurable-server
+  health:
+    status: ok
+    build: local
+    note: "served from config"

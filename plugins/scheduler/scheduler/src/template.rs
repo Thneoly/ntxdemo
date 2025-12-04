@@ -103,7 +103,7 @@ impl TemplateContext {
     /// prevent infinite loops.
     ///
     /// Example:
-    /// ```
+    /// ```text
     /// vars = {
     ///   "base.url": "{{base.protocol}}://{{base.host}}",
     ///   "base.protocol": "https",

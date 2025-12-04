@@ -145,7 +145,7 @@ These interfaces allow other wasm runtimes to link or compose scheduler function
 | Binary | Description |
 | --- | --- |
 | `scheduler` | CLI that loads a scenario (defaults to `res/http_scenario.yaml`), prints the parsed summary, and executes the workflow via the default `HttpActionComponent` from `scheduler-actions-http`. |
-| `http_server` | Minimal HTTP endpoint that responds to `GET /asset` and `POST /asset`, mirroring the sample scenario requirements. |
+| `http_server` | Minimal HTTP endpoint (configurable via YAML) that responds to `/asset`, `/get`, `/post`, `/json`, and `/health` so scheduler workflows can be tested locally. |
 
 ## Try it
 
@@ -165,7 +165,23 @@ cargo run --bin http_server -- 0.0.0.0:9000
 HTTP_TEST_ADDR=0.0.0.0:9000 cargo run --bin http_server
 ```
 
-`GET /asset` returns JSON containing `ip`, `port`, and `status_code = 200`. `POST /asset` echoes any JSON body under the `result` field so the scheduler workflow can assert against it.
+For more realistic local tests, load a config file (YAML or JSON) that sets the listen address and default payloads:
+
+```bash
+# Uses res/http_server_config.yaml to mirror the scheduler's expectations
+cargo run --bin http_server -- --config res/http_server_config.yaml
+
+# Equivalent environment variable
+HTTP_SERVER_CONFIG=res/http_server_config.yaml cargo run --bin http_server
+```
+
+`res/http_server_config.yaml` ships with sensible defaults:
+
+- `listen_addr`: socket to bind (defaults to `127.0.0.1:8080`).
+- `asset`: overrides the `/asset` metadata, expected POST response status, and the JSON echoed under `expected_asset`.
+- `responses.json` / `responses.health`: arbitrary payloads returned under the `payload` key for `/json` and `/health`.
+
+`GET /asset` returns JSON containing `ip`, `port`, and the configured `status_code` (default 200). `POST /asset` echoes any JSON body under the `result` field and includes the expected asset shape from the config under `expected_asset`, allowing the scheduler workflow to verify local expectations.
 
 ## Runtime hooks
 

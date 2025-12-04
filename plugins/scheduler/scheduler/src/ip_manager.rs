@@ -31,6 +31,9 @@ impl IpPoolManager {
     ///
     /// # Example
     /// ```
+    /// use scheduler::core::dsl::IpPoolDef;
+    /// use scheduler::ip_manager::IpPoolManager;
+    ///
     /// let pool_defs = vec![
     ///     IpPoolDef {
     ///         id: "pool-1".to_string(),
@@ -41,7 +44,7 @@ impl IpPoolManager {
     /// ];
     ///
     /// let mut manager = IpPoolManager::new();
-    /// manager.initialize_from_config(&pool_defs)?;
+    /// manager.initialize_from_config(&pool_defs).unwrap();
     /// ```
     pub fn initialize_from_config(&mut self, pool_defs: &[IpPoolDef]) -> Result<()> {
         for def in pool_defs {

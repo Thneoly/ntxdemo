@@ -10,6 +10,9 @@ use std::time::Duration;
 ///
 /// # Examples
 /// ```
+/// use scheduler::utils::parse_duration;
+/// use std::time::Duration;
+///
 /// let d = parse_duration("1s").unwrap();
 /// assert_eq!(d, Duration::from_secs(1));
 ///

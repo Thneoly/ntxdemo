@@ -6,6 +6,16 @@ autobins = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[[bin]]
+name = "http_server"
+path = "src/bin/http_server.rs"
+required-features = ["http_server_bin"]
+
+[features]
+default = ["http_server_bin"]
+http_server_bin = ["dep:axum", "dep:tokio"]
 
 [package.metadata.component]
 package = "scheduler:main"
@@ -22,5 +32,7 @@ serde_yaml = "0.9.34-deprecated"
 serde = { version = "1.0", features = ["derive"] }
 wit-bindgen = { version = "0.48", features = ["realloc"] }
 thiserror = "1.0"
+axum = { version = "0.7", features = ["json"], optional = true }
+tokio = { version = "1.39", features = ["full"], optional = true }
 
 

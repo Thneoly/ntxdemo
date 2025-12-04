@@ -16,7 +16,7 @@ pushd core-libs
 popd
 
 pushd scheduler
-  cargo build --target wasm32-wasip2
+  cargo build --no-default-features --target wasm32-wasip2
 popd
 
 cp target/wasm32-wasip2/debug/scheduler.wasm wac/deps/scheduler/main.wasm
