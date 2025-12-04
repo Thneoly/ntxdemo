@@ -1,0 +1,62 @@
+version: "1.0"
+name: http_circular_reference_test
+workbook:
+  # 测试循环引用检测
+  # 这个配置包含循环引用，应该在最大迭代次数后停止
+  
+  ip_pools:
+    - id: eip-pool-1
+      name: "Test EIP Pool"
+      ranges:
+        - "10.0.1.0/28"
+      allocation_strategy: round_robin
+      
+  resources:
+    - id: test
+      type: http_endpoint
+      properties:
+        # 正常的值
+        protocol: "https"
+        host: "httpbin.org"
+        port: "443"
+        # 循环引用: a -> b -> a
+        var_a: "Value A references {{test.var_b}}"
+        var_b: "Value B references {{test.var_a}}"
+
+load:
+  ramp_up:
+    phases:
+      - at_second: 0
+        spawn_users: 1
+  
+  user_lifetime:
+    mode: loop
+    iterations: 1
+    think_time: 100ms
+      
+  user_resources:
+    ip_binding:
+      enabled: true
+      pool_id: eip-pool-1
+      strategy: per_user
+      release_on: user_exit
+
+actions:
+  actions:
+    - id: simple-get
+      call: get
+      with:
+        url: "https://{{test.host}}:{{test.port}}/get"
+        bind_ip: "{{user.allocated_ip}}"
+
+workflows:
+  nodes:
+    - id: start
+      type: action
+      action: simple-get
+      edges:
+        - to: end
+          trigger:
+            condition: "true"
+    - id: end
+      type: end

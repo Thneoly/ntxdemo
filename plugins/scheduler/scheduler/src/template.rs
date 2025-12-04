@@ -18,6 +18,8 @@ impl TemplateContext {
 
     pub fn from_workbook(workbook: &Workbook) -> Self {
         let mut ctx = TemplateContext::new();
+
+        // First pass: collect all variables from workbook
         for (resource_id, resource) in &workbook.resources {
             for (prop, value) in &resource.spec.properties {
                 if let Some(rendered) = value_to_string(value) {
@@ -26,6 +28,10 @@ impl TemplateContext {
                 }
             }
         }
+
+        // Second pass: resolve variables recursively
+        ctx.resolve_recursively();
+
         ctx
     }
 
@@ -88,6 +94,53 @@ impl TemplateContext {
         }
         rendered
     }
+
+    /// Recursively resolve all template variables in the context
+    ///
+    /// This method iterates through all variables and resolves any template
+    /// references ({{var}}) within their values. It continues until no more
+    /// substitutions can be made or a maximum iteration limit is reached to
+    /// prevent infinite loops.
+    ///
+    /// Example:
+    /// ```
+    /// vars = {
+    ///   "base.url": "{{base.protocol}}://{{base.host}}",
+    ///   "base.protocol": "https",
+    ///   "base.host": "example.com"
+    /// }
+    /// After resolution:
+    /// vars = {
+    ///   "base.url": "https://example.com",
+    ///   "base.protocol": "https",
+    ///   "base.host": "example.com"
+    /// }
+    /// ```
+    fn resolve_recursively(&mut self) {
+        const MAX_ITERATIONS: usize = 10;
+
+        for _ in 0..MAX_ITERATIONS {
+            let mut any_changes = false;
+            let mut resolved = IndexMap::new();
+
+            // Try to resolve each variable
+            for (key, value) in &self.vars {
+                let new_value = self.render_str(value);
+                if &new_value != value {
+                    any_changes = true;
+                }
+                resolved.insert(key.clone(), new_value);
+            }
+
+            // Update the variables with resolved values
+            self.vars = resolved;
+
+            // If no changes were made, we're done
+            if !any_changes {
+                break;
+            }
+        }
+    }
 }
 
 fn value_to_string(value: &Value) -> Option<String> {
@@ -99,5 +152,90 @@ fn value_to_string(value: &Value) -> Option<String> {
         Value::Sequence(_) | Value::Mapping(_) | Value::Tagged(_) => serde_yaml::to_string(value)
             .ok()
             .map(|s| s.trim().to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_simple_variable_substitution() {
+        let mut ctx = TemplateContext::new();
+        ctx.insert("name", "world");
+
+        let result = ctx.render_str("Hello {{name}}!");
+        assert_eq!(result, "Hello world!");
+    }
+
+    #[test]
+    fn test_recursive_variable_resolution() {
+        let mut ctx = TemplateContext::new();
+        ctx.insert("protocol", "https");
+        ctx.insert("host", "example.com");
+        ctx.insert("port", "443");
+        ctx.insert("base_url", "{{protocol}}://{{host}}:{{port}}");
+        ctx.insert("endpoint", "{{base_url}}/api/v1");
+
+        ctx.resolve_recursively();
+
+        assert_eq!(ctx.vars.get("protocol"), Some(&"https".to_string()));
+        assert_eq!(ctx.vars.get("host"), Some(&"example.com".to_string()));
+        assert_eq!(ctx.vars.get("port"), Some(&"443".to_string()));
+        assert_eq!(
+            ctx.vars.get("base_url"),
+            Some(&"https://example.com:443".to_string())
+        );
+        assert_eq!(
+            ctx.vars.get("endpoint"),
+            Some(&"https://example.com:443/api/v1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_circular_reference_handling() {
+        let mut ctx = TemplateContext::new();
+        ctx.insert("var_a", "{{var_b}}");
+        ctx.insert("var_b", "{{var_a}}");
+
+        // Should not panic or loop infinitely
+        ctx.resolve_recursively();
+
+        // Variables should still contain references (not resolved)
+        // This is expected behavior - we stop after MAX_ITERATIONS
+        let var_a = ctx.vars.get("var_a").unwrap();
+        let var_b = ctx.vars.get("var_b").unwrap();
+
+        // After max iterations, they will still reference each other
+        assert!(var_a.contains("{{") || var_a.contains("var"));
+        assert!(var_b.contains("{{") || var_b.contains("var"));
+    }
+
+    #[test]
+    fn test_multiple_references_in_one_string() {
+        let mut ctx = TemplateContext::new();
+        ctx.insert("first", "John");
+        ctx.insert("last", "Doe");
+        ctx.insert("full_name", "{{first}} {{last}}");
+
+        ctx.resolve_recursively();
+
+        assert_eq!(ctx.vars.get("full_name"), Some(&"John Doe".to_string()));
+    }
+
+    #[test]
+    fn test_nested_recursive_resolution() {
+        let mut ctx = TemplateContext::new();
+        ctx.insert("a", "value_a");
+        ctx.insert("b", "{{a}}_b");
+        ctx.insert("c", "{{b}}_c");
+        ctx.insert("d", "{{c}}_d");
+
+        ctx.resolve_recursively();
+
+        assert_eq!(ctx.vars.get("a"), Some(&"value_a".to_string()));
+        assert_eq!(ctx.vars.get("b"), Some(&"value_a_b".to_string()));
+        assert_eq!(ctx.vars.get("c"), Some(&"value_a_b_c".to_string()));
+        assert_eq!(ctx.vars.get("d"), Some(&"value_a_b_c_d".to_string()));
     }
 }

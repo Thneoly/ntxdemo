@@ -24,8 +24,8 @@ workbook:
     - id: resource
       type: http_endpoint
       properties:
-        ip: "{{resource.ip}}"
-        port: "{{resource.port}}"
+        ip: "httpbin.org"
+        port: "443"
 
 # 负载配置 - 用户呼叫模型
 load:
@@ -33,21 +33,21 @@ load:
   ramp_up:
     phases:
       - at_second: 1       # 第 1 秒
-        spawn_users: 100   # 上线 100 个用户
+        spawn_users: 1   # 上线 1 个用户
         
       - at_second: 2       # 第 2 秒
-        spawn_users: 30    # 再上线 30 个用户
+        spawn_users: 3    # 再上线 3 个用户
         
       - at_second: 5       # 第 5 秒
-        spawn_users: 50    # 再上线 50 个用户
+        spawn_users: 5    # 再上线 5 个用户
         
       - at_second: 10      # 第 10 秒
-        spawn_users: 20    # 再上线 20 个用户
+        spawn_users: 2    # 再上线 2 个用户
   
   # 用户生命周期配置
   user_lifetime:
     mode: loop           # loop: 循环执行任务, once: 执行一次后退出
-    iterations: 3        # loop 模式下的循环次数 (0 = 无限循环)
+    iterations: 1        # loop 模式下的循环次数 (0 = 无限循环)
     think_time: 1s       # 每次迭代之间的思考时间
       
   # 用户资源绑定配置
@@ -63,7 +63,7 @@ actions:
     - id: probe-get
       call: get
       with:
-        url: "http://{{resource.ip}}:{{resource.port}}/asset"
+        url: "http://{{resource.ip}}:{{resource.port}}/get"
         bind_ip: "{{user.allocated_ip}}"  # 使用为用户分配的 IP
       export:
         - type: content
@@ -82,7 +82,7 @@ actions:
     - id: push-post
       call: post
       with:
-        url: "http://{{probe-get.ip}}:{{resource.port}}/asset"
+        url: "http://{{probe-get.ip}}:{{resource.port}}/post"
         bind_ip: "{{user.allocated_ip}}"  # 使用为用户分配的 IP
         headers:
           content-type: application/json

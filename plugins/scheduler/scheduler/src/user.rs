@@ -200,6 +200,25 @@ impl UserExecutor {
                         .with_context(|| format!("Action '{}' execution failed", action_id))?;
                     let duration = start.elapsed();
 
+                    if let Some(detail) = &outcome.detail {
+                        println!(
+                            "[User-{}][Action:{}] status={:?} detail={} duration={}ms",
+                            self.context.id,
+                            action_id,
+                            outcome.status,
+                            detail,
+                            duration.as_millis()
+                        );
+                    } else {
+                        println!(
+                            "[User-{}][Action:{}] status={:?} duration={}ms",
+                            self.context.id,
+                            action_id,
+                            outcome.status,
+                            duration.as_millis()
+                        );
+                    }
+
                     // 记录跟踪
                     traces.push(ExecutionTrace {
                         user_id: self.context.id,

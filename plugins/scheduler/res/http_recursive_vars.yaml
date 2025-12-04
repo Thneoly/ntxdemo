@@ -1,0 +1,73 @@
+version: "1.0"
+name: http_recursive_variables_demo
+workbook:
+  # 演示递归变量解析
+  # base.host 和 base.protocol 是基础值
+  # base.url 引用了这些基础值
+  # final.endpoint 引用了 base.url
+  
+  ip_pools:
+    - id: eip-pool-1
+      name: "Test EIP Pool"
+      ranges:
+        - "10.0.1.0/28"    # 16 IPs
+      allocation_strategy: round_robin
+      
+  resources:
+    - id: base
+      type: http_endpoint
+      properties:
+        protocol: "https"
+        host: "httpbin.org"
+        port: "443"
+        # 这个变量引用了上面的变量
+        url: "{{base.protocol}}://{{base.host}}:{{base.port}}"
+    
+    - id: final
+      type: http_endpoint
+      properties:
+        # 这个变量引用了上面计算出的 url
+        endpoint: "{{base.url}}/get"
+
+load:
+  ramp_up:
+    phases:
+      - at_second: 0
+        spawn_users: 2
+  
+  user_lifetime:
+    mode: loop
+    iterations: 1
+    think_time: 500ms
+      
+  user_resources:
+    ip_binding:
+      enabled: true
+      pool_id: eip-pool-1
+      strategy: per_user
+      release_on: user_exit
+
+actions:
+  actions:
+    - id: test-get
+      call: get
+      with:
+        # 使用递归解析的变量
+        url: "{{final.endpoint}}"
+        bind_ip: "{{user.allocated_ip}}"
+      export:
+        - type: content
+          name: status_code
+          default: 0
+
+workflows:
+  nodes:
+    - id: start
+      type: action
+      action: test-get
+      edges:
+        - to: end
+          trigger:
+            condition: "true"
+    - id: end
+      type: end

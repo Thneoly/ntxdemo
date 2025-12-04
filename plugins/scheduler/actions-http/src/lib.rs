@@ -276,9 +276,14 @@ impl exports::scheduler::actions_http::http_component::Guest for HttpActionCompo
     }
 
     fn do_http_action(action: ActionDef) -> Result<ActionOutcome, String> {
+        println!("[HttpAction] Received action: {:?}", action);
         let action = parse_action_def(action)?;
 
         let url = extract_url(&action)?;
+        println!(
+            "[HttpAction] Executing action `{}`: {} {}",
+            action.id, action.call, url
+        );
         if url.contains("{{") {
             return Ok(ActionOutcome {
                 status: ActionStatus::Success,
