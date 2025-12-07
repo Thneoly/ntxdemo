@@ -11,13 +11,11 @@ let core = new scheduler:core-libs {
 
 let http = new scheduler:actions-http {
     "scheduler:core-libs/socket@0.1.0": core["scheduler:core-libs/socket@0.1.0"],
-    "scheduler:core-libs/types@0.1.0": core["scheduler:core-libs/types@0.1.0"],
     ...
 };
 
 let scheduler = new scheduler:main {
     "scheduler:core-libs/types@0.1.0": core["scheduler:core-libs/types@0.1.0"],
-    "scheduler:executor-types/types@0.1.0": http["scheduler:executor-types/types@0.1.0"],
     "scheduler:actions-http/http-component@0.1.0": http["scheduler:actions-http/http-component@0.1.0"],
     ...
 };

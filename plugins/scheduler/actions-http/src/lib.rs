@@ -1,8 +1,8 @@
 pub mod http_client;
 
 wit_bindgen::generate!({
-    world: "http-action-component",
-    path: "wit",
+    world: "scheduler:actions-http/http-action-component@0.1.0",
+    path: ["../wit/core", "../wit/protocol"],
     generate_all,
     debug: true,
 });
@@ -14,7 +14,7 @@ use serde_yaml::Value;
 use std::{net::IpAddr, time::Duration};
 
 use crate::exports::scheduler::actions_http::http_component::Guest;
-use crate::exports::scheduler::executor_types::types::{ActionOutcome, ActionStatus};
+use crate::scheduler::core_libs::types::{ActionOutcome, ActionStatus};
 use scheduler::core_libs::socket::{
     self as core_socket, AddressFamily, SocketAddress, SocketError, SocketProtocol,
 };

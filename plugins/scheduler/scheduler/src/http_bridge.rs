@@ -3,10 +3,8 @@ use serde_json as json;
 use serde_yaml::Value;
 
 use crate::component::scheduler::core_libs::types::{
-    ActionDef as WitActionDef, ExportDef as WitExportDef,
-};
-use crate::component::scheduler::executor_types::types::{
-    ActionOutcome as WitActionOutcome, ActionStatus as WitActionStatus,
+    ActionDef as WitActionDef, ActionOutcome as WitActionOutcome, ActionStatus as WitActionStatus,
+    ExportDef as WitExportDef,
 };
 use crate::core::dsl::{ActionDef, ExportDef};
 use crate::{ActionOutcome, ActionStatus};

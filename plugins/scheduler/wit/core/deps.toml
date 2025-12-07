@@ -1,0 +1,4 @@
+# WASI dependencies for socket support
+sockets = "https://github.com/WebAssembly/wasi-sockets/archive/v0.2.6.tar.gz"
+io = "https://github.com/WebAssembly/wasi-io/archive/v0.2.6.tar.gz"
+clocks = "https://github.com/WebAssembly/wasi-clocks/archive/v0.2.6.tar.gz"

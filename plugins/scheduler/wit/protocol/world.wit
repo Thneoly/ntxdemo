@@ -1,0 +1,14 @@
+package scheduler:actions-http@0.1.0;
+use scheduler:core-libs/types@0.1.0 as core-types;
+interface http-component {
+    use core-types.{action-def, action-outcome};
+
+    init-component: func() -> result<_, string>;
+    do-http-action: func(action: action-def) -> result<action-outcome, string>;
+    release-component: func() -> result<_, string>;
+}
+
+world http-action-component {
+    import scheduler:core-libs/socket@0.1.0;
+    export http-component;
+}

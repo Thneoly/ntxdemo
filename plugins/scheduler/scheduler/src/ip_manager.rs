@@ -198,10 +198,10 @@ mod tests {
         assert_eq!(ip2.to_string(), "10.0.1.1");
 
         // 分配第三个和第四个 IP
-        let ip3 = manager
+        let _ip3 = manager
             .allocate_ip("test-pool", "tenant-a", "user-3")
             .expect("should allocate");
-        let ip4 = manager
+        let _ip4 = manager
             .allocate_ip("test-pool", "tenant-a", "user-4")
             .expect("should allocate");
 

@@ -13,8 +13,8 @@ use crate::{
 
 // Generate bindings for the component
 wit_bindgen::generate!({
-    world: "scheduler-component",
-    path: "wit",
+    world: "scheduler:main/scheduler-component",
+    path: ["../wit/core", "../wit/protocol", "../wit/scheduler"],
     generate_all,
     debug: true,
 });

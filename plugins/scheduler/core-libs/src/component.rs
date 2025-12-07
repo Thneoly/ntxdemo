@@ -1,6 +1,6 @@
 wit_bindgen::generate!({
     world: "scheduler-core",
-    path: "wit",
+    path: "../wit/core",
     generate_all,
     debug: true
 });

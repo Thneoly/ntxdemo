@@ -1,3 +1,0 @@
-# Dependencies
-executor-types = { path = "packages/executor-types" }
-core-libs = { path = "../../core-libs/wit" }

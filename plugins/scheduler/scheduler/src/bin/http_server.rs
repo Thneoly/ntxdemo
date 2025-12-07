@@ -409,12 +409,7 @@ fn log_response(method: &str, path: &str, remote: &SocketAddr, status: u16, body
     );
 }
 
-fn log_asset_response(
-    method: &str,
-    path: &str,
-    remote: &SocketAddr,
-    response: &AssetResponse,
-) {
+fn log_asset_response(method: &str, path: &str, remote: &SocketAddr, response: &AssetResponse) {
     match serde_json::to_value(response) {
         Ok(value) => log_response(method, path, remote, response.status_code, &value),
         Err(_) => println!(

@@ -1,0 +1,17 @@
+package action:types@0.1.0;
+interface types {
+    record action-outcome {
+        status: action-status,
+        detail: option<string>,
+    }
+
+    enum action-status {
+        success,
+        failed,
+    }
+
+    enum task-kind {
+        action,
+        end,
+    }
+}
