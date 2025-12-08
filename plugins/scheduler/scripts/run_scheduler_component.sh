@@ -11,6 +11,10 @@ pushd actions-http
   cargo build --target wasm32-wasip2
 popd
 
+pushd eventbus
+  cargo build --target wasm32-wasip2
+popd
+
 pushd core-libs
   cargo build --target wasm32-wasip2
 popd
@@ -21,7 +25,9 @@ popd
 
 cp target/wasm32-wasip2/debug/scheduler.wasm wac/deps/scheduler/main.wasm
 cp target/wasm32-wasip2/debug/scheduler_actions_http.wasm wac/deps/scheduler/action-http.wasm
+cp target/wasm32-wasip2/debug/scheduler_actions_http.wasm wac/deps/scheduler/actions-http.wasm
 cp target/wasm32-wasip2/debug/scheduler_core.wasm wac/deps/scheduler/core-libs.wasm
+cp target/wasm32-wasip2/debug/eventbus.wasm wac/deps/scheduler/event-bus.wasm
 
 wac compose wac/scheduler-composition.wac --deps-dir wac/deps -o wac/scheduler-composed.wasm
 

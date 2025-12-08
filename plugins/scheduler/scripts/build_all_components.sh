@@ -1,33 +1,35 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-# Get the project root directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$PROJECT_ROOT"
+TARGET="wasm32-wasip2"
 
 echo "=========================================="
-echo "Building all scheduler components"
+echo "Building scheduler wasm components"
 echo "=========================================="
 echo ""
 
-echo "Step 1/3: Building core-libs..."
-cd "$PROJECT_ROOT/core-libs" && ./build.sh && cd "$PROJECT_ROOT"
-echo ""
+build_component() {
+	local crate="$1"
+	local label="$2"
+	echo "→ Building ${label} (${crate})"
+	(
+		cd "$PROJECT_ROOT/$crate"
+		cargo build --target "$TARGET"
+	)
+	echo ""
+}
 
-echo "Step 2/3: Building executor..."
-cd "$PROJECT_ROOT/executor" && ./build.sh && cd "$PROJECT_ROOT"
-echo ""
+build_component core-libs "core-libs"
+build_component actions-http "actions-http"
+build_component eventbus "eventbus"
+build_component scheduler "scheduler host"
 
-echo "Step 3/3: Building actions-http..."
-cd "$PROJECT_ROOT/actions-http" && ./build.sh && cd "$PROJECT_ROOT"
+echo "Artifacts (debug profile):"
+echo "  - core-libs/target/${TARGET}/debug/scheduler_core.wasm"
+echo "  - actions-http/target/${TARGET}/debug/scheduler_actions_http.wasm"
+echo "  - eventbus/target/${TARGET}/debug/eventbus.wasm"
+echo "  - scheduler/target/${TARGET}/debug/scheduler.wasm"
 echo ""
-
-echo "=========================================="
-echo "✓ Build process complete!"
-echo "=========================================="
-echo ""
-echo "Component outputs:"
-echo "  - core-libs/target/wasm32-wasip2/release/scheduler_core.wasm"
-echo "  - executor/target/wasm32-wasip2/release/scheduler_executor.wasm"
-echo "  - actions-http/target/wasm32-wasip2/release/scheduler_actions_http.wasm"
+echo "Tip: set CARGO_BUILD_TARGET_DIR or use \`cargo build --release\` if you need optimized artifacts."

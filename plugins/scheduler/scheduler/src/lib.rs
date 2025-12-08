@@ -7,6 +7,7 @@ pub mod utils;
 
 pub mod component;
 pub mod core;
+mod event_bus;
 mod host_http;
 mod http_bridge;
 

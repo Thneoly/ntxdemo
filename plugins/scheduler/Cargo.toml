@@ -2,7 +2,9 @@
 members = [
 	"core-libs",
 	"actions-http",
-	"scheduler", "http-server",
+	"scheduler", 
+	"http-server",
+	"eventbus",
 ]
 exclude = ["examples"]
 resolver = "2"

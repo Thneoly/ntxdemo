@@ -1,0 +1,58 @@
+version: "1.0"
+name: http_dynamic_tasks
+workbook:
+  resources:
+    - id: resource
+      type: http_endpoint
+      properties:
+        ip: "127.0.0.1"
+        port: "8080"
+
+actions:
+  actions:
+    - id: seed-dynamic
+      call: get
+      with:
+        # 由于 url 中仍包含未渲染的模板，actions-http 会直接返回成功并跳过真实 HTTP
+        url: "http://{{resource.ip}}:{{resource.port}}/{{undefined.endpoint}}"
+        dynamic_tasks:
+          - id: "dyn-followup-{{user.id}}-{{user.iteration}}"
+            action_id: follow-up
+            kind: action
+            outgoing:
+              - target: dyn-end
+                label: done
+    - id: follow-up
+      call: get
+      with:
+        url: "http://{{resource.ip}}:{{resource.port}}/{{undefined.endpoint}}"
+
+load:
+  ramp_up:
+    phases:
+      - at_second: 0
+        spawn_users: 1
+
+  user_lifetime:
+    mode: once
+    iterations: 1
+    think_time: 0s
+
+  user_resources:
+    ip_binding:
+      enabled: false
+      pool_id: noop
+      strategy: per_user
+      release_on: user_exit
+
+workflows:
+  nodes:
+    - id: seed-node
+      type: action
+      action: seed-dynamic
+      edges:
+        - to: dyn-end
+          trigger:
+            condition: "true"
+    - id: dyn-end
+      type: end

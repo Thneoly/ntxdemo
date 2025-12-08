@@ -1,0 +1,51 @@
+package scheduler:event-bus@0.1.0;
+
+use scheduler:core-libs/types@0.1.0 as core-types;
+
+interface event-bus {
+    use core-types.{action-def};
+
+    enum wbs-task-kind {
+        action,
+        end,
+    }
+
+    record wbs-edge {
+        target: string,
+        condition: option<string>,
+        label: option<string>,
+    }
+
+    record wbs-task {
+        id: string,
+        action-id: option<string>,
+        kind: wbs-task-kind,
+        outgoing: list<wbs-edge>,
+    }
+
+    enum scheduler-event-kind {
+        register-action,
+        add-task,
+        remove-task,
+        update-task,
+        add-edge,
+        remove-edge,
+    }
+
+    record scheduler-event {
+        kind: scheduler-event-kind,
+        action: option<action-def>,
+        task: option<wbs-task>,
+        task-id: option<string>,
+        edge: option<wbs-edge>,
+        from-id: option<string>,
+        target: option<string>,
+    }
+
+    enqueue: func(event: scheduler-event) -> result<_, string>;
+    drain: func(max: u32) -> result<list<scheduler-event>, string>;
+}
+
+world event-bus-provider {
+    export event-bus;
+}

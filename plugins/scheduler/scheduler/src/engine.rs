@@ -14,6 +14,7 @@ use crate::core::{
     wbs::WbsTree,
     workbook::Workbook,
 };
+use crate::event_bus;
 use crate::host_http::WitHttpActionComponent;
 use crate::{
     ActionComponent, ActionContext, ActionTrace, IpPoolManager, SchedulerEvent, TemplateContext,
@@ -353,6 +354,7 @@ impl SchedulerPipeline {
     }
 }
 
+const EVENT_BUS_DRAIN_LIMIT: u32 = 128;
 const PRIORITY_LEVELS: usize = 64;
 const ACTION_PRIORITY: u8 = 32;
 const EVENT_PRIORITY: u8 = 4;
@@ -460,6 +462,11 @@ where
             return Ok(());
         };
 
+        println!(
+            "[Scheduler] → action task={} action={} priority={}",
+            task_id, action_id, ACTION_PRIORITY
+        );
+
         let action = self
             .wbs
             .get_action(&action_id)
@@ -482,7 +489,30 @@ where
 
         let duration = start.elapsed();
 
-        for event in ctx.into_events() {
+        let mut emitted_events = ctx.into_events();
+        if !emitted_events.is_empty() {
+            println!(
+                "[Scheduler]   ActionContext emitted {} event(s) from {}",
+                emitted_events.len(),
+                action_id
+            );
+        }
+        let bus_events = event_bus::drain_scheduler_events(EVENT_BUS_DRAIN_LIMIT)?;
+        if !bus_events.is_empty() {
+            println!(
+                "[Scheduler]   Drained {} event(s) from event bus after {}",
+                bus_events.len(),
+                action_id
+            );
+        }
+        emitted_events.extend(bus_events);
+
+        for event in emitted_events {
+            println!(
+                "[Scheduler]   enqueue event -> {} at priority {}",
+                describe_event(&event),
+                EVENT_PRIORITY
+            );
             self.queues
                 .push(ScheduledTask::event(event, EVENT_PRIORITY));
         }
@@ -495,11 +525,19 @@ where
             duration_ms: duration.as_millis() as u64,
         });
 
+        println!(
+            "[Scheduler] ← action {} finished status={:?} duration={}ms",
+            action_id,
+            outcome.status,
+            duration.as_millis()
+        );
+
         self.enqueue_new_action_tasks();
         Ok(())
     }
 
     fn execute_event(&mut self, event: SchedulerEvent) -> Result<(), SchedulerError> {
+        println!("[Scheduler] ↻ applying event {}", describe_event(&event));
         event.apply(self.wbs, self.state_machine)?;
         self.enqueue_new_action_tasks();
         Ok(())
@@ -582,4 +620,23 @@ enum TaskKind {
     Action { task_id: String },
     Event(SchedulerEvent),
     Idle,
+}
+
+fn describe_event(event: &SchedulerEvent) -> String {
+    match event {
+        SchedulerEvent::RegisterAction(action) => {
+            format!("register-action id={}", action.id)
+        }
+        SchedulerEvent::AddTask(task) => format!("add-task id={}", task.id),
+        SchedulerEvent::RemoveTask { task_id } => {
+            format!("remove-task id={}", task_id)
+        }
+        SchedulerEvent::UpdateTask(task) => format!("update-task id={}", task.id),
+        SchedulerEvent::AddEdge { from_id, edge } => {
+            format!("add-edge from={} -> {}", from_id, edge.target)
+        }
+        SchedulerEvent::RemoveEdge { from_id, target } => {
+            format!("remove-edge from={} target={}", from_id, target)
+        }
+    }
 }

@@ -2,10 +2,12 @@ pub mod http_client;
 
 wit_bindgen::generate!({
     world: "scheduler:actions-http/http-action-component@0.1.0",
-    path: ["../wit/core", "../wit/protocol"],
+    path: ["../wit/core", "../wit/eventbus", "../wit/protocol"],
     generate_all,
     debug: true,
 });
+
+mod scheduler_events;
 
 use crate::http_client::{HttpRequest, HttpResponse};
 use indexmap::IndexMap;
@@ -294,70 +296,83 @@ impl exports::scheduler::actions_http::http_component::Guest for HttpActionCompo
             "[HttpAction] Executing action `{}`: {} {}",
             action.id, action.call, url
         );
-        if url.contains("{{") {
-            return Ok(ActionOutcome {
+
+        let outcome = if url.contains("{{") {
+            ActionOutcome {
                 status: ActionStatus::Success,
                 detail: Some(format!("skip unresolved template url={}", url)),
-            });
-        }
-
-        let bind_ip = extract_bind_ip(&action);
-        let method = action.call.to_uppercase();
-        let mut request = HttpRequest::new(&method, &url);
-
-        for (key, value) in extract_headers(&action) {
-            request = request.header(key, value);
-        }
-
-        if let Some(body) = extract_body(&action)? {
-            request = request.body(body.into_bytes());
-        }
-
-        match execute_http_request(&request, bind_ip) {
-            Ok(response) => {
-                let detail = if response.is_success() {
-                    let bind_info = bind_ip
-                        .map(|ip| format!(" from_ip={}", ip))
-                        .unwrap_or_default();
-                    format!(
-                        "{} {} status={} body_len={}{}",
-                        method,
-                        url,
-                        response.status_code,
-                        response.body.len(),
-                        bind_info
-                    )
-                } else {
-                    let body_preview = response
-                        .body_string()
-                        .unwrap_or_else(|_| format!("<binary {} bytes>", response.body.len()));
-                    let truncated = if body_preview.len() > 200 {
-                        format!("{}...", &body_preview[..200])
-                    } else {
-                        body_preview
-                    };
-                    format!(
-                        "{} {} status={} body={}",
-                        method, url, response.status_code, truncated
-                    )
-                };
-
-                let status = if response.is_success() {
-                    ActionStatus::Success
-                } else {
-                    ActionStatus::Failed
-                };
-
-                Ok(ActionOutcome {
-                    status,
-                    detail: Some(detail),
-                })
             }
-            Err(err) => Ok(ActionOutcome {
-                status: ActionStatus::Failed,
-                detail: Some(format!("HTTP request failed: {}", err)),
-            }),
+        } else {
+            let bind_ip = extract_bind_ip(&action);
+            let method = action.call.to_uppercase();
+            let mut request = HttpRequest::new(&method, &url);
+
+            for (key, value) in extract_headers(&action) {
+                request = request.header(key, value);
+            }
+
+            if let Some(body) = extract_body(&action)? {
+                request = request.body(body.into_bytes());
+            }
+
+            match execute_http_request(&request, bind_ip) {
+                Ok(response) => {
+                    let detail = if response.is_success() {
+                        let bind_info = bind_ip
+                            .map(|ip| format!(" from_ip={}", ip))
+                            .unwrap_or_default();
+                        format!(
+                            "{} {} status={} body_len={}{}",
+                            method,
+                            url,
+                            response.status_code,
+                            response.body.len(),
+                            bind_info
+                        )
+                    } else {
+                        let body_preview = response
+                            .body_string()
+                            .unwrap_or_else(|_| format!("<binary {} bytes>", response.body.len()));
+                        let truncated = if body_preview.len() > 200 {
+                            format!("{}...", &body_preview[..200])
+                        } else {
+                            body_preview
+                        };
+                        format!(
+                            "{} {} status={} body={}",
+                            method, url, response.status_code, truncated
+                        )
+                    };
+
+                    let status = if response.is_success() {
+                        ActionStatus::Success
+                    } else {
+                        ActionStatus::Failed
+                    };
+
+                    ActionOutcome {
+                        status,
+                        detail: Some(detail),
+                    }
+                }
+                Err(err) => ActionOutcome {
+                    status: ActionStatus::Failed,
+                    detail: Some(format!("HTTP request failed: {}", err)),
+                },
+            }
+        };
+
+        if let Err(err) = scheduler_events::emit_for_action(
+            &action,
+            matches!(outcome.status, ActionStatus::Success),
+        ) {
+            println!(
+                "[HttpAction] WARN: failed to emit scheduler events for `{}`: {}",
+                action.id, err
+            );
         }
+
+        Ok(outcome)
     }
 
     fn release_component() -> Result<(), String> {

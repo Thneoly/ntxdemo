@@ -8,6 +8,7 @@ use crate::component::scheduler::core_libs::types::{
 };
 use crate::core::dsl::{ActionDef, ExportDef};
 use crate::{ActionOutcome, ActionStatus};
+use indexmap::IndexMap;
 
 pub fn to_wit_action_def(action: &ActionDef) -> Result<WitActionDef> {
     let with_params = json::to_string(&action.with)
@@ -61,4 +62,43 @@ fn yaml_value_to_string(value: &Value) -> Result<String> {
         json::to_string(value)
             .context("failed to encode export.default as JSON when calling actions-http")
     }
+}
+
+pub fn from_wit_action_def(action: &WitActionDef) -> Result<ActionDef> {
+    let with = if action.with_params.trim().is_empty() {
+        IndexMap::new()
+    } else {
+        json::from_str(&action.with_params)
+            .context("failed to decode ActionDef.with from event bus message")?
+    };
+
+    let export = action
+        .exports
+        .iter()
+        .map(from_wit_export_def)
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(ActionDef {
+        id: action.id.clone(),
+        call: action.call.clone(),
+        with,
+        export,
+    })
+}
+
+fn from_wit_export_def(export: &WitExportDef) -> Result<ExportDef> {
+    let default = match export.default_value.as_ref() {
+        Some(raw) => Some(
+            json::from_str(raw)
+                .context("failed to decode ExportDef.default-value from event bus message")?,
+        ),
+        None => None,
+    };
+
+    Ok(ExportDef {
+        export_type: export.export_type.clone(),
+        name: export.name.clone(),
+        scope: export.scope.clone(),
+        default,
+    })
 }

@@ -9,14 +9,20 @@ let core = new scheduler:core-libs {
     ...
 };
 
+let eventbus = new scheduler:event-bus {
+    ...
+};
+
 let http = new scheduler:actions-http {
     "scheduler:core-libs/socket@0.1.0": core["scheduler:core-libs/socket@0.1.0"],
+    "scheduler:event-bus/event-bus@0.1.0": eventbus["scheduler:event-bus/event-bus@0.1.0"],
     ...
 };
 
 let scheduler = new scheduler:main {
     "scheduler:core-libs/types@0.1.0": core["scheduler:core-libs/types@0.1.0"],
     "scheduler:actions-http/http-component@0.1.0": http["scheduler:actions-http/http-component@0.1.0"],
+    "scheduler:event-bus/event-bus@0.1.0": eventbus["scheduler:event-bus/event-bus@0.1.0"],
     ...
 };
 

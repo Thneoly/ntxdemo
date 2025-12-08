@@ -8,7 +8,7 @@ use crate::engine::{LoadExecutionSummary, SchedulerPipeline};
 // Generate bindings for the component
 wit_bindgen::generate!({
     world: "scheduler:main/scheduler-component",
-    path: ["../wit/core", "../wit/protocol", "../wit/scheduler"],
+    path: ["../wit/core", "../wit/eventbus", "../wit/protocol", "../wit/scheduler"],
     generate_all,
     debug: true,
 });
