@@ -12,7 +12,7 @@ use indexmap::IndexMap;
 
 pub fn to_wit_action_def(action: &ActionDef) -> Result<WitActionDef> {
     let with_params = json::to_string(&action.with)
-        .context("failed to encode action.with as JSON when calling actions-http")?;
+        .context("failed to encode action.with as JSON when calling actions-executor")?;
 
     let exports = action
         .export
@@ -60,7 +60,7 @@ fn yaml_value_to_string(value: &Value) -> Result<String> {
         Ok(s.to_string())
     } else {
         json::to_string(value)
-            .context("failed to encode export.default as JSON when calling actions-http")
+            .context("failed to encode export.default as JSON when calling actions-executor")
     }
 }
 

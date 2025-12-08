@@ -47,7 +47,7 @@ echo "🎯 Status Summary:"
 echo "-----------------"
 echo "✅ Core-libs: Functional (types + parser)"
 echo "🚧 Executor: Needs Guest trait implementations"
-echo "🚧 Actions-HTTP: Waiting for executor"
+echo "🚧 Actions-Executor: Waiting for executor"
 
 echo ""
 echo "📖 See doc/USAGE.md for integration examples"

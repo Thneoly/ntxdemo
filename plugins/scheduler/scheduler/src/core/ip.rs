@@ -359,7 +359,7 @@ impl IpPool {
         self.allocated.insert(ip, binding);
         self.subinstance_index
             .entry(subinstance.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(ip);
         self.subid_index.insert(key, ip);
 
@@ -403,7 +403,7 @@ impl IpPool {
         self.allocated.insert(ip, binding);
         self.subinstance_index
             .entry(subinstance.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(ip);
         let key = (subinstance, subid);
         self.subid_index.insert(key, ip);
@@ -458,7 +458,7 @@ impl IpPool {
         let ips: Vec<IpAddr> = self
             .subinstance_index
             .get(subinstance)
-            .map(|v| v.clone())
+            .cloned()
             .unwrap_or_default();
 
         let mut released = Vec::new();
@@ -493,7 +493,7 @@ impl IpPool {
     pub fn list_by_subinstance(&self, subinstance: &str) -> Vec<IpAddr> {
         self.subinstance_index
             .get(subinstance)
-            .map(|v| v.clone())
+            .cloned()
             .unwrap_or_default()
     }
 

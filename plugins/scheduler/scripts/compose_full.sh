@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 
 # This script shows how to compose all three scheduler components
-# using wac plug when executor and actions-http are ready.
+# using wac plug when executor and actions-executor are ready.
 #
 # Current status: Only core-libs is functional
 # This is a TEMPLATE for future use
@@ -43,10 +43,10 @@ echo "Building executor (currently fails - needs fixing)..."
 # cd ..
 echo "⚠ Skipped - implementation incomplete"
 
-# Build actions-http (TODO: depends on executor)
+# Build actions-executor (TODO: depends on executor)
 echo ""
-echo "Building actions-http (depends on executor)..."
-# cd actions-http && cargo component build --target wasm32-wasip2 --release 2>&1 | grep -E "(Compiling|Finished|Creating)" || true
+echo "Building actions-executor (depends on executor)..."
+# cd actions-executor && cargo component build --target wasm32-wasip2 --release 2>&1 | grep -E "(Compiling|Finished|Creating)" || true
 # cd ..
 echo "⚠ Skipped - depends on executor"
 
@@ -70,7 +70,7 @@ Expected wac plug command:
 wac plug \
     --plug target/wasm32-wasip2/release/scheduler_core.wasm \
     --plug target/wasm32-wasip2/release/scheduler_executor.wasm \
-    --plug target/wasm32-wasip2/release/scheduler_actions_http.wasm \
+    --plug target/wasm32-wasip2/release/scheduler_actions_executor.wasm \
     composed/socket.wasm \
     -o composed/target/unified_scheduler.wasm
 
@@ -78,7 +78,7 @@ This would:
 1. Take the socket component (defines the unified interface)
 2. Plug in core-libs to satisfy type and parser imports
 3. Plug in executor to provide action execution
-4. Plug in actions-http to provide HTTP action implementation
+4. Plug in actions-executor to provide HTTP action implementation
 5. Output a single unified component with all functionality
 
 EOF
@@ -95,10 +95,10 @@ echo "=========================================="
 echo ""
 echo "✅ core-libs: Fully functional"
 echo "🚧 executor: Needs Guest trait implementations"
-echo "🚧 actions-http: Waiting for executor"
+echo "🚧 actions-executor: Waiting for executor"
 echo ""
 echo "To work on fixing the components:"
 echo "  1. cd executor && cargo component build --target wasm32-wasip2"
 echo "  2. Fix the Guest trait implementation errors"
-echo "  3. Then fix actions-http similarly"
+echo "  3. Then fix actions-executor similarly"
 echo "  4. Run this script again to create the unified component"

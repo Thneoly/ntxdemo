@@ -44,13 +44,13 @@ impl Scenario {
             .collect();
 
         for node in &self.workflows.nodes {
-            if let Some(action_id) = &node.action {
-                if !action_ids.contains(action_id.as_str()) {
-                    return Err(SchedulerError::UnknownAction {
-                        action: action_id.clone(),
-                        node: node.id.clone(),
-                    });
-                }
+            if let Some(action_id) = &node.action
+                && !action_ids.contains(action_id.as_str())
+            {
+                return Err(SchedulerError::UnknownAction {
+                    action: action_id.clone(),
+                    node: node.id.clone(),
+                });
             }
 
             for edge in &node.edges {
@@ -148,17 +148,12 @@ pub struct TriggerDef {
     pub condition: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum WorkflowNodeType {
+    #[default]
     Action,
     End,
-}
-
-impl Default for WorkflowNodeType {
-    fn default() -> Self {
-        WorkflowNodeType::Action
-    }
 }
 
 // ============================================================================

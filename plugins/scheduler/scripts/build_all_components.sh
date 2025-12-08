@@ -22,13 +22,13 @@ build_component() {
 }
 
 build_component core-libs "core-libs"
-build_component actions-http "actions-http"
+build_component actions-executor "actions-executor"
 build_component eventbus "eventbus"
 build_component scheduler "scheduler host"
 
 echo "Artifacts (debug profile):"
 echo "  - core-libs/target/${TARGET}/debug/scheduler_core.wasm"
-echo "  - actions-http/target/${TARGET}/debug/scheduler_actions_http.wasm"
+echo "  - actions-executor/target/${TARGET}/debug/scheduler_actions_executor.wasm"
 echo "  - eventbus/target/${TARGET}/debug/eventbus.wasm"
 echo "  - scheduler/target/${TARGET}/debug/scheduler.wasm"
 echo ""

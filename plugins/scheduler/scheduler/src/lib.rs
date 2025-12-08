@@ -8,7 +8,7 @@ pub mod utils;
 pub mod component;
 pub mod core;
 mod event_bus;
-mod host_http;
+mod host_executor;
 mod http_bridge;
 
 pub use core::error::SchedulerError;

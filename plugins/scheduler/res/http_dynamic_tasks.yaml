@@ -13,7 +13,7 @@ actions:
     - id: seed-dynamic
       call: get
       with:
-        # 由于 url 中仍包含未渲染的模板，actions-http 会直接返回成功并跳过真实 HTTP
+  # 由于 url 中仍包含未渲染的模板，actions-executor 会直接返回成功并跳过真实 HTTP
         url: "http://{{resource.ip}}:{{resource.port}}/{{undefined.endpoint}}"
         dynamic_tasks:
           - id: "dyn-followup-{{user.id}}-{{user.iteration}}"

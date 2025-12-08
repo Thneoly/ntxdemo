@@ -1,16 +1,16 @@
-package scheduler:actions-http@0.1.0;
+package scheduler:actions-executor@0.1.0;
 use scheduler:core-libs/types@0.1.0 as core-types;
 use scheduler:event-bus/event-bus@0.1.0;
-interface http-component {
+interface action-component {
     use core-types.{action-def, action-outcome};
 
     init-component: func() -> result<_, string>;
-    do-http-action: func(action: action-def) -> result<action-outcome, string>;
+    execute-action: func(action: action-def) -> result<action-outcome, string>;
     release-component: func() -> result<_, string>;
 }
 
-world http-action-component {
+world action-executor-component {
     import scheduler:core-libs/socket@0.1.0;
     import scheduler:event-bus/event-bus@0.1.0;
-    export http-component;
+    export action-component;
 }

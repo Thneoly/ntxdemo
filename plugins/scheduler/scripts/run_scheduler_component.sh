@@ -7,7 +7,7 @@ cd "$ROOT_DIR"
 SCENARIO_FILE=${1:-res/http_scenario.yaml}
 COMPONENT_FILE=${2:-wac/scheduler-composed.wasm}
 
-pushd actions-http
+pushd actions-executor
   cargo build --target wasm32-wasip2
 popd
 
@@ -24,8 +24,8 @@ pushd scheduler
 popd
 
 cp target/wasm32-wasip2/debug/scheduler.wasm wac/deps/scheduler/main.wasm
-cp target/wasm32-wasip2/debug/scheduler_actions_http.wasm wac/deps/scheduler/action-http.wasm
-cp target/wasm32-wasip2/debug/scheduler_actions_http.wasm wac/deps/scheduler/actions-http.wasm
+cp target/wasm32-wasip2/debug/scheduler_actions_executor.wasm wac/deps/scheduler/action-executor.wasm
+cp target/wasm32-wasip2/debug/scheduler_actions_executor.wasm wac/deps/scheduler/actions-executor.wasm
 cp target/wasm32-wasip2/debug/scheduler_core.wasm wac/deps/scheduler/core-libs.wasm
 cp target/wasm32-wasip2/debug/eventbus.wasm wac/deps/scheduler/event-bus.wasm
 

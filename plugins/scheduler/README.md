@@ -29,7 +29,7 @@ New to the project? Start here:
 | --- | --- |
 | `scheduler-core` | DSL parser, workbook/resource aggregation, WBSTree helpers, and the deterministic state machine. |
 | `scheduler-executor` | Defines the `ActionComponent` lifecycle (`init → do_action → release`), `ActionContext`, and the event model used by the runtime. |
-| `scheduler-actions-http` | Ships the default `HttpActionComponent` plus a simple logging component for tests. These call into the demo HTTP server so you can exercise real IO locally. |
+| `scheduler-actions-executor` | Ships the default `ActionExecutorComponent` plus a simple logging component for tests. These call into the demo HTTP server so you can exercise real IO locally. |
 | `scheduler` | Binaries (`scheduler`, `http_server`) and the priority-loop engine that wires the other crates together. |
 
 Each crate also contains a `wit/` directory defining WebAssembly Component Model interfaces, enabling them to be compiled as standalone wasm32-wasip2 components for use in other runtimes or component compositions.
@@ -45,7 +45,7 @@ To compile the scheduler crates as WebAssembly components:
 # Or build individually
 cd core-libs && ./build.sh
 cd executor && ./build.sh    # 🚧 In progress
-cd actions-http && ./build.sh  # 🚧 In progress
+cd actions-executor && ./build.sh  # 🚧 In progress
 ```
 
 **Demo with working component:**
@@ -56,7 +56,7 @@ cd actions-http && ./build.sh  # 🚧 In progress
 Component outputs are generated in:
 - `core-libs/target/wasm32-wasip2/release/scheduler_core.wasm` ✅
 - `executor/target/wasm32-wasip2/release/scheduler_executor.wasm` 🚧
-- `actions-http/target/wasm32-wasip2/release/scheduler_actions_http.wasm` 🚧
+- `actions-executor/target/wasm32-wasip2/release/scheduler_actions_executor.wasm` 🚧
 
 **Requirements**: `cargo component` and `wasm-tools` must be installed:
 ```bash
@@ -75,7 +75,7 @@ wasm-tools component wit target/wasm32-wasip2/release/scheduler_core.wasm
 wasm-tools validate target/wasm32-wasip2/release/scheduler_core.wasm
 ```
 
-See `examples/composition.wac` for a WAC composition example. Full multi-component composition will be available once executor and actions-http are complete.
+See `examples/composition.wac` for a WAC composition example. Full multi-component composition will be available once executor and actions-executor are complete.
 
 ## Running the composed component with Wasmtime
 
@@ -110,7 +110,7 @@ Each crate exports typed interfaces defined in its `wit/world.wit`:
 
 - **core-libs** exports `scheduler:core-libs/types` (Scenario, ActionDef, WorkflowNode, etc.) and `scheduler:core-libs/parser` (parse/validate functions).
 - **executor** exports `scheduler:executor/types` (ActionOutcome, WbsTask, etc.), `scheduler:executor/context` (ActionContext resource), and `scheduler:executor/component-api`.
-- **actions-http** exports `scheduler:actions-http/http-component` (init/do_http_action/release functions).
+- **actions-executor** exports `scheduler:actions-executor/action-component` (init/execute_action/release functions).
 
 These interfaces allow other wasm runtimes to link or compose scheduler functionality without a full native Rust build.
 
@@ -140,11 +140,32 @@ These interfaces allow other wasm runtimes to link or compose scheduler function
 ./scripts/compose_full.sh
 ```
 
+### Host-only regression helper
+
+```bash
+# Format check, clippy (scheduler crate), and host-side tests
+./scripts/check_host.sh
+```
+
+This fast script is what CI should run first: it keeps formatter and clippy strictness aligned while only compiling the host-facing `scheduler` crate, so you get feedback in seconds.
+
+### Known limitation: workspace-wide `cargo test`
+
+Running `cargo test` at the workspace root currently fails during link time because the component crates (`scheduler-actions-executor`, `scheduler-core`, `eventbus`) export symbols that include `@` (for example `cabi_post_scheduler:actions-executor/action-component@0.1.0#execute-action`). GNU ld rejects those names when producing native `cdylib`s, which makes full-workspace tests impractical until those crates either drop the `cdylib` target or adopt alternate symbol names.
+
+**Use these commands instead:**
+
+- `cargo test -p scheduler` – exercises all host logic and unit tests.
+- `./scripts/check_host.sh` – runs fmt, clippy, and the host tests together (ideal for CI or pre-push).
+- `cargo build --target wasm32-wasip2 -p scheduler-actions-executor -p eventbus -p scheduler-core -p scheduler` – validates the wasm components without touching the problematic host link step.
+
+Once the component crates are restructured (for example, by removing `cdylib` from their crate types or renaming the exported symbols), the workspace-level test command can be re-enabled.
+
 ## Binaries
 
 | Binary | Description |
 | --- | --- |
-| `scheduler` | CLI that loads a scenario (defaults to `res/http_scenario.yaml`), prints the parsed summary, and executes the workflow via the default `HttpActionComponent` from `scheduler-actions-http`. |
+| `scheduler` | CLI that loads a scenario (defaults to `res/http_scenario.yaml`), prints the parsed summary, and executes the workflow via the default `ActionExecutorComponent` from `scheduler-actions-executor`. |
 | `http_server` | Minimal HTTP endpoint (configurable via YAML) that responds to `/asset`, `/get`, `/post`, `/json`, and `/health` so scheduler workflows can be tested locally. |
 
 ## Try it
@@ -192,9 +213,9 @@ HTTP_SERVER_CONFIG=res/http_server_config.yaml cargo run --bin http_server
 
 ## Extending actions or building components
 
-- Create a new crate next to `scheduler-actions-http` and implement `ActionComponent` for your domain. Because the executor crate has zero HTTP-specific dependencies, your component can talk to anything (databases, queues, device bridges, etc.).
+- Create a new crate next to `scheduler-actions-executor` and implement `ActionComponent` for your domain. Because the executor crate has zero HTTP-specific dependencies, your component can talk to anything (databases, queues, device bridges, etc.).
 - If you plan to publish the component as a wasm module, keep the component crate `no_std`-friendly and compile it with `cargo component` targeting `wasm32-wasip2`. The scheduler binary can embed the wasm runtime later, or you can deploy the component into another host entirely.
-- For quick experiments, you can also reuse the logging component in `scheduler-actions-http::LoggingActionComponent`, which simply prints the call metadata and succeeds.
+- For quick experiments, you can also reuse the logging component in `scheduler-actions-executor::LoggingActionComponent`, which simply prints the call metadata and succeeds.
 
 ## Task scheduler details
 

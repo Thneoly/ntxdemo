@@ -275,12 +275,11 @@ impl UserExecutor {
             }
 
             // 评估条件（简化版：只支持 "true" 或简单的相等判断）
-            if let Some(trigger) = &edge.trigger {
-                if let Some(condition) = &trigger.condition {
-                    if condition == "true" || self.evaluate_condition(condition, &merged_ctx) {
-                        return Ok(edge.to.clone());
-                    }
-                }
+            if let Some(trigger) = &edge.trigger
+                && let Some(condition) = &trigger.condition
+                && (condition == "true" || self.evaluate_condition(condition, &merged_ctx))
+            {
+                return Ok(edge.to.clone());
             }
         }
 

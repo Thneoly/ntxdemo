@@ -18,8 +18,8 @@ echo ""
 mkdir -p "$DEPS_DIR"
 
 cp target/wasm32-wasip2/debug/scheduler.wasm "$DEPS_DIR/main.wasm"
-cp target/wasm32-wasip2/debug/scheduler_actions_http.wasm "$DEPS_DIR/action-http.wasm"
-cp target/wasm32-wasip2/debug/scheduler_actions_http.wasm "$DEPS_DIR/actions-http.wasm"
+cp target/wasm32-wasip2/debug/scheduler_actions_executor.wasm "$DEPS_DIR/action-executor.wasm"
+cp target/wasm32-wasip2/debug/scheduler_actions_executor.wasm "$DEPS_DIR/actions-executor.wasm"
 cp target/wasm32-wasip2/debug/scheduler_core.wasm "$DEPS_DIR/core-libs.wasm"
 cp target/wasm32-wasip2/debug/eventbus.wasm "$DEPS_DIR/event-bus.wasm"
 

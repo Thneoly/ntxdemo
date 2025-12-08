@@ -15,7 +15,7 @@ use crate::core::{
     workbook::Workbook,
 };
 use crate::event_bus;
-use crate::host_http::WitHttpActionComponent;
+use crate::host_executor::WitActionExecutorComponent;
 use crate::{
     ActionComponent, ActionContext, ActionTrace, IpPoolManager, SchedulerEvent, TemplateContext,
     parse_duration,
@@ -111,7 +111,7 @@ impl SchedulerPipeline {
     }
 
     pub fn run_load_default(&mut self) -> Result<LoadExecutionSummary, SchedulerError> {
-        let mut component = WitHttpActionComponent::default();
+        let mut component = WitActionExecutorComponent::default();
         self.run_load_with_component(&mut component, LoadRuntimeOptions::from_env())
     }
 
@@ -281,15 +281,14 @@ impl SchedulerPipeline {
                     }
                 }
 
-                if let Some((ip, pool_id)) = allocated_ip {
-                    if let Some(manager) = ip_manager.as_mut() {
-                        if let Err(err) = manager.release_ip(&pool_id, ip) {
-                            eprintln!(
-                                "⚠️  Failed to release IP {} for user-{}: {:#}",
-                                ip, user_id, err
-                            );
-                        }
-                    }
+                if let Some((ip, pool_id)) = allocated_ip
+                    && let Some(manager) = ip_manager.as_mut()
+                    && let Err(err) = manager.release_ip(&pool_id, ip)
+                {
+                    eprintln!(
+                        "⚠️  Failed to release IP {} for user-{}: {:#}",
+                        ip, user_id, err
+                    );
                 }
             }
         }
@@ -307,7 +306,7 @@ impl SchedulerPipeline {
     }
 
     pub fn run_default(&mut self) -> Result<Vec<ActionTrace>, SchedulerError> {
-        let mut component = WitHttpActionComponent::default();
+        let mut component = WitActionExecutorComponent::default();
         self.run(&mut component)
     }
 
@@ -345,10 +344,10 @@ impl SchedulerPipeline {
         let release_result = component
             .release()
             .map_err(|source| SchedulerError::ActionComponentRelease { source });
-        if let Err(release_err) = release_result {
-            if run_result.is_ok() {
-                return Err(release_err);
-            }
+        if let Err(release_err) = release_result
+            && run_result.is_ok()
+        {
+            return Err(release_err);
         }
         run_result
     }
@@ -477,7 +476,7 @@ where
 
         let start = Instant::now();
 
-        let wbs_view: &WbsTree = &self.wbs;
+        let wbs_view = &self.wbs;
         let mut ctx = ActionContext::new(wbs_view);
         let outcome = self
             .component
