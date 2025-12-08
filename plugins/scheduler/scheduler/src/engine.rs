@@ -1,18 +1,25 @@
 use std::collections::VecDeque;
+use std::env;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::core::{
-    dsl::Scenario, error::SchedulerError, state_machine::StateMachine, wbs::WbsTree,
+    dsl::{Scenario, UserLifetimeMode},
+    error::SchedulerError,
+    state_machine::StateMachine,
+    wbs::WbsTree,
     workbook::Workbook,
 };
 use crate::host_http::WitHttpActionComponent;
-use crate::{ActionComponent, ActionContext, ActionTrace, SchedulerEvent, TemplateContext};
-use indexmap::IndexSet;
+use crate::{
+    ActionComponent, ActionContext, ActionTrace, IpPoolManager, SchedulerEvent, TemplateContext,
+    parse_duration,
+};
+use indexmap::{IndexMap, IndexSet};
 
 #[derive(Debug, Clone)]
 pub struct SchedulerPipeline {
@@ -21,6 +28,34 @@ pub struct SchedulerPipeline {
     template: TemplateContext,
     wbs: WbsTree,
     state_machine: StateMachine,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LoadRuntimeOptions {
+    pub allow_source_ip_binding: bool,
+}
+
+impl LoadRuntimeOptions {
+    pub fn from_env() -> Self {
+        Self {
+            allow_source_ip_binding: source_ip_binding_enabled(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadExecutionSummary {
+    pub scenario_name: String,
+    pub total_users: usize,
+    pub traces: Vec<ActionTrace>,
+    pub ip_binding: IpBindingSummary,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct IpBindingSummary {
+    pub requested: bool,
+    pub permitted: bool,
+    pub pool_stats: Vec<String>,
 }
 
 impl SchedulerPipeline {
@@ -74,6 +109,202 @@ impl SchedulerPipeline {
         }
     }
 
+    pub fn run_load_default(&mut self) -> Result<LoadExecutionSummary, SchedulerError> {
+        let mut component = WitHttpActionComponent::default();
+        self.run_load_with_component(&mut component, LoadRuntimeOptions::from_env())
+    }
+
+    pub fn run_load_with_component<C>(
+        &mut self,
+        component: &mut C,
+        options: LoadRuntimeOptions,
+    ) -> Result<LoadExecutionSummary, SchedulerError>
+    where
+        C: ActionComponent,
+    {
+        let scenario_name = self.scenario.name.clone();
+        let Some(load_cfg) = self.scenario.load.clone() else {
+            return Err(SchedulerError::InvalidConfiguration(
+                "Load configuration is required for runtime execution".into(),
+            ));
+        };
+
+        let think_time = parse_duration(&load_cfg.user_lifetime.think_time)
+            .map_err(|e| SchedulerError::InvalidConfiguration(e.to_string()))?;
+
+        let iterations = match load_cfg.user_lifetime.mode {
+            UserLifetimeMode::Once => 1,
+            UserLifetimeMode::Loop => {
+                if load_cfg.user_lifetime.iterations == 0 {
+                    usize::MAX
+                } else {
+                    load_cfg.user_lifetime.iterations
+                }
+            }
+        };
+
+        let ip_binding_requested = load_cfg.user_resources.ip_binding.enabled;
+        let mut available_pool_ids = IndexSet::new();
+        for pool in &self.scenario.workbook.ip_pools {
+            available_pool_ids.insert(pool.id.clone());
+        }
+
+        if ip_binding_requested
+            && !available_pool_ids.contains(&load_cfg.user_resources.ip_binding.pool_id)
+        {
+            return Err(SchedulerError::InvalidConfiguration(format!(
+                "IP pool '{}' not found in workbook",
+                load_cfg.user_resources.ip_binding.pool_id
+            )));
+        }
+
+        let mut ip_summary = IpBindingSummary {
+            requested: ip_binding_requested,
+            permitted: false,
+            pool_stats: Vec::new(),
+        };
+
+        let mut ip_manager = if ip_binding_requested && options.allow_source_ip_binding {
+            let mut manager = IpPoolManager::new();
+            manager
+                .initialize_from_config(&self.scenario.workbook.ip_pools)
+                .map_err(|e| SchedulerError::InvalidConfiguration(e.to_string()))?;
+            ip_summary.permitted = true;
+            Some(manager)
+        } else {
+            None
+        };
+
+        if ip_binding_requested && !ip_summary.permitted {
+            println!(
+                "⚠️  已请求 IP 绑定，但当前运行环境不支持自定义源 IP，将自动跳过绑定 (设置 NTX_ENABLE_SOURCE_IP_BINDING=1 可启用)。"
+            );
+        }
+
+        let mut all_traces = Vec::new();
+        let mut total_users = 0usize;
+
+        println!("🚀 Running load test: {}", scenario_name);
+        println!("Ramp-up phases: {}", load_cfg.ramp_up.phases.len());
+        println!("User lifetime mode: {:?}", load_cfg.user_lifetime.mode);
+        println!("Iterations: {}", load_cfg.user_lifetime.iterations);
+        println!("Think time: {}", load_cfg.user_lifetime.think_time);
+
+        for phase in &load_cfg.ramp_up.phases {
+            println!(
+                "\n📊 Phase at {}s: Spawning {} users...",
+                phase.at_second, phase.spawn_users
+            );
+
+            for _ in 0..phase.spawn_users {
+                total_users += 1;
+                let user_id = total_users;
+                let tenant_id = phase
+                    .tenant_id
+                    .clone()
+                    .unwrap_or_else(|| "default-tenant".to_string());
+
+                let allocated_ip = if ip_summary.permitted {
+                    let pool_id = phase
+                        .ip_pool_override
+                        .as_deref()
+                        .unwrap_or(&load_cfg.user_resources.ip_binding.pool_id);
+                    if !available_pool_ids.contains(pool_id) {
+                        eprintln!(
+                            "⚠️  IP pool '{}' not defined, skip allocation for user-{}",
+                            pool_id, user_id
+                        );
+                        None
+                    } else {
+                        match ip_manager
+                            .as_mut()
+                            .expect("ip_manager must exist when permitted")
+                            .allocate_ip(pool_id, &tenant_id, &format!("user-{}", user_id))
+                        {
+                            Ok(addr) => Some((addr, pool_id.to_string())),
+                            Err(err) => {
+                                eprintln!(
+                                    "⚠️  Failed to allocate IP for user-{}: {:#}",
+                                    user_id, err
+                                );
+                                None
+                            }
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                let mut base_overrides = IndexMap::new();
+                base_overrides.insert("user.id".to_string(), user_id.to_string());
+                base_overrides.insert("tenant.id".to_string(), tenant_id.clone());
+                if let Some((ip, _)) = allocated_ip {
+                    base_overrides.insert("user.allocated_ip".to_string(), ip.to_string());
+                }
+
+                let iteration_label = if iterations == usize::MAX {
+                    "∞".to_string()
+                } else {
+                    iterations.to_string()
+                };
+                println!(
+                    "  ↳ user-{} (tenant: {}) iterations={}",
+                    user_id, tenant_id, iteration_label
+                );
+
+                let infinite_iterations = iterations == usize::MAX;
+                let mut iteration_counter = 0usize;
+
+                loop {
+                    if iteration_counter > 0 && !think_time.is_zero() {
+                        thread::sleep(think_time);
+                    }
+
+                    iteration_counter += 1;
+
+                    let mut iteration_overrides = base_overrides.clone();
+                    iteration_overrides
+                        .insert("user.iteration".to_string(), iteration_counter.to_string());
+                    iteration_overrides.insert(
+                        "user.iteration_index".to_string(),
+                        (iteration_counter - 1).to_string(),
+                    );
+
+                    println!("    • user-{} iteration {}", user_id, iteration_counter);
+
+                    let traces = self.run_with_overrides(component, &iteration_overrides)?;
+                    all_traces.extend(traces);
+
+                    if !infinite_iterations && iteration_counter >= iterations {
+                        break;
+                    }
+                }
+
+                if let Some((ip, pool_id)) = allocated_ip {
+                    if let Some(manager) = ip_manager.as_mut() {
+                        if let Err(err) = manager.release_ip(&pool_id, ip) {
+                            eprintln!(
+                                "⚠️  Failed to release IP {} for user-{}: {:#}",
+                                ip, user_id, err
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(manager) = ip_manager {
+            ip_summary.pool_stats = manager.get_all_stats();
+        }
+
+        Ok(LoadExecutionSummary {
+            scenario_name,
+            total_users,
+            traces: all_traces,
+            ip_binding: ip_summary,
+        })
+    }
+
     pub fn run_default(&mut self) -> Result<Vec<ActionTrace>, SchedulerError> {
         let mut component = WitHttpActionComponent::default();
         self.run(&mut component)
@@ -83,16 +314,29 @@ impl SchedulerPipeline {
     where
         C: ActionComponent,
     {
+        let overrides = IndexMap::new();
+        self.run_with_overrides(component, &overrides)
+    }
+
+    pub fn run_with_overrides<C>(
+        &mut self,
+        component: &mut C,
+        overrides: &IndexMap<String, String>,
+    ) -> Result<Vec<ActionTrace>, SchedulerError>
+    where
+        C: ActionComponent,
+    {
         component
             .init()
             .map_err(|source| SchedulerError::ActionComponentInit { source })?;
 
         let shutdown = setup_shutdown_flag()?;
+        let merged_template = self.template.merged(overrides);
         let run_result = TaskExecutor::new(
             component,
             &mut self.wbs,
             &mut self.state_machine,
-            self.template.clone(),
+            merged_template,
             shutdown,
         )
         .run();
@@ -105,7 +349,6 @@ impl SchedulerPipeline {
                 return Err(release_err);
             }
         }
-
         run_result
     }
 }
@@ -127,6 +370,13 @@ pub struct PipelineSummary {
 fn setup_shutdown_flag() -> Result<Arc<AtomicBool>, SchedulerError> {
     // Signal handling not available in WASM
     Ok(Arc::new(AtomicBool::new(false)))
+}
+
+fn source_ip_binding_enabled() -> bool {
+    match env::var("NTX_ENABLE_SOURCE_IP_BINDING") {
+        Ok(value) => matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"),
+        Err(_) => false,
+    }
 }
 
 struct TaskExecutor<'a, C> {
@@ -218,6 +468,8 @@ where
 
         let action = self.template.render_action(&action);
 
+        let start = Instant::now();
+
         let wbs_view: &WbsTree = &self.wbs;
         let mut ctx = ActionContext::new(wbs_view);
         let outcome = self
@@ -227,6 +479,8 @@ where
                 action: action_id.clone(),
                 source,
             })?;
+
+        let duration = start.elapsed();
 
         for event in ctx.into_events() {
             self.queues
@@ -238,6 +492,7 @@ where
             action_id: action_id.clone(),
             status: outcome.status,
             detail: outcome.detail,
+            duration_ms: duration.as_millis() as u64,
         });
 
         self.enqueue_new_action_tasks();

@@ -56,6 +56,7 @@ pub struct ActionTrace {
     pub action_id: String,
     pub status: ActionStatus,
     pub detail: Option<String>,
+    pub duration_ms: u64,
 }
 
 pub struct ActionContext<'a> {

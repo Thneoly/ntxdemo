@@ -39,4 +39,7 @@ pub enum SchedulerError {
         #[source]
         source: AnyError,
     },
+
+    #[error("invalid configuration: {0}")]
+    InvalidConfiguration(String),
 }
