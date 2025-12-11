@@ -132,3 +132,30 @@ DISABLE_PLUGIN_BUILDS=1 cargo build
 ## 其他
 
 可以使用 `nc -l 127.0.0.1 8080` 监听端口 开启TCP 监听端口。
+
+
+```shell
+基于 AF_XDP + ring shared memory + WASM (wasip2) 实现： “零拷贝架构”应该长这样：
+	NIC → XDP → AF_XDP → (shared UMEM page) → Rust Host → (memoryview import) → WASM Guest
+
+
+数据通路特点：
+
+	NIC DMA → 用户态（零拷贝）
+
+	Rust Host 和 WASM 可以共用同一块内存（Wasm GC & shared memory）
+
+	不需要来回 memcpy
+
+可以实现 Mac → IP → TCP → HTTP 全部自己写; 
+WASM 插件架构：
+
+	Host（Rust）控制 IO & memory
+
+	Guest（WASM）处理协议 & 业务
+
+	AF_XDP 保证最小延迟和最高吞吐 请给出示例  包含 XDP/eBPF 程序（把包重定向到 AF_XDP）、Rust Host 用户态（创建 UMEM + AF_XDP sockets，并从 ring 读取包）以及 build / run 指引
+
+https://github.com/aya-rs/aya
+https://aya-rs.dev/book/start/hello-xdp 这是一个教程
+```
