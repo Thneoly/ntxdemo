@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
-use ntx::network::{AfPacketNic, ETH_TYPE_IPV4, EthernetHeader, Ipv4Header, MacAddr, UdpHeader};
-
-const IP_PROTO_UDP: u8 = 17;
+use ntx::network::stack::{Action, PacketContext, Pipeline, UdpEchoHandler};
+use ntx::network::{AfPacketNic, MacAddr};
 
 #[derive(Debug, Clone)]
 struct Opt {
@@ -87,7 +86,15 @@ fn main() -> Result<()> {
     // Only echo frames addressed to our MAC OR broadcast.
 
     let mut buf = vec![0u8; opt.snaplen];
-    let mut out = vec![0u8; opt.snaplen];
+
+    // Pluggable pipeline: decode once, run handlers.
+    let mut ctx = PacketContext::with_capacity(opt.snaplen);
+    let mut pipeline = Pipeline::new();
+    pipeline.add_handler(UdpEchoHandler {
+        listen_port: opt.port,
+        iface_mac: MacAddr(iface_mac),
+        verbose: opt.verbose,
+    });
 
     let mut rx_cnt: u64 = 0;
     let mut echo_cnt: u64 = 0;
@@ -107,127 +114,20 @@ fn main() -> Result<()> {
             eprintln!("stats: rx={} echoed={} (last 1s)", rx_cnt, echo_cnt);
             last_report = std::time::Instant::now();
         }
-        if n < EthernetHeader::LEN {
-            continue;
-        }
-        let frame = &buf[..n];
-
-        let (eth, l3) = match EthernetHeader::parse(frame) {
-            Ok(v) => v,
+        ctx.set_frame(&buf[..n]);
+        let action = match pipeline.process(&ctx) {
+            Ok(a) => a,
             Err(_) => continue,
         };
 
-        // Filter: IPv4 only.
-        if eth.ethertype != ETH_TYPE_IPV4 {
-            continue;
-        }
-
-        // Filter: dst == iface mac OR broadcast.
-        if !eth.dst.is_broadcast() && eth.dst.0 != iface_mac {
-            continue;
-        }
-
-        let (ip, l4) = match Ipv4Header::parse(l3) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        if ip.protocol != IP_PROTO_UDP {
-            continue;
-        }
-
-        let (udp, payload) = match UdpHeader::parse(l4) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        if udp.dst_port != opt.port {
-            continue;
-        }
-
-        echo_cnt = echo_cnt.wrapping_add(1);
-
-        if opt.verbose {
-            eprintln!(
-                "echo hit: eth {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}; ip {}.{}.{}.{}:{} -> {}.{}.{}.{}:{}; payload_len={}",
-                eth.src.0[0],
-                eth.src.0[1],
-                eth.src.0[2],
-                eth.src.0[3],
-                eth.src.0[4],
-                eth.src.0[5],
-                eth.dst.0[0],
-                eth.dst.0[1],
-                eth.dst.0[2],
-                eth.dst.0[3],
-                eth.dst.0[4],
-                eth.dst.0[5],
-                ip.src.0[0],
-                ip.src.0[1],
-                ip.src.0[2],
-                ip.src.0[3],
-                udp.src_port,
-                ip.dst.0[0],
-                ip.dst.0[1],
-                ip.dst.0[2],
-                ip.dst.0[3],
-                udp.dst_port,
-                payload.len()
-            );
-        }
-
-        // Build reply: swap mac/ip/port.
-        let reply_eth = EthernetHeader {
-            dst: eth.src,
-            src: MacAddr(iface_mac),
-            ethertype: ETH_TYPE_IPV4,
-        };
-
-        let reply_ip = Ipv4Header {
-            src: ip.dst,
-            dst: ip.src,
-            protocol: IP_PROTO_UDP,
-            ttl: 64,
-            identification: 0,
-            flags_fragment: 0,
-        };
-
-        let reply_udp = UdpHeader {
-            src_port: udp.dst_port,
-            dst_port: udp.src_port,
-        };
-
-        let eth_len = EthernetHeader::LEN;
-        let ip_len = Ipv4Header::MIN_LEN;
-        let udp_len = UdpHeader::LEN;
-
-        let needed = eth_len + ip_len + udp_len + payload.len();
-        if needed > out.len() {
-            continue;
-        }
-
-        // Ethernet
-        reply_eth.write(&mut out[..eth_len])?;
-
-        // IPv4
-        reply_ip.write(
-            &mut out[eth_len..eth_len + ip_len],
-            udp_len + payload.len(),
-            0,
-        )?;
-
-        // UDP
-        let udp_off = eth_len + ip_len;
-        reply_udp.write(
-            &mut out[udp_off..udp_off + udp_len + payload.len()],
-            payload,
-            reply_ip.src,
-            reply_ip.dst,
-        )?;
-
-        // Send
-        if let Err(e) = nic.send(&out[..needed]) {
-            eprintln!("send error: {e:#}");
+        match action {
+            Action::Pass => {}
+            Action::Reply(reply) => {
+                echo_cnt = echo_cnt.wrapping_add(1);
+                if let Err(e) = nic.send(&reply.bytes) {
+                    eprintln!("send error: {e:#}");
+                }
+            }
         }
     }
 }
