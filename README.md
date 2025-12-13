@@ -146,7 +146,7 @@ DISABLE_PLUGIN_BUILDS=1 cargo build
 ### 运行
 
 ```bash
-sudo -E cargo run --example userspace-udp-echo -- --iface eno1 --port 10001
+sudo -E cargo run --example userspace-udp-echo -- --iface eno1 --backend afpacket --port 10001
 ```
 
 参数：
@@ -164,7 +164,7 @@ sudo -E cargo run --example userspace-udp-echo -- --iface eno1 --port 10001
 1) **在目标机**（运行示例的机器）启动 echo：
 
 ```bash
-sudo -E cargo run --example userspace-udp-echo -- --iface eno1 --port 10001
+sudo -E cargo run --example userspace-udp-echo -- --iface eno1 --backend afpacket --port 10001
 ```
 
 2) **在另一台机器**（同一交换机/同一二层网络）向目标机发送 UDP：

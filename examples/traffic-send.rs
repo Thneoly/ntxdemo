@@ -3,14 +3,20 @@ use ntx::network::arp::{ArpCache, MAC_BROADCAST, build_arp_request_frame, parse_
 use ntx::network::traffic::matcher::{FlowKey, Matcher};
 use ntx::network::traffic::scenario::{expand_dst_ips, load_scenario};
 use ntx::network::traffic::token::{TOKEN_LEN, Token, decode_token, encode_token};
-use ntx::network::{
-    AfPacketNic, ETH_TYPE_IPV4, EthernetHeader, Ipv4Addr, Ipv4Header, MacAddr, UdpHeader,
-};
+use ntx::network::{ETH_TYPE_IPV4, EthernetHeader, Ipv4Addr, Ipv4Header, MacAddr, Nic, UdpHeader};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Backend {
+    AfPacket,
+    TpacketV3,
+}
 
 #[derive(Debug, Clone)]
 struct Opt {
     /// Optional scenario YAML file.
     scenario: Option<String>,
+    /// NIC backend.
+    backend: Backend,
     iface: String,
     /// Destination IPv4 list entries from CLI.
     ///
@@ -77,6 +83,7 @@ fn parse_mac(s: &str) -> Option<MacAddr> {
 fn parse_args() -> Opt {
     let mut opt = Opt {
         scenario: None,
+        backend: Backend::AfPacket,
         iface: "eno1".to_string(),
         dst_ips: Vec::new(),
         dst_ip_file: "".to_string(),
@@ -101,16 +108,18 @@ fn parse_args() -> Opt {
         match arg.as_str() {
             "-h" | "--help" => {
                 eprintln!(
-                    "Usage: traffic-send [--scenario FILE] --iface IFACE (--dst-ips SPEC | --dst-ip-file FILE) [--src-ip A.B.C.D] [--src-port P] [--dst-port P]\n\
+                    "Usage: traffic-send [--scenario FILE] --iface IFACE [--backend afpacket|tpacketv3] (--dst-ips SPEC | --dst-ip-file FILE) [--src-ip A.B.C.D] [--src-port P] [--dst-port P]\n\
                      	[--payload STRING] [--pps N] [--count N] [--dst-mac aa:bb:cc:dd:ee:ff] [--arp]\n\
 	[--arp-timeout-ms MS] [--arp-ttl-s S]\n\
 	[--rr] [--rr-timeout-ms MS] [--rr-poll-budget N] [--verbose]\n\n\
                      Notes:\n\
-                     - This is MVP-1: build + send UDP frames via AF_PACKET. No ARP, no reply matching yet.\n\
+                     - This is a userspace L2 UDP traffic generator using AF_PACKET.\n\
+                     - It supports ARP resolution (--arp) and request-reply matching (--rr) for RTT/timeouts.\n\
                      - MVP-4: --scenario loads YAML and provides defaults; CLI flags override scenario.\n\
                      - --dst-ips supports: single IP (10.0.0.1), CIDR (10.0.0.0/24), range (10.0.0.10-10.0.0.20).\n\
                      - With --arp enabled and without --dst-mac, we send ARP requests and learn dst MACs.\n\
                      - If neither --dst-mac nor --arp is provided, dst MAC defaults to broadcast (ff:ff:ff:ff:ff:ff).\n\
+                     - --backend selects RX backend: afpacket (copy) or tpacketv3 (PACKET_RX_RING).\n\
                      - With --rr enabled, we prepend a 12-byte token (\"NTX1\" + u64 seq) into UDP payload,\n\
                                              then match replies by (dst_ip,dst_port,src_port,token) and report RTT/timeouts.\n\n\
                                          Examples:\n\
@@ -126,6 +135,18 @@ fn parse_args() -> Opt {
             "--scenario" => {
                 if let Some(v) = it.next() {
                     opt.scenario = Some(v);
+                }
+            }
+            "--backend" => {
+                if let Some(v) = it.next() {
+                    match v.as_str() {
+                        "afpacket" => opt.backend = Backend::AfPacket,
+                        "tpacketv3" | "tpacket_v3" | "tpv3" => opt.backend = Backend::TpacketV3,
+                        _ => {
+                            eprintln!("invalid --backend: {v} (expected: afpacket|tpacketv3)");
+                            std::process::exit(2);
+                        }
+                    }
                 }
             }
             "--iface" => {
@@ -349,7 +370,15 @@ fn main() -> Result<()> {
         "either --dst-ips, scenario.dst_ips, or --dst-ip-file is required (see --help)"
     );
 
-    let nic = AfPacketNic::open(&opt.iface).context("open afpacket nic")?;
+    let mut nic: Box<dyn Nic> = match opt.backend {
+        Backend::AfPacket => {
+            Box::new(ntx::network::AfPacketNic::open(&opt.iface).context("open afpacket nic")?)
+        }
+        Backend::TpacketV3 => Box::new(
+            ntx::network::TpacketV3Nic::open(&opt.iface, 1 << 20, 64, 2048, 10)
+                .context("open tpacketv3 nic")?,
+        ),
+    };
 
     let iface_mac = nic
         .iface_mac()
@@ -368,9 +397,10 @@ fn main() -> Result<()> {
     let default_dst_mac = opt.dst_mac.unwrap_or(MAC_BROADCAST);
 
     eprintln!(
-        "traffic-send (MVP-3 rr={} arp={}): iface={} ifindex={} src_mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} default_dst_mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} dst_ips={} dst_port={} src_port={} pps={} count={} (sudo required)",
+        "traffic-send (MVP-3 rr={} arp={}): backend={:?} iface={} ifindex={} src_mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} default_dst_mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} dst_ips={} dst_port={} src_port={} pps={} count={} (sudo required)",
         opt.rr,
         opt.arp,
+        opt.backend,
         nic.ifname(),
         nic.ifindex(),
         iface_mac[0],
@@ -654,6 +684,23 @@ fn main() -> Result<()> {
                 dst_mac.0[5],
             );
         }
+    }
+
+    if opt.rr {
+        // Print a final summary because short runs (e.g., count=50 at pps=50) can finish
+        // before the 1s periodic stats triggers.
+        matcher.sweep_timeouts();
+        let avg = matcher.stats.rtt.avg_us().unwrap_or(0);
+        eprintln!(
+            "final: sent={} matched={} timeouts={} outstanding={} rtt_us(min/avg/max)={}/{}/{}",
+            matcher.stats.sent,
+            matcher.stats.matched,
+            matcher.stats.timeouts,
+            matcher.outstanding(),
+            matcher.stats.rtt.min_us,
+            avg,
+            matcher.stats.rtt.max_us,
+        );
     }
 
     eprintln!("done: sent={}", sent);

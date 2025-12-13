@@ -2,6 +2,9 @@ use anyhow::Context;
 use std::ffi::CString;
 use std::mem;
 use std::os::fd::RawFd;
+use std::time::Duration;
+
+use super::Nic;
 
 /// AF_PACKET (PF_PACKET) raw socket NIC backend.
 ///
@@ -145,7 +148,58 @@ impl AfPacketNic {
     }
 }
 
-fn get_iface_mac(ifname: &str) -> anyhow::Result<[u8; 6]> {
+impl Nic for AfPacketNic {
+    fn ifindex(&self) -> i32 {
+        self.ifindex()
+    }
+
+    fn ifname(&self) -> &str {
+        self.ifname()
+    }
+
+    fn iface_mac(&self) -> Option<[u8; 6]> {
+        self.iface_mac()
+    }
+
+    fn send(&self, frame: &[u8]) -> anyhow::Result<usize> {
+        AfPacketNic::send(self, frame)
+    }
+
+    fn recv(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
+        AfPacketNic::recv(self, buf)
+    }
+
+    fn recv_nonblocking(&mut self, buf: &mut [u8]) -> anyhow::Result<Option<usize>> {
+        AfPacketNic::recv_nonblocking(self, buf)
+    }
+
+    fn poll_readable(&self, timeout: Option<Duration>) -> anyhow::Result<bool> {
+        let mut pfd = libc::pollfd {
+            fd: self.fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let to_ms: i32 = match timeout {
+            None => -1,
+            Some(d) => {
+                let ms = d.as_millis();
+                if ms > i32::MAX as u128 {
+                    i32::MAX
+                } else {
+                    ms as i32
+                }
+            }
+        };
+
+        let rc = unsafe { libc::poll(&mut pfd as *mut libc::pollfd, 1, to_ms) };
+        if rc < 0 {
+            return Err(std::io::Error::last_os_error()).context("poll(AF_PACKET) failed");
+        }
+        Ok(rc > 0 && (pfd.revents & libc::POLLIN) != 0)
+    }
+}
+
+pub(super) fn get_iface_mac(ifname: &str) -> anyhow::Result<[u8; 6]> {
     use std::io;
 
     // Create a temporary socket for ioctl. Any IPv4 datagram socket works.

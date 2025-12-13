@@ -1,11 +1,19 @@
 use anyhow::{Context, Result};
 use ntx::network::stack::{Action, PacketContext, Pipeline, UdpEchoHandler};
-use ntx::network::{AfPacketNic, MacAddr};
+use ntx::network::{MacAddr, Nic};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Backend {
+    AfPacket,
+    TpacketV3,
+}
 
 #[derive(Debug, Clone)]
 struct Opt {
     /// Network interface to bind AF_PACKET to.
     iface: String,
+    /// NIC backend.
+    backend: Backend,
     /// UDP port to echo.
     port: u16,
     /// Maximum frame size to read per recv().
@@ -17,6 +25,7 @@ struct Opt {
 fn parse_args() -> Opt {
     let mut opt = Opt {
         iface: "eno1".to_string(),
+        backend: Backend::AfPacket,
         port: 10001,
         snaplen: 2048,
         verbose: false,
@@ -27,13 +36,25 @@ fn parse_args() -> Opt {
         match arg.as_str() {
             "-h" | "--help" => {
                 eprintln!(
-                    "Usage: userspace-udp-echo [--iface IFACE] [--port PORT] [--snaplen N] [--verbose]\n\nDefault: --iface eno1 --port 10001 --snaplen 2048"
+                    "Usage: userspace-udp-echo [--iface IFACE] [--backend afpacket|tpacketv3] [--port PORT] [--snaplen N] [--verbose]\n\nDefault: --iface eno1 --backend afpacket --port 10001 --snaplen 2048"
                 );
                 std::process::exit(0);
             }
             "--iface" => {
                 if let Some(v) = it.next() {
                     opt.iface = v;
+                }
+            }
+            "--backend" => {
+                if let Some(v) = it.next() {
+                    match v.as_str() {
+                        "afpacket" => opt.backend = Backend::AfPacket,
+                        "tpacketv3" | "tpacket_v3" | "tpv3" => opt.backend = Backend::TpacketV3,
+                        _ => {
+                            eprintln!("invalid --backend: {v} (expected: afpacket|tpacketv3)");
+                            std::process::exit(2);
+                        }
+                    }
                 }
             }
             "--port" => {
@@ -63,14 +84,27 @@ fn parse_args() -> Opt {
 fn main() -> Result<()> {
     let opt = parse_args();
 
-    let nic = AfPacketNic::open(&opt.iface).context("open afpacket nic")?;
+    let mut nic: Box<dyn Nic> = match opt.backend {
+        Backend::AfPacket => {
+            Box::new(ntx::network::AfPacketNic::open(&opt.iface).context("open afpacket nic")?)
+        }
+        Backend::TpacketV3 => {
+            // Defaults tuned for veth/local tests; adjust as needed.
+            // block_size must be power-of-two.
+            Box::new(
+                ntx::network::TpacketV3Nic::open(&opt.iface, 1 << 20, 64, 2048, 10)
+                    .context("open tpacketv3 nic")?,
+            )
+        }
+    };
 
     let iface_mac = nic
         .iface_mac()
         .context("failed to query iface mac (SIOCGIFHWADDR); are you running as root?")?;
 
     eprintln!(
-        "userspace-udp-echo: iface={} ifindex={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} port={} (sudo required)",
+        "userspace-udp-echo: backend={:?} iface={} ifindex={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} port={} (sudo required)",
+        opt.backend,
         nic.ifname(),
         nic.ifindex(),
         iface_mac[0],

@@ -1,7 +1,7 @@
 ```shell
 cargo build --example userspace-udp-echo
 sudo setcap cap_net_raw,cap_net_admin+ep /home/cc/Desktop/code/GitHub/Ntx/target/debug/examples/userspace-udp-echo
-/home/cc/Desktop/code/GitHub/Ntx/target/debug/examples/userspace-udp-echo --iface eno1 --port 10001 --verbose
+/home/cc/Desktop/code/GitHub/Ntx/target/debug/examples/userspace-udp-echo --iface eno1 --backend afpacket --port 10001 --verbose
 ```
 
 ```shell

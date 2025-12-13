@@ -176,6 +176,20 @@ sudo -E cargo run --example traffic-send -- --scenario scenario.yaml --dst-ips 1
 sudo -E cargo run --example userspace-udp-echo -- --iface eno1 --port 10001
 ```
 
+### 后端选择：AF_PACKET vs TPACKETv3(PACKET_RX_RING)
+
+`userspace-udp-echo` 和 `traffic-send` 都支持 `--backend`：
+
+- `afpacket`：最通用，兼容性最好（copy path）
+- `tpacketv3`：使用 `PACKET_RX_RING`/TPACKETv3 mmap RX（更接近“高性能收包”的形态）
+
+示例：
+
+```bash
+sudo ./target/debug/examples/userspace-udp-echo --iface eno1 --backend afpacket --port 10001
+sudo ./target/debug/examples/userspace-udp-echo --iface eno1 --backend tpacketv3 --port 10001
+```
+
 如果你的环境里 `sudo -E` 会被忽略（例如 sudo-rs），建议直接使用二进制 + setcap（见下方 `USAGE.md`），或者用 cargo 的绝对路径执行。
 
 ## 同主机双端验证（推荐）：veth + netns（ntx0/ntx1）
@@ -194,6 +208,51 @@ sudo -E cargo run --example userspace-udp-echo -- --iface eno1 --port 10001
 - netns `ntxns1`：`ntx1`，IP `10.0.0.2/24`
 
 > 说明：在这个拓扑中两端处于同一二层广播域，不需要额外路由/默认网关；适合验证 ARP、MAC/IP/port 交换、checksum、RR matcher 等。
+
+### 最短三终端流程（建议直接照抄）
+
+目标：**一屏抄完**，快速确认：echo server 在回包、client 的 rr matcher 有统计输出。
+
+1) 先创建测试拓扑（一次即可）：
+
+```bash
+sudo ./scripts/ntx-veth-up.sh
+```
+
+2) 普通用户先编译（避免 sudo 环境里找不到 cargo / 或 sudo-rs 不保留环境）：
+
+```bash
+cargo build --example userspace-udp-echo
+cargo build --example traffic-send
+```
+
+3) 开 3 个终端：
+
+- 终端 A（host echo）：
+
+```bash
+sudo ./target/debug/examples/userspace-udp-echo --iface ntx0 --backend tpacketv3 --port 10001 --verbose
+```
+
+- 终端 B（netns echo）：
+
+```bash
+sudo ./scripts/ntxns1.sh ./target/debug/examples/userspace-udp-echo --iface ntx1 --backend tpacketv3 --port 10001 --verbose
+```
+
+- 终端 C（client，host -> netns 发起 rr）：
+
+```bash
+sudo ./target/debug/examples/traffic-send --iface ntx0 --backend tpacketv3 --dst-ips 10.0.0.2 --src-ip 10.0.0.1 --dst-port 10001 --src-port 40000 --rr --arp --pps 50 --count 50
+```
+
+> 预期：终端 C 会打印 `final: sent=... matched=... rtt_us(...)`；终端 B 的 `echoed` 会增长。
+
+可选（强烈推荐）：另开一个抓包窗口：
+
+```bash
+sudo tcpdump -ni ntx0 -vv -e 'arp or (udp and (port 10001 or port 40000))'
+```
 
 ### 1) 创建虚拟链路
 
@@ -230,6 +289,7 @@ Host -> netns（目标 10.0.0.2，走 `ntx0`）：
 
 ```bash
 sudo ./target/debug/examples/traffic-send \
+  --backend afpacket \
   --iface ntx0 \
   --dst-ips 10.0.0.2 \
   --src-ip 10.0.0.1 \
@@ -246,6 +306,7 @@ netns -> host（目标 10.0.0.1，走 `ntx1`）：
 
 ```bash
 sudo ./scripts/ntxns1.sh ./target/debug/examples/traffic-send \
+  --backend afpacket \
   --iface ntx1 \
   --dst-ips 10.0.0.1 \
   --src-ip 10.0.0.2 \
@@ -257,6 +318,19 @@ sudo ./scripts/ntxns1.sh ./target/debug/examples/traffic-send \
   --count 20 \
   --verbose
 ```
+
+也可以把 backend 切到 `tpacketv3`（注意两端都需要 root/cap_net_raw），例如：
+
+```bash
+sudo ./target/debug/examples/userspace-udp-echo --iface ntx0 --backend tpacketv3 --port 10001 --verbose
+sudo ./scripts/ntxns1.sh ./target/debug/examples/userspace-udp-echo --iface ntx1 --backend tpacketv3 --port 10001 --verbose
+
+sudo ./target/debug/examples/traffic-send --backend tpacketv3 --iface ntx0 --dst-ips 10.0.0.2 --src-ip 10.0.0.1 --dst-port 10001 --src-port 40000 --rr --arp --pps 100 --count 20
+```
+
+> 现阶段的 `tpacketv3` 是“功能优先”的实现：RX 逻辑按 block 消费报文，并且**会遍历 block 内的所有 packet**；
+> 但为了保持 `Nic` trait 的语义，`recv*()` 仍然是“单次最多返回 1 帧”，连续调用会把同一个 block 里的多帧逐个吐出。
+> 若在更高 pps 下仍看到 `matched < sent` / `outstanding`，更多是统计收敛（发送结束后 drain 的时间窗口）或丢包/调度导致，性能优化可以后续再做。
 
 ### ✅ 最新推荐验证方式（确保 UDP client/server 互通）
 
