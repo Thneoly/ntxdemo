@@ -433,8 +433,8 @@ fn main() -> Result<()> {
         // If rr enabled: poll some receives each loop to catch replies and timeouts.
         if opt.rr {
             for _ in 0..opt.rr_poll_budget {
-                match nic.recv(&mut rbuf) {
-                    Ok(n) => {
+                match nic.recv_nonblocking(&mut rbuf) {
+                    Ok(Some(n)) => {
                         // ARP learning (best effort) - keeps cache warm.
                         if let Ok(Some((ip, mac))) = parse_arp_reply(&rbuf[..n]) {
                             arp_cache.insert(ip, mac);
@@ -472,6 +472,7 @@ fn main() -> Result<()> {
                             }
                         }
                     }
+                    Ok(None) => break,
                     Err(_) => break,
                 }
             }
@@ -506,8 +507,8 @@ fn main() -> Result<()> {
                     + std::time::Duration::from_millis(opt.arp_timeout_ms.max(1));
                 let mut learned: Option<MacAddr> = None;
                 while std::time::Instant::now() < deadline {
-                    match nic.recv(&mut rbuf) {
-                        Ok(n) => {
+                    match nic.recv_nonblocking(&mut rbuf) {
+                        Ok(Some(n)) => {
                             if let Ok(Some((ip, mac))) = parse_arp_reply(&rbuf[..n]) {
                                 if ip == dst_ip {
                                     arp_cache.insert(ip, mac);
@@ -515,6 +516,11 @@ fn main() -> Result<()> {
                                     break;
                                 }
                             }
+                        }
+                        Ok(None) => {
+                            // No packet ready right now.
+                            // Keep this loop cooperative to avoid pegging a CPU.
+                            std::thread::yield_now();
                         }
                         Err(_) => {
                             // ignore transient errors

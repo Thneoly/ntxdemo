@@ -93,6 +93,33 @@ impl AfPacketNic {
         Ok(n as usize)
     }
 
+    /// Non-blocking receive.
+    ///
+    /// Returns:
+    /// - Ok(Some(n)) when a frame is received
+    /// - Ok(None) when there is no frame available right now (EAGAIN/EWOULDBLOCK)
+    /// - Err(e) for other errors
+    #[allow(dead_code)]
+    pub fn recv_nonblocking(&self, buf: &mut [u8]) -> anyhow::Result<Option<usize>> {
+        let n = unsafe {
+            libc::recv(
+                self.fd,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len(),
+                libc::MSG_DONTWAIT,
+            )
+        };
+        if n < 0 {
+            let e = std::io::Error::last_os_error();
+            // WouldBlock means no packet ready.
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                return Ok(None);
+            }
+            return Err(e).context("recv(AF_PACKET, MSG_DONTWAIT) failed");
+        }
+        Ok(Some(n as usize))
+    }
+
     #[allow(dead_code)]
     pub fn send(&self, frame: &[u8]) -> anyhow::Result<usize> {
         // For AF_PACKET, sendto() needs a sockaddr_ll; destination MAC is taken from the frame.

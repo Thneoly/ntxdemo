@@ -178,6 +178,162 @@ sudo -E cargo run --example userspace-udp-echo -- --iface eno1 --port 10001
 
 如果你的环境里 `sudo -E` 会被忽略（例如 sudo-rs），建议直接使用二进制 + setcap（见下方 `USAGE.md`），或者用 cargo 的绝对路径执行。
 
+## 同主机双端验证（推荐）：veth + netns（ntx0/ntx1）
+
+如果你希望在**同一台机器**上验证“自定义 L2/L3 组包 + UDP echo 对发闭环”，最简单且不依赖真实网卡的方式是创建一对 veth 虚拟网卡，并把其中一端放到 network namespace 里。
+
+本仓库提供了脚本（需要 root）：
+
+- `scripts/ntx-veth-up.sh`：创建 `ntx0`/`ntx1` + netns `ntxns1`
+- `scripts/ntx-veth-down.sh`：清理
+- `scripts/ntxns1.sh`：在 `ntxns1` 里执行命令的便捷封装
+
+脚本创建后的拓扑：
+
+- Host namespace：`ntx0`，IP `10.0.0.1/24`
+- netns `ntxns1`：`ntx1`，IP `10.0.0.2/24`
+
+> 说明：在这个拓扑中两端处于同一二层广播域，不需要额外路由/默认网关；适合验证 ARP、MAC/IP/port 交换、checksum、RR matcher 等。
+
+### 1) 创建虚拟链路
+
+```bash
+sudo ./scripts/ntx-veth-up.sh
+```
+
+### 2) 两端都跑我们的 echo server
+
+先在普通用户下编译（避免 sudo-rs 环境 `sudo -E` 丢失 PATH 导致找不到 cargo）：
+
+```bash
+cargo build --example userspace-udp-echo
+cargo build --example traffic-send
+```
+
+Host 侧（监听 10001）：
+
+```bash
+sudo ./target/debug/examples/userspace-udp-echo --iface ntx0 --port 10001 --verbose
+```
+
+netns 侧（监听 10001）：
+
+```bash
+sudo ./scripts/ntxns1.sh ./target/debug/examples/userspace-udp-echo --iface ntx1 --port 10001 --verbose
+```
+
+> 可选：也可以对二进制做 `setcap cap_net_raw,cap_net_admin+ep`，从而不用 sudo 运行程序本体（但 `ip netns exec` 仍通常需要 root）。
+
+### 3) 用我们的 client 发起对发（traffic-send --rr）
+
+Host -> netns（目标 10.0.0.2，走 `ntx0`）：
+
+```bash
+sudo ./target/debug/examples/traffic-send \
+  --iface ntx0 \
+  --dst-ips 10.0.0.2 \
+  --src-ip 10.0.0.1 \
+  --dst-port 10001 \
+  --src-port 40000 \
+  --rr \
+  --arp \
+  --pps 100 \
+  --count 20 \
+  --verbose
+```
+
+netns -> host（目标 10.0.0.1，走 `ntx1`）：
+
+```bash
+sudo ./scripts/ntxns1.sh ./target/debug/examples/traffic-send \
+  --iface ntx1 \
+  --dst-ips 10.0.0.1 \
+  --src-ip 10.0.0.2 \
+  --dst-port 10001 \
+  --src-port 40000 \
+  --rr \
+  --arp \
+  --pps 100 \
+  --count 20 \
+  --verbose
+```
+
+### ✅ 最新推荐验证方式（确保 UDP client/server 互通）
+
+这套流程的目标是：**你能确认 client 在发、server 在 echo，且 rr matcher 有一致的统计输出**。
+
+1) 建议开 3 个终端窗口：
+
+- 终端 A（host）：运行 `userspace-udp-echo`（`--verbose`）
+- 终端 B（netns）：运行 `userspace-udp-echo`（`--verbose`）
+- 终端 C（host 或 netns）：运行 `traffic-send --rr --arp --verbose`（用 `--count` 保证自动退出）
+
+2) 可选但强烈推荐：再开一个抓包窗口确认链路上确实有 ARP/UDP：
+
+```bash
+sudo tcpdump -ni ntx0 -vv -e 'arp or (udp and port 10001)'
+```
+
+#### 把抓包保存成 pcap（推荐，便于 Wireshark 分析）
+
+很多时候终端里滚动的 tcpdump 输出不方便排查，建议直接把报文保存成 `.pcap`，然后用 Wireshark 打开。
+
+Host 侧抓 `ntx0`（同时包含 ARP + UDP 10001）：
+
+```bash
+sudo tcpdump -ni ntx0 -e -s 0 -w ntx0-udp-echo.pcap 'arp or (udp and port 10001)'
+```
+
+netns 侧抓 `ntx1`（回包会打到 client 的 `src_port`，例如示例里是 40000）：
+
+```bash
+sudo ./scripts/ntxns1.sh tcpdump -ni ntx1 -e -s 0 -w ntx1-udp-echo.pcap 'arp or (udp and (port 10001 or port 40000))'
+```
+
+抓到的文件会落在当前目录：
+
+- `ntx0-udp-echo.pcap`
+- `ntx1-udp-echo.pcap`
+
+用 Wireshark 打开时，可以用显示过滤器快速聚焦：
+
+- `arp`
+- `udp.port == 10001 || udp.port == 40000`
+- `ip.addr == 10.0.0.1 && ip.addr == 10.0.0.2`
+
+> 备注：`-s 0` 表示抓取完整包（不截断）。
+
+3) 你应该看到的现象（以 host → netns 为例）：
+
+- `traffic-send`：
+  - 会持续打印 `tx:` 行
+  - 运行超过 1 秒时会周期性打印 `stats: sent=... matched=... outstanding=...`
+  - `--count` 达到后打印 `done: sent=N` 并退出
+- netns 侧 `userspace-udp-echo`：`rx` 会增长，`echoed` 也会增长（命中时会有 verbose 日志）
+
+> 备注：首次跑 `--arp` 时可能会先发 ARP request 来学习对端 MAC，这是正常的。
+
+### 3.1) 常见问题排查（traffic-send 看起来“卡住/不退出/没输出”）
+
+- 如果你启用了 `--rr` 或 `--arp`，工具会在循环里“收包轮询/等待 ARP 回复”。旧版本如果使用阻塞式 `recv()`，在当前没有可读帧时可能会卡住，表现为：只打印 banner、没有 `tx:`/stats、`--count` 不结束。
+- 现在 `traffic-send` 的 rr/arp 接收轮询已改为非阻塞方式；如果你仍觉得“不发包”，建议按下面顺序确认：
+
+1) 加上 `--verbose`，应能看到每次发送的 `tx:` 行。
+2) rr 模式下等 1 秒应能看到 `stats: sent=... matched=...`。
+3) 用 tcpdump 验证接口上确实有 ARP/UDP：
+
+```bash
+sudo tcpdump -ni ntx0 -vv -e 'arp or (udp and port 10001)'
+```
+
+> 备注：抓包里看到 `bad udp cksum` 多数是校验和 offload/抓包视角导致的“表象”，不一定代表你构包错误；以对端是否能收到并回包为准。
+
+### 4) 清理
+
+```bash
+sudo ./scripts/ntx-veth-down.sh
+```
+
 参数：
 
 - `--iface`：要绑定的网卡（默认 `eno1`）
@@ -191,10 +347,11 @@ sudo -E cargo run --example userspace-udp-echo -- --iface eno1 --port 10001
 
 ### 推荐方式：两台机器同一二层网络
 
-1) **目标机（运行示例的机器）** 启动 echo：
+1) **目标机（运行示例的机器）** 启动 echo（推荐先 build，再 sudo 跑二进制，避免 sudo-rs 的 `sudo -E` 问题）：
 
 ```bash
-sudo -E cargo run --example userspace-udp-echo -- --iface eno1 --port 10001
+cargo build --example userspace-udp-echo
+sudo ./target/debug/examples/userspace-udp-echo --iface eno1 --port 10001 --verbose
 ```
 
 2) **另一台机器** 发送 UDP 到目标机 IP/端口：
