@@ -99,6 +99,9 @@ fn main() -> Result<()> {
     let mut rx_cnt: u64 = 0;
     let mut echo_cnt: u64 = 0;
     let mut last_report = std::time::Instant::now();
+    let mut last_rx_cnt: u64 = 0;
+    let mut last_echo_cnt: u64 = 0;
+    let report_iv = std::time::Duration::from_secs(1);
 
     loop {
         let n = match nic.recv(&mut buf) {
@@ -109,11 +112,6 @@ fn main() -> Result<()> {
             }
         };
         rx_cnt = rx_cnt.wrapping_add(1);
-
-        if opt.verbose && last_report.elapsed() >= std::time::Duration::from_secs(1) {
-            eprintln!("stats: rx={} echoed={} (last 1s)", rx_cnt, echo_cnt);
-            last_report = std::time::Instant::now();
-        }
         ctx.set_frame(&buf[..n]);
         let action = match pipeline.process(&ctx) {
             Ok(a) => a,
@@ -128,6 +126,19 @@ fn main() -> Result<()> {
                     eprintln!("send error: {e:#}");
                 }
             }
+        }
+
+        // Periodic stats. Print after processing so echoed reflects replies actually sent.
+        if last_report.elapsed() >= report_iv {
+            let rx_delta = rx_cnt.wrapping_sub(last_rx_cnt);
+            let echo_delta = echo_cnt.wrapping_sub(last_echo_cnt);
+            eprintln!(
+                "stats: rx={} echoed={} (+rx={} +echoed={} in last {:?})",
+                rx_cnt, echo_cnt, rx_delta, echo_delta, report_iv
+            );
+            last_rx_cnt = rx_cnt;
+            last_echo_cnt = echo_cnt;
+            last_report = std::time::Instant::now();
         }
     }
 }

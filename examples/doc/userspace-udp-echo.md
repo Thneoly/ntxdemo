@@ -343,6 +343,12 @@ sudo ./scripts/ntx-veth-down.sh
 
 启动后会打印接口的 `ifindex` 与 MAC 地址。
 
+> 说明：`userspace-udp-echo` 会每隔约 1 秒输出一行 `stats:`，其中包含**累积计数**与**最近一个统计周期的增量**。
+> 例如：`stats: rx=100 echoed=80 (+rx=10 +echoed=10 in last 1s)` 表示总共收包 100、回包 80；最近 1 秒内新增收包 10、回包 10。
+
+> 说明：`userspace-udp-echo --verbose` 的 `stats:` 输出为**累积计数 + 最近一个统计周期（默认 1s）的增量**。
+> 例如 `stats: rx=100 echoed=80 (+rx=10 +echoed=10 in last 1s)` 表示总共收了 100 个包、回了 80 个包，最近 1 秒内新增收包 10、回包 10。
+
 ## 如何验证
 
 ### 推荐方式：两台机器同一二层网络
