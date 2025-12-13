@@ -133,6 +133,56 @@ DISABLE_PLUGIN_BUILDS=1 cargo build
 
 可以使用 `nc -l 127.0.0.1 8080` 监听端口 开启TCP 监听端口。
 
+## Userspace UDP echo（AF_PACKET 旁路协议栈示例）
+
+这个示例展示“**不走内核 IP 协议栈**、只使用 Linux 的 AF_PACKET raw socket 在用户态收发二层帧”，并在用户态解析 **Ethernet → IPv4 → UDP**，对指定端口做 echo。
+
+特点/约束：
+
+- **不会配置/占用接口 IP**，也不会把接口从内核接管走（Plan B：旁路/观测 + 自己回包）。
+- 需要 root 权限创建 raw socket（`sudo`）。
+- 仅对 `dst_mac == 本机网卡 MAC` 或 `dst_mac == broadcast` 的帧响应；并且仅对 `udp.dst_port == 指定端口` 回包。
+
+### 运行
+
+```bash
+sudo -E cargo run --example userspace-udp-echo -- --iface eno1 --port 10001
+```
+
+参数：
+
+- `--iface`：要绑定的网卡（默认 `eno1`）
+- `--port`：要 echo 的 UDP 端口（默认 `10001`）
+- `--snaplen`：每次 `recv()` 读取的最大帧长度（默认 `2048`）
+
+启动后会打印接口的 `ifindex` 与 MAC 地址。
+
+### 如何验证（推荐：两台机器同一二层网络）
+
+因为这是“二层收包 + 自己构造回包”，所以最稳定的验证方式是：
+
+1) **在目标机**（运行示例的机器）启动 echo：
+
+```bash
+sudo -E cargo run --example userspace-udp-echo -- --iface eno1 --port 10001
+```
+
+2) **在另一台机器**（同一交换机/同一二层网络）向目标机发送 UDP：
+
+```bash
+echo -n 'ping' | nc -u -w1 <TARGET_IP> 10001
+```
+
+你应该能在发送端看到回包，或在抓包里看到 reply（可用 `tcpdump -ni eno1 udp port 10001` 辅助观察）。
+
+### 常见问题排查
+
+- **运行直接失败 / 权限不足**：AF_PACKET raw socket 需要 root，确保用了 `sudo`。
+- **收不到包**：确认 `--iface` 选对了网卡；网卡在正确的 VLAN/二层网络；也可以用 `tcpdump -ni <iface>` 看是否有流量。
+- **发出后对端收不到回包**：可能是交换机/网卡 offload、或对端 OS 丢弃了校验和异常的包。
+	- 本示例会计算 IPv4 header checksum 和 UDP checksum。
+	- 如仍异常，先用 `tcpdump -vv -XX` 观察回包字段是否正确。
+
 
 ```shell
 基于 AF_XDP + ring shared memory + WASM (wasip2) 实现： “零拷贝架构”应该长这样：

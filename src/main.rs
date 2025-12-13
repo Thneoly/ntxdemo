@@ -1,6 +1,8 @@
 use std::{env, fs};
 
 use anyhow::{Context, Result, bail};
+
+mod network;
 use wasmtime::{
     Config, Engine, Store,
     component::{
