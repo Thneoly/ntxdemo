@@ -1,0 +1,21 @@
+[package]
+name = "afxdp-ebpf"
+version = "0.1.0"
+edition.workspace = true
+
+[features]
+# Debugging aid: make the XDP program return XDP_ABORTED for every packet.
+# This is useful to confirm the program is actually attached and being executed.
+xdp-abort = []
+
+[dependencies]
+aya-ebpf = { git = "https://github.com/aya-rs/aya" }
+
+# no logging dependency yet; keep program minimal and verifier-friendly
+
+[build-dependencies]
+which = { version = "8.0.0", default-features = false, features = ["real-sys"] }
+
+[[bin]]
+name = "afxdp-ebpf"
+path = "src/main.rs"

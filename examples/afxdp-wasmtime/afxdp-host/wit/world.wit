@@ -1,0 +1,21 @@
+package afxdp:demo;
+
+interface packet {
+    record packet-meta {
+        frame-len: u32,
+        // For debug/observability only; may be 0 on some paths.
+        rx-queue: u32,
+    }
+
+    /// Exported by the guest, called by the host.
+    ///
+    /// `data` is copied today (portable). We'll evolve to a shared-memory view
+    /// once we finalize the wasmtime memory sharing strategy.
+    on-packet: func(meta: packet-meta, data: list<u8>);
+}
+
+world guest {
+    export packet;
+    /// Simple smoke entrypoint.
+    export run: func();
+}
