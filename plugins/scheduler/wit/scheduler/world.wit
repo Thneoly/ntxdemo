@@ -2,9 +2,11 @@ package scheduler:main;
 
 use scheduler:actions-executor/action-component@0.1.0;
 use scheduler:event-bus/event-bus@0.1.0;
+use scheduler:net/packet@0.1.0;
 
 world scheduler-component {
     import action-component;
     import event-bus;
+    export packet;
     export run-scenario: func(scenario-yaml: string) -> result<string, string>;
 }

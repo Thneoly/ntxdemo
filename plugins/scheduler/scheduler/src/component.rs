@@ -8,7 +8,13 @@ use crate::engine::{LoadExecutionSummary, SchedulerPipeline};
 // Generate bindings for the component
 wit_bindgen::generate!({
     world: "scheduler:main/scheduler-component",
-    path: ["../wit/core", "../wit/eventbus", "../wit/protocol", "../wit/scheduler"],
+    path: [
+        "../wit/core",
+        "../wit/eventbus",
+        "../wit/protocol",
+        "../wit/net",
+        "../wit/scheduler",
+    ],
     generate_all,
     debug: true,
 });
@@ -21,6 +27,19 @@ impl Guest for SchedulerComponent {
             Ok(summary) => Ok(summary),
             Err(e) => Err(format!("Scenario execution failed: {:#}", e)),
         }
+    }
+}
+
+impl exports::scheduler::net::packet::Guest for SchedulerComponent {
+    fn on_udp(
+        _meta: exports::scheduler::net::packet::UdpMeta,
+        payload: Vec<u8>,
+    ) -> Result<Option<exports::scheduler::net::packet::UdpResponse>, String> {
+        // MVP-0 behavior: echo payload back.
+        // Host is responsible for swapping tuple and building L2/L3/L4 headers.
+        Ok(Some(exports::scheduler::net::packet::UdpResponse {
+            payload,
+        }))
     }
 }
 

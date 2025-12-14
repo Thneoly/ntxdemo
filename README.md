@@ -139,9 +139,6 @@ DISABLE_PLUGIN_BUILDS=1 cargo build
 
 特点/约束：
 
-- **不会配置/占用接口 IP**，也不会把接口从内核接管走（Plan B：旁路/观测 + 自己回包）。
-- 需要 root 权限创建 raw socket（`sudo`）。
-- 仅对 `dst_mac == 本机网卡 MAC` 或 `dst_mac == broadcast` 的帧响应；并且仅对 `udp.dst_port == 指定端口` 回包。
 
 ### 运行
 
@@ -151,9 +148,6 @@ sudo -E cargo run --example userspace-udp-echo -- --iface eno1 --backend afpacke
 
 参数：
 
-- `--iface`：要绑定的网卡（默认 `eno1`）
-- `--port`：要 echo 的 UDP 端口（默认 `10001`）
-- `--snaplen`：每次 `recv()` 读取的最大帧长度（默认 `2048`）
 
 启动后会打印接口的 `ifindex` 与 MAC 地址。
 
@@ -177,12 +171,120 @@ echo -n 'ping' | nc -u -w1 <TARGET_IP> 10001
 
 ### 常见问题排查
 
-- **运行直接失败 / 权限不足**：AF_PACKET raw socket 需要 root，确保用了 `sudo`。
-- **收不到包**：确认 `--iface` 选对了网卡；网卡在正确的 VLAN/二层网络；也可以用 `tcpdump -ni <iface>` 看是否有流量。
-- **发出后对端收不到回包**：可能是交换机/网卡 offload、或对端 OS 丢弃了校验和异常的包。
 	- 本示例会计算 IPv4 header checksum 和 UDP checksum。
 	- 如仍异常，先用 `tcpdump -vv -XX` 观察回包字段是否正确。
 
+## Host ↔ Guest（scheduler component）UDP 数据通路（MVP-0）
+
+仓库顶层二进制 `Ntx` 现在支持一个 `--mode net`：在用户态收 UDP 包、把 UDP payload 分发给 scheduler Wasm component（`packet/on-udp`），再由 Host 负责组包回发。
+
+建议用同主机 veth+netns 做闭环验证（不依赖真实网卡）：
+
+	- `sudo ./scripts/ntx-veth-up.sh`
+	- `./scripts/ntx-e2e-smoke.sh`（只检查并打印命令）
+
+
+	```bash
+	sudo ./target/debug/Ntx --mode net --iface ntx0 --backend tpacketv3 --port 10001
+	```
+
+	启动后会先输出一行 banner（stderr），包含 iface/backend/port/component 等信息，方便脚本判断进程已启动。
+
+
+	```bash
+	sudo ./scripts/ntxns1.sh ./target/debug/examples/traffic-send \
+	  --iface ntx1 \
+	  --backend tpacketv3 \
+	  --dst-ips 10.0.0.1 \
+	  --src-ip 10.0.0.2 \
+	  --dst-port 10001 \
+	  --src-port 40000 \
+	  --rr --arp \
+	  --pps 50 \
+	  --count 50
+	```
+
+更多背景设计与 ABI 说明见：`doc/host-guest-nic-integration.md`。
+
+## Echo 场景实现（NIC-HOST-Guest 集成）
+
+完整的 Echo 场景实现了一个两主机（Host-1 UDP-Server + Host-2 UDP-Client）加一个 Guest（Wasm 组件）的交互流程：
+
+- **Host-1（UDP-Server）**：使用自研 userspace 网络栈接收 UDP 包，调用 Guest Wasm 组件处理业务逻辑，回复响应。
+- **Guest（Wasm 组件）**：通过 WAC 组件模型组装 scheduler、corelibs、eventbus、actions-executor。
+- **Host-2（UDP-Client）**：生成 UDP 请求并验证 Host-1 的回复。
+
+### 快速开始
+
+```bash
+# 1. 编译
+cargo build
+cargo build --examples
+cd plugins/scheduler/scheduler && cargo build --target wasm32-wasip2
+cd ../wac && wac plug echo_scenario.wac -o echo_composed.wasm
+
+# 2. 运行完整自动化测试
+sudo ./scripts/ntx-e2e-echo.sh --tcpdump
+
+# 3. 或手动分步运行
+
+# 启动网络拓扑
+sudo ./scripts/ntx-veth-up.sh
+
+# 启动 Host-1（终端 1）
+timeout 30 sudo ./scripts/ntxns1.sh \
+  ./target/debug/Ntx \
+  --mode net \
+  --iface ntx0 \
+  --backend afpacket-dgram \
+  --port 10001 \
+  --component ./plugins/scheduler/wac/echo_composed.wasm
+
+# 启动 Host-2（终端 2）
+sudo ./scripts/ntxns2.sh \
+  ./target/debug/examples/traffic-send \
+  --iface ntx1 \
+  --backend afpacket-dgram \
+  --dst-ips 10.0.0.1 \
+  --src-ip 10.0.0.2 \
+  --dst-port 10001 \
+  --src-port 40000 \
+  --rr \
+  --count 20
+```
+
+### 关键文档
+
+- **架构设计**：`docs/SCENARIO_ECHO_DESIGN.md` - 完整的架构、数据流、组件职责说明
+- **实现指南**：`docs/IMPLEMENTATION_GUIDE.md` - Host-1 集成步骤、Guest 导出接口、WAC 组装等详细代码指导
+- **E2E 自动化脚本**：`scripts/ntx-e2e-echo.sh` - 一键启动完整测试
+
+### 验证结果
+
+成功运行后应看到：
+- Host-1 输出：`[stats] rx_udp=20 tx_replies=20`
+- Host-2 输出：`[final] sent=20 matched=20 timeouts=0`
+- Exit code: 0
+
+### 扩展点
+
+- 在 Guest 中集成 EventBus 以支持事件驱动
+- 使用 Scheduler 的状态机实现复杂业务流程
+- 扩展支持多个任务类型（Transform、Aggregate、Route 等）
+
+
+## Notes
+
+### Backends (RX/TX)
+
+- `afpacket` (raw): AF_PACKET/SOCK_RAW, full Ethernet frames. Works well on many real NICs.
+- `afpacket-dgram` / `cooked`: AF_PACKET/SOCK_DGRAM (Linux cooked). This is **L3-oriented**:
+  - RX is converted into a synthetic Ethernet header internally so the existing Ethernet→IPv4→UDP parser can run.
+  - TX accepts either a full Ethernet+IPv4 frame or a raw IPv4 packet; it transmits at L3.
+  - ARP / `--dst-mac` are L2 concepts and are ignored by `traffic-send` in this backend.
+- `tpacketv3`: currently considered **experimental/parked** for the veth+netns smoke path.
+
+For bringing the end-to-end chain up on veth/netns, start with `--backend afpacket-dgram`.
 
 ```shell
 基于 AF_XDP + ring shared memory + WASM (wasip2) 实现： “零拷贝架构”应该长这样：

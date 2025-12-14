@@ -129,6 +129,20 @@ impl TpacketV3Nic {
             return Err(e).context("setsockopt(PACKET_RX_RING) failed");
         }
 
+        // Ensure the ring delivers full L2 frames (include Ethernet header).
+        // Some kernels default to delivering from L3 depending on packet type/offsets.
+        // Setting PACKET_HDRLEN to ETH_HLEN is a harmless hint and improves portability.
+        let hdrlen: libc::c_int = 14;
+        let _ = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_PACKET,
+                libc::PACKET_HDRLEN,
+                &hdrlen as *const _ as *const libc::c_void,
+                mem::size_of_val(&hdrlen) as u32,
+            )
+        };
+
         let ring_len = (req.tp_block_size as usize) * (req.tp_block_nr as usize);
         let ring_ptr = unsafe {
             libc::mmap(
@@ -166,6 +180,26 @@ impl TpacketV3Nic {
             }
             return Err(e).context("bind(AF_PACKET) failed");
         }
+
+        // We want to see incoming frames to the interface. Some environments only deliver
+        // packets to non-promiscuous AF_PACKET sockets if they are destined to the host.
+        // In our veth tests, we expect to receive frames addressed to our NIC MAC, but
+        // enabling promiscuous mode removes any ambiguity (and matches typical sniffer behavior).
+        let mreq = libc::packet_mreq {
+            mr_ifindex: ifindex,
+            mr_type: libc::PACKET_MR_PROMISC as u16,
+            mr_alen: 0,
+            mr_address: [0u8; 8],
+        };
+        let _ = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_PACKET,
+                libc::PACKET_ADD_MEMBERSHIP,
+                &mreq as *const _ as *const libc::c_void,
+                mem::size_of_val(&mreq) as u32,
+            )
+        };
 
         let ifmac = super::afpacket::get_iface_mac(ifname).ok();
 
@@ -245,12 +279,35 @@ impl TpacketV3Nic {
 
         let tph = unsafe { (bdesc as *mut u8).add(off) as *mut libc::tpacket3_hdr };
         let snaplen = unsafe { (*tph).tp_snaplen } as usize;
-        let mac_off = unsafe { (*tph).tp_mac } as usize;
+        // NOTE: For TPACKET_V3, `tp_mac` points to the L2 header (Ethernet).
+        // `tp_net` points to the L3 header (typically IPv4).
+        // Our upper layers expect a full Ethernet frame, so we must copy from `tp_mac`.
+        // Some kernels/drivers may populate `tp_mac` as 0; fall back to `tp_net - 14`
+        // in that case.
+        let mac_off = {
+            let m = unsafe { (*tph).tp_mac } as usize;
+            if m != 0 {
+                m
+            } else {
+                let net = unsafe { (*tph).tp_net } as usize;
+                net.saturating_sub(14)
+            }
+        };
         let pkt_ptr = unsafe { (tph as *mut u8).add(mac_off) };
 
         let n = snaplen.min(buf.len());
+
+        // IMPORTANT: `tp_snaplen` is the captured length; in practice it is most reliable
+        // when interpreted as the L2 byte length in our environment (veth + ETH_P_ALL).
+        // Earlier versions of this code assumed snaplen started at `tp_net` (L3), but that
+        // results in truncation and decode failures (udp=0) on veth.
+        let net_off = unsafe { (*tph).tp_net } as usize;
+        let _ = net_off; // keep for future debug/use
+
+        let l2_len = n;
+
         unsafe {
-            ptr::copy_nonoverlapping(pkt_ptr as *const u8, buf.as_mut_ptr(), n);
+            ptr::copy_nonoverlapping(pkt_ptr as *const u8, buf.as_mut_ptr(), l2_len);
         }
 
         self.cur_pkt_in_block += 1;
@@ -264,7 +321,7 @@ impl TpacketV3Nic {
             self.cur_pkt_in_block = 0;
         }
 
-        Ok(Some(n))
+        Ok(Some(l2_len))
     }
 }
 

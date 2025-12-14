@@ -2,6 +2,8 @@
 members = [
 	"core-libs",
 	"actions-executor",
+	"actions-executor-server",
+	"actions-executor-client",
 	"scheduler", 
 	"http-server",
 	"eventbus",

@@ -133,6 +133,37 @@ MVP 建议先做 2 个过滤：
 - Host 打印 rx/decoded/guest_ok/sent 递增
 - tcpdump 能看到 request/reply
 
+#### 4.1.1 最短跑通命令（MVP-0）
+
+> 说明：当前 MVP-0 的 guest `on-udp` 行为是“原样回显 payload”；Host 负责把 tuple 反向并计算 checksum。
+
+Host（root netns，绑定 `ntx0`，监听 UDP dst-port=10001）：
+
+```bash
+sudo ./target/debug/Ntx --mode net --iface ntx0 --backend tpacketv3 --port 10001
+```
+
+启动后会先在 stderr 打印一行 banner（便于脚本/自动化捕获），类似：
+
+```text
+ntx(net) starting: iface=ntx0 backend=TpacketV3 port=10001 snaplen=2048 component=plugins/scheduler/wac/scheduler-composed.wasm
+```
+
+Client（netns `ntxns1` 内，绑定 `ntx1`，向 10.0.0.1:10001 发 RR）：
+
+```bash
+sudo ./scripts/ntxns1.sh ./target/debug/examples/traffic-send \
+  --iface ntx1 \
+  --backend tpacketv3 \
+  --dst-ips 10.0.0.1 \
+  --src-ip 10.0.0.2 \
+  --dst-port 10001 \
+  --src-port 40000 \
+  --rr --arp \
+  --pps 50 \
+  --count 50
+```
+
 ### 4.2 单元测试（WIT schema + packet builder）
 
 - 针对 `UdpMeta` 的序列化/边界（IP/port 字节序）

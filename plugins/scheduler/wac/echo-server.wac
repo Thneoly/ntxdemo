@@ -1,0 +1,17 @@
+package scheduler:echo-server;
+
+# 导入 Server 模式的组件
+let corelibs = new component "file://../core-libs/target/wasm32-wasip2/debug/scheduler_core_libs.wasm";
+let eventbus = new component "file://../eventbus/target/wasm32-wasip2/debug/scheduler_eventbus.wasm";
+let actions = new component "file://../actions-executor-server/target/wasm32-wasip2/debug/scheduler_actions_executor_server.wasm";
+let scheduler = new component "file://../scheduler/target/wasm32-wasip2/debug/scheduler.wasm";
+
+# Server 专用的链接关系
+connect eventbus with corelibs;
+connect actions with eventbus;
+connect actions with corelibs;
+connect scheduler with eventbus;
+connect scheduler with actions;
+
+# 导出 scheduler 的 on_packet_received 入口
+export scheduler;

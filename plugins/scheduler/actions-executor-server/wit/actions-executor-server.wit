@@ -1,0 +1,9 @@
+package scheduler:actions-executor;
+
+interface server {
+    on-packet-received: func(payload: list<u8>) -> result<list<u8>, string>;
+}
+
+world actions-executor-server {
+    export server;
+}

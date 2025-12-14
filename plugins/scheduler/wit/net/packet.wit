@@ -1,0 +1,45 @@
+package scheduler:net@0.1.0;
+
+/// Host ↔ Guest network datapath (MVP-0)
+///
+/// - Host 收到 IPv4/UDP datagram 后调用 `on-udp`
+/// - Guest 返回可选 response payload
+/// - Host 负责封装回包（MAC/IP/UDP + checksum）并发送
+interface packet {
+    record ipv4-addr {
+        a: u8,
+        b: u8,
+        c: u8,
+        d: u8,
+    }
+
+    record udp-meta {
+        /// src/dst mac，长度必须为 6。
+        src-mac: list<u8>,
+        dst-mac: list<u8>,
+
+        src-ip: ipv4-addr,
+        dst-ip: ipv4-addr,
+        src-port: u16,
+        dst-port: u16,
+
+        /// 可观测性字段（host 可以填 0）
+        rx-ifindex: u32,
+    }
+
+    record udp-response {
+        payload: list<u8>,
+    }
+
+    /// Called by host for each UDP datagram.
+    ///
+    /// Return:
+    /// - ok(none): ignore/drop
+    /// - ok(some(resp)): send reply using resp.payload
+    /// - err(msg): host will count an error and typically drop
+    on-udp: func(meta: udp-meta, payload: list<u8>) -> result<option<udp-response>, string>;
+}
+
+world scheduler-net {
+    export packet;
+}

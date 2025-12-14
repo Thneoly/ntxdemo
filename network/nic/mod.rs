@@ -24,10 +24,21 @@ pub trait Nic {
     ///
     /// Returns `Ok(true)` if readable, `Ok(false)` on timeout.
     fn poll_readable(&self, timeout: Option<Duration>) -> anyhow::Result<bool>;
+
+    /// Optional per-received-frame packet type hint.
+    ///
+    /// For AF_PACKET sockets this corresponds to `sockaddr_ll.sll_pkttype`.
+    /// Backends that don't have this concept should return None.
+    fn last_pkttype(&self) -> Option<u8> {
+        None
+    }
 }
 
 #[allow(unused_imports)]
 pub use afpacket::AfPacketNic;
+
+#[allow(unused_imports)]
+pub use afpacket::AfPacketDgramNic;
 
 #[allow(unused_imports)]
 pub use tpacketv3::TpacketV3Nic;

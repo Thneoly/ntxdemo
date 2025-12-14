@@ -1,0 +1,14 @@
+package scheduler:actions-executor;
+
+interface client {
+    generate: func(count: u32, pps: u32) -> result<u32, string>;
+    /// Build one outbound request payload for sequence `seq`.
+    build-payload: func(seq: u32) -> result<list<u8>, string>;
+    /// Validate a reply payload for sequence `seq` (return true if matches expectation).
+    validate-reply: func(seq: u32, payload: list<u8>) -> result<bool, string>;
+}
+
+world actions-executor-client {
+    export client;
+}
+

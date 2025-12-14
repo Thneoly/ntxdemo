@@ -8,6 +8,7 @@ use ntx::network::{ETH_TYPE_IPV4, EthernetHeader, Ipv4Addr, Ipv4Header, MacAddr,
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Backend {
     AfPacket,
+    AfPacketDgram,
     TpacketV3,
 }
 
@@ -108,7 +109,7 @@ fn parse_args() -> Opt {
         match arg.as_str() {
             "-h" | "--help" => {
                 eprintln!(
-                    "Usage: traffic-send [--scenario FILE] --iface IFACE [--backend afpacket|tpacketv3] (--dst-ips SPEC | --dst-ip-file FILE) [--src-ip A.B.C.D] [--src-port P] [--dst-port P]\n\
+                    "Usage: traffic-send [--scenario FILE] --iface IFACE [--backend afpacket|afpacket-dgram|tpacketv3] (--dst-ips SPEC | --dst-ip-file FILE) [--src-ip A.B.C.D] [--src-port P] [--dst-port P]\n\
                      	[--payload STRING] [--pps N] [--count N] [--dst-mac aa:bb:cc:dd:ee:ff] [--arp]\n\
 	[--arp-timeout-ms MS] [--arp-ttl-s S]\n\
 	[--rr] [--rr-timeout-ms MS] [--rr-poll-budget N] [--verbose]\n\n\
@@ -119,7 +120,7 @@ fn parse_args() -> Opt {
                      - --dst-ips supports: single IP (10.0.0.1), CIDR (10.0.0.0/24), range (10.0.0.10-10.0.0.20).\n\
                      - With --arp enabled and without --dst-mac, we send ARP requests and learn dst MACs.\n\
                      - If neither --dst-mac nor --arp is provided, dst MAC defaults to broadcast (ff:ff:ff:ff:ff:ff).\n\
-                     - --backend selects RX backend: afpacket (copy) or tpacketv3 (PACKET_RX_RING).\n\
+                     - --backend selects RX backend: afpacket (raw) / afpacket-dgram (cooked) / tpacketv3 (PACKET_RX_RING).\n\
                      - With --rr enabled, we prepend a 12-byte token (\"NTX1\" + u64 seq) into UDP payload,\n\
                                              then match replies by (dst_ip,dst_port,src_port,token) and report RTT/timeouts.\n\n\
                                          Examples:\n\
@@ -141,9 +142,14 @@ fn parse_args() -> Opt {
                 if let Some(v) = it.next() {
                     match v.as_str() {
                         "afpacket" => opt.backend = Backend::AfPacket,
+                        "afpacket-dgram" | "afpacket_dgram" | "cooked" => {
+                            opt.backend = Backend::AfPacketDgram
+                        }
                         "tpacketv3" | "tpacket_v3" | "tpv3" => opt.backend = Backend::TpacketV3,
                         _ => {
-                            eprintln!("invalid --backend: {v} (expected: afpacket|tpacketv3)");
+                            eprintln!(
+                                "invalid --backend: {v} (expected: afpacket|afpacket-dgram|tpacketv3)"
+                            );
                             std::process::exit(2);
                         }
                     }
@@ -374,11 +380,26 @@ fn main() -> Result<()> {
         Backend::AfPacket => {
             Box::new(ntx::network::AfPacketNic::open(&opt.iface).context("open afpacket nic")?)
         }
+        Backend::AfPacketDgram => Box::new(
+            ntx::network::AfPacketDgramNic::open(&opt.iface).context("open afpacket-dgram nic")?,
+        ),
         Backend::TpacketV3 => Box::new(
             ntx::network::TpacketV3Nic::open(&opt.iface, 1 << 20, 64, 2048, 10)
                 .context("open tpacketv3 nic")?,
         ),
     };
+
+    // Cooked AF_PACKET (SOCK_DGRAM) is L3 oriented; ARP and dst-mac are L2 concepts.
+    if matches!(opt.backend, Backend::AfPacketDgram) {
+        if opt.arp {
+            eprintln!("note: --backend afpacket-dgram ignores --arp (cooked socket is L3)");
+            opt.arp = false;
+        }
+        if opt.dst_mac.is_some() {
+            eprintln!("note: --backend afpacket-dgram ignores --dst-mac (cooked socket is L3)");
+            opt.dst_mac = None;
+        }
+    }
 
     let iface_mac = nic
         .iface_mac()
@@ -564,13 +585,15 @@ fn main() -> Result<()> {
             MAC_BROADCAST
         };
 
-        // Ethernet
-        let eth = EthernetHeader {
-            dst: dst_mac,
-            src: MacAddr(iface_mac),
-            ethertype: ETH_TYPE_IPV4,
-        };
-        eth.write(&mut frame[..eth_len])?;
+        // Ethernet (only for L2 backends)
+        if !matches!(opt.backend, Backend::AfPacketDgram) {
+            let eth = EthernetHeader {
+                dst: dst_mac,
+                src: MacAddr(iface_mac),
+                ethertype: ETH_TYPE_IPV4,
+            };
+            eth.write(&mut frame[..eth_len])?;
+        }
 
         // IPv4
         let ip = Ipv4Header {
@@ -625,7 +648,14 @@ fn main() -> Result<()> {
             ip.dst,
         )?;
 
-        if let Err(e) = nic.send(&frame) {
+        // For cooked backend, transmit only the IPv4 packet bytes.
+        let to_send: &[u8] = if matches!(opt.backend, Backend::AfPacketDgram) {
+            &frame[eth_len..]
+        } else {
+            &frame
+        };
+
+        if let Err(e) = nic.send(to_send) {
             eprintln!("send error: {e:#}");
             // continue sending
         } else {

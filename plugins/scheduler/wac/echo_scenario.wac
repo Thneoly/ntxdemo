@@ -1,0 +1,13 @@
+package scheduler:echo;
+
+// 简化版配置：使用已编译的组合组件
+// 如果已有预编译的 scheduler_composed.wasm，直接使用
+// 否则可以通过下面的方式组合各子组件
+
+// let core = new component "file:///path/to/core-libs.wasm";
+// let eventbus = new component "file:///path/to/eventbus.wasm";
+// let actions = new component "file:///path/to/actions-executor.wasm";
+// let scheduler = new component "file:///path/to/scheduler.wasm";
+
+// 导出主组件
+// export scheduler;

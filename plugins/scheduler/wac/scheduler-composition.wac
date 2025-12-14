@@ -28,3 +28,4 @@ let scheduler = new scheduler:main {
 };
 
 export scheduler["run-scenario"];
+export scheduler["scheduler:net/packet@0.1.0"];
