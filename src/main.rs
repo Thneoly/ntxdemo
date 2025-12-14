@@ -49,6 +49,7 @@ enum Mode {
     Scenario,
     EchoServer,
     EchoClient,
+    TcpClient,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +80,15 @@ struct Opt {
     client_count: u32,
     /// Packets per second for client mode
     pps: u32,
+
+    /// Local TCP source port (tcp-client mode)
+    tcp_local_port: u16,
+    /// Remote TCP destination port (tcp-client mode)
+    tcp_remote_port: u16,
+    /// Initial sequence number (tcp-client mode)
+    tcp_isn: u32,
+    /// Optional payload string to send after handshake (tcp-client mode)
+    tcp_payload: String,
 }
 
 fn parse_args() -> Opt {
@@ -98,6 +108,11 @@ fn parse_args() -> Opt {
         server_port: 10001,
         client_count: 100,
         pps: 50,
+
+        tcp_local_port: 40000,
+        tcp_remote_port: 80,
+        tcp_isn: 100,
+        tcp_payload: "hello".to_string(),
     };
 
     let mut it = env::args().skip(1);
@@ -116,6 +131,7 @@ fn parse_args() -> Opt {
                         "scenario" => Mode::Scenario,
                         "server" => Mode::EchoServer,
                         "client" => Mode::EchoClient,
+                        "tcp-client" | "tcp_client" | "tcp" => Mode::TcpClient,
                         _ => {
                             eprintln!("invalid --mode: {v} (expected: net|scenario|server|client)");
                             std::process::exit(2);
@@ -193,6 +209,32 @@ fn parse_args() -> Opt {
                     }
                 }
             }
+            "--tcp-local-port" => {
+                if let Some(v) = it.next() {
+                    if let Ok(p) = v.parse::<u16>() {
+                        opt.tcp_local_port = p;
+                    }
+                }
+            }
+            "--tcp-remote-port" => {
+                if let Some(v) = it.next() {
+                    if let Ok(p) = v.parse::<u16>() {
+                        opt.tcp_remote_port = p;
+                    }
+                }
+            }
+            "--tcp-isn" => {
+                if let Some(v) = it.next() {
+                    if let Ok(n) = v.parse::<u32>() {
+                        opt.tcp_isn = n;
+                    }
+                }
+            }
+            "--tcp-payload" => {
+                if let Some(v) = it.next() {
+                    opt.tcp_payload = v;
+                }
+            }
             _ => {}
         }
     }
@@ -202,6 +244,11 @@ fn parse_args() -> Opt {
 
 fn main() -> Result<()> {
     let opt = parse_args();
+
+    // tcp-client is a pure host-mode runner; no WASM component needed.
+    if opt.mode == Mode::TcpClient {
+        return run_tcp_client_mode(&opt);
+    }
 
     // 设置 WASM 配置
     let mut config = Config::new();
@@ -262,7 +309,219 @@ fn main() -> Result<()> {
         Mode::Net => run_net_mode(&mut store, &instance, &opt),
         Mode::EchoServer => run_echo_server_wasm(&mut store, &instance, &opt),
         Mode::EchoClient => run_echo_client_wasm(&mut store, &instance, &opt),
+        Mode::TcpClient => unreachable!(),
     }
+}
+
+fn run_tcp_client_mode(opt: &Opt) -> Result<()> {
+    use std::time::{Duration, Instant};
+
+    use crate::network::{MacAddr, Nic, TcpClient, TcpClientState, TcpFlags, TcpSegment};
+
+    // Basic assumptions:
+    // - L2 dst is broadcast (no ARP yet)
+    // - src IP from env NTX_CLIENT_IP (same convention as echo client)
+    // - dst IP from --server-ip
+    // This is intentionally minimal and meant for netns lab setups.
+    let mut nic: Box<dyn Nic> = match opt.backend {
+        Backend::AfPacket => {
+            Box::new(network::AfPacketNic::open(&opt.iface).context("open afpacket nic")?)
+        }
+        Backend::AfPacketDgram => Box::new(
+            network::AfPacketDgramNic::open(&opt.iface).context("open afpacket-dgram nic")?,
+        ),
+        Backend::TpacketV3 => Box::new(
+            network::TpacketV3Nic::open(&opt.iface, 1 << 20, 64, opt.snaplen as u32, 10)
+                .context("open tpacketv3 nic")?,
+        ),
+    };
+
+    let iface_mac = nic.iface_mac().context("failed to query iface mac")?;
+    let src_ip_str = std::env::var("NTX_CLIENT_IP").unwrap_or_else(|_| "10.0.0.2".to_string());
+    let src_ip = parse_ipv4_local(&src_ip_str).context("invalid NTX_CLIENT_IP/ default src ip")?;
+    let dst_ip = parse_ipv4_local(&opt.server_ip).context("invalid --server-ip")?;
+
+    // Minimal ARP resolve: ask the peer's MAC before sending SYN.
+    // This avoids relying on L2 broadcast working for IPv4/TCP frames.
+    let dst_mac = resolve_arp_minimal(
+        &mut *nic,
+        MacAddr(iface_mac),
+        src_ip,
+        dst_ip,
+        opt.snaplen,
+        Duration::from_secs(2),
+    )
+    .with_context(|| {
+        format!(
+            "ARP resolve failed for {}.{}.{}.{} (try ping/arp in netns or check iface)",
+            dst_ip.0[0], dst_ip.0[1], dst_ip.0[2], dst_ip.0[3]
+        )
+    })?;
+
+    eprintln!(
+        "ntx(tcp-client) starting: iface={} backend={:?} {}:{} -> {}:{} isn={} payload_len={} dst-mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        opt.iface,
+        opt.backend,
+        src_ip.0[0],
+        opt.tcp_local_port,
+        opt.server_ip,
+        opt.tcp_remote_port,
+        opt.tcp_isn,
+        opt.tcp_payload.as_bytes().len(),
+        dst_mac.0[0],
+        dst_mac.0[1],
+        dst_mac.0[2],
+        dst_mac.0[3],
+        dst_mac.0[4],
+        dst_mac.0[5]
+    );
+
+    let mut ctx = PacketContext::with_capacity(opt.snaplen);
+    let mut buf = vec![0u8; opt.snaplen];
+
+    let mut c = TcpClient::new(opt.tcp_local_port, opt.tcp_remote_port, opt.tcp_isn);
+
+    // 1) Send SYN
+    let syn = c.connect()?;
+    send_tcp_segment(&mut *nic, MacAddr(iface_mac), dst_mac, src_ip, dst_ip, syn)?;
+
+    let start = Instant::now();
+    let mut sent_data = false;
+    let mut sent_fin = false;
+
+    loop {
+        if start.elapsed() > Duration::from_secs(10) {
+            bail!("tcp-client timeout");
+        }
+
+        let _ = nic.poll_readable(Some(Duration::from_millis(200)))?;
+
+        if let Some(n) = nic.recv_nonblocking(&mut buf)? {
+            ctx.set_frame(&buf[..n]);
+            let decoded = match ctx.decode() {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            let Some(ip) = decoded.ip else { continue };
+            if ip.protocol != 6 {
+                continue;
+            }
+            let Some(tcp) = decoded.tcp.as_ref() else {
+                continue;
+            };
+            if ip.src != dst_ip || ip.dst != src_ip {
+                continue;
+            }
+            if tcp.src_port != opt.tcp_remote_port || tcp.dst_port != opt.tcp_local_port {
+                continue;
+            }
+
+            let inbound = TcpSegment {
+                hdr: tcp.clone(),
+                payload: decoded.payload.to_vec(),
+            };
+            if let Some(out) = c.on_segment(inbound)? {
+                send_tcp_segment(&mut *nic, MacAddr(iface_mac), dst_mac, src_ip, dst_ip, out)?;
+            }
+
+            if c.state == TcpClientState::Established && !sent_data {
+                let data = c.send_data(opt.tcp_payload.as_bytes())?;
+                send_tcp_segment(&mut *nic, MacAddr(iface_mac), dst_mac, src_ip, dst_ip, data)?;
+                sent_data = true;
+            }
+
+            if sent_data && !sent_fin {
+                // Heuristic: once we see remote ACK for our data (or any remote data), initiate close.
+                if tcp.flags.contains(TcpFlags::ACK) {
+                    let fin = c.close()?;
+                    send_tcp_segment(&mut *nic, MacAddr(iface_mac), dst_mac, src_ip, dst_ip, fin)?;
+                    sent_fin = true;
+                }
+            }
+
+            if c.state == TcpClientState::TimeWait {
+                eprintln!("ntx(tcp-client) done: TIME_WAIT");
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn resolve_arp_minimal(
+    nic: &mut dyn crate::network::Nic,
+    src_mac: crate::network::MacAddr,
+    src_ip: crate::network::Ipv4Addr,
+    target_ip: crate::network::Ipv4Addr,
+    snaplen: usize,
+    timeout: Duration,
+) -> Result<crate::network::MacAddr> {
+    use crate::network::arp::{build_arp_request_frame, parse_arp_reply};
+
+    // Best-effort: try a couple times within timeout.
+    let start = std::time::Instant::now();
+    let mut buf = vec![0u8; snaplen.max(64)];
+
+    // Pre-send once, then re-send every 250ms.
+    let mut last_send = std::time::Instant::now() - Duration::from_secs(3600);
+
+    loop {
+        if start.elapsed() > timeout {
+            bail!("arp timeout");
+        }
+
+        if last_send.elapsed() >= Duration::from_millis(250) {
+            let req = build_arp_request_frame(src_mac, src_ip, target_ip)?;
+            nic.send(&req).context("send arp request")?;
+            last_send = std::time::Instant::now();
+        }
+
+        // Wait a bit for readability.
+        let _ = nic.poll_readable(Some(Duration::from_millis(200)))?;
+
+        // Drain all available frames so we don't miss the ARP reply.
+        while let Some(n) = nic.recv_nonblocking(&mut buf)? {
+            if let Some((sip, smac)) = parse_arp_reply(&buf[..n])? {
+                if sip == target_ip {
+                    return Ok(smac);
+                }
+            }
+        }
+    }
+}
+
+fn parse_ipv4_local(s: &str) -> Result<crate::network::Ipv4Addr> {
+    let parts: Vec<_> = s.split('.').collect();
+    if parts.len() != 4 {
+        bail!("invalid ipv4: {s}");
+    }
+    let mut octets = [0u8; 4];
+    for (i, p) in parts.iter().enumerate() {
+        octets[i] = p
+            .parse::<u8>()
+            .map_err(|_| anyhow::anyhow!("invalid ipv4: {s}"))?;
+    }
+    Ok(crate::network::Ipv4Addr(octets))
+}
+
+fn send_tcp_segment(
+    nic: &mut dyn crate::network::Nic,
+    src_mac: crate::network::MacAddr,
+    dst_mac: crate::network::MacAddr,
+    src_ip: crate::network::Ipv4Addr,
+    dst_ip: crate::network::Ipv4Addr,
+    seg: crate::network::TcpSegment,
+) -> Result<()> {
+    let frame = crate::network::stack::build_tcp_frame(
+        src_mac,
+        dst_mac,
+        src_ip,
+        dst_ip,
+        &seg.hdr,
+        &seg.payload,
+    )?;
+    nic.send(&frame).context("send tcp frame")?;
+    Ok(())
 }
 
 fn run_scenario_mode(store: &mut Store<State>, instance: &Instance, opt: &Opt) -> Result<()> {
@@ -492,6 +751,7 @@ fn run_net_mode(store: &mut Store<State>, instance: &Instance, opt: &Opt) -> Res
                 eth: decoded.eth,
                 ip: decoded.ip,
                 udp: decoded.udp,
+                tcp: None,
                 payload: &new_payload,
             };
             build_udp_reply(&shim, MacAddr(iface_mac))?

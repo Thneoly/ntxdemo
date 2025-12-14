@@ -1,13 +1,14 @@
-use crate::network::{EthernetHeader, Ipv4Header, UdpHeader};
+use crate::network::{EthernetHeader, Ipv4Header, TcpHeader, UdpHeader};
 
 /// Parsed view of a received frame.
 ///
 /// The slices reference the original receive buffer.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct DecodedPacket<'a> {
     pub eth: EthernetHeader,
     pub ip: Option<Ipv4Header>,
     pub udp: Option<UdpHeader>,
+    pub tcp: Option<TcpHeader>,
     pub payload: &'a [u8],
 }
 
@@ -52,6 +53,7 @@ impl PacketContext {
             eth,
             ip: None,
             udp: None,
+            tcp: None,
             payload: l3,
         };
 
@@ -65,6 +67,13 @@ impl PacketContext {
             if ip.protocol == 17 {
                 let (udp, pl) = UdpHeader::parse(l4)?;
                 decoded.udp = Some(udp);
+                decoded.payload = pl;
+            }
+
+            // Try TCP.
+            if ip.protocol == 6 {
+                let (tcp, pl) = TcpHeader::parse(l4)?;
+                decoded.tcp = Some(tcp);
                 decoded.payload = pl;
             }
         }

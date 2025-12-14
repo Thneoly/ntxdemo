@@ -213,6 +213,7 @@ fn run_echo_server_wasm_loop(
                 eth: decoded.eth,
                 ip: decoded.ip,
                 udp: decoded.udp,
+                tcp: None,
                 payload: &new_payload,
             };
             build_udp_reply(&shim, MacAddr(iface_mac))?
