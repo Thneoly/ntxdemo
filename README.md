@@ -88,7 +88,7 @@ cargo run
 ```bash
 # 跳过插件自动构建（值为 1 或 true 将被视为启用）
 DISABLE_PLUGIN_BUILDS=1 cargo build
-```
+```主工程里 mod.rs 仍然是 pub use ntx_network::*; 的 re-ex
 
 当 `DISABLE_PLUGIN_BUILDS` 被设置时，build 脚本仍会计算并记录插件目录的哈希（状态会更新），但不会执行 `cargo build` 或 `run.sh`。
 
