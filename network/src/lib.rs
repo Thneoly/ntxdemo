@@ -1,3 +1,5 @@
+//! Standalone userspace networking crate.
+
 pub mod arp;
 mod icmp;
 mod igmp;
@@ -10,6 +12,7 @@ mod tcp;
 pub mod traffic;
 mod udp;
 
+// Convenient re-exports (preserve the old API surface used by the main binary).
 #[allow(unused_imports)]
 pub use arp::*;
 #[allow(unused_imports)]

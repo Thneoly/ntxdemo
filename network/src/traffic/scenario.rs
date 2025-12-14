@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::Context;
 use serde::Deserialize;
 
-use crate::network::Ipv4Addr;
+use crate::Ipv4Addr;
 
 /// MVP-4 scenario file.
 ///

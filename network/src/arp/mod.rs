@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 
-use crate::network::{ETH_TYPE_ARP, EthernetHeader, Ipv4Addr, MacAddr};
+use crate::{ETH_TYPE_ARP, EthernetHeader, Ipv4Addr, MacAddr};
 
 /// Ethernet broadcast MAC.
 #[allow(dead_code)]

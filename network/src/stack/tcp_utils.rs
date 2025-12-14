@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::network::{ETH_TYPE_IPV4, EthernetHeader, Ipv4Addr, Ipv4Header, MacAddr, TcpHeader};
+use crate::{ETH_TYPE_IPV4, EthernetHeader, Ipv4Addr, Ipv4Header, MacAddr, TcpHeader};
 
 use super::ReplyFrame;
 

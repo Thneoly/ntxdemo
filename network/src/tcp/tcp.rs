@@ -1,6 +1,6 @@
 use anyhow::bail;
 
-use crate::network::Ipv4Addr;
+use crate::Ipv4Addr;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TcpFlags(pub u16);

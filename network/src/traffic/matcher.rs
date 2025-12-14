@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use crate::network::Ipv4Addr;
+use crate::Ipv4Addr;
 
 use super::token::Token;
 

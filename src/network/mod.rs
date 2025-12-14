@@ -1,10 +1,4 @@
-// Re-export the top-level `network/` folder as a module of the `Ntx` crate.
-//
-// NOTE: The implementation lives in `/network/*` at the repository root.
-// We include it from here so we can iterate without turning it into a separate crate yet.
+// Re-export the standalone `ntx-network` library crate through the existing
+// `crate::network::*` path, to minimize churn in the main crate.
 
-#[path = "../../network/mod.rs"]
-mod root;
-
-#[allow(unused_imports)]
-pub use root::*;
+pub use ntx_network::*;

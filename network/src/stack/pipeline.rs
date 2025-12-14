@@ -1,4 +1,4 @@
-use crate::network::{ETH_TYPE_IPV4, EthernetHeader, Ipv4Header, MacAddr, UdpHeader};
+use crate::{ETH_TYPE_IPV4, EthernetHeader, Ipv4Header, MacAddr, UdpHeader};
 
 use super::{DecodedPacket, PacketContext};
 

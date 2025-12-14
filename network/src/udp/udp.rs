@@ -1,6 +1,6 @@
 use anyhow::bail;
 
-use crate::network::Ipv4Addr;
+use crate::Ipv4Addr;
 
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]

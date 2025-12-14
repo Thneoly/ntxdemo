@@ -282,12 +282,12 @@ impl AfPacketDgramNic {
     #[allow(dead_code)]
     pub fn recv_nonblocking(&mut self, out: &mut [u8]) -> anyhow::Result<Option<usize>> {
         // Need room for a synthetic Ethernet header.
-        if out.len() < crate::network::EthernetHeader::LEN {
+        if out.len() < crate::EthernetHeader::LEN {
             anyhow::bail!("buffer too small for cooked recv: {}", out.len());
         }
 
         // Receive cooked payload right after synthetic Ethernet header.
-        let payload_buf = &mut out[crate::network::EthernetHeader::LEN..];
+        let payload_buf = &mut out[crate::EthernetHeader::LEN..];
         let mut iov = libc::iovec {
             iov_base: payload_buf.as_mut_ptr() as *mut libc::c_void,
             iov_len: payload_buf.len(),
@@ -318,20 +318,20 @@ impl AfPacketDgramNic {
         // We don't know L2 src/dst from cooked mode; that's OK for UDP reply builder
         // because it uses decoded metadata for dst/src MAC. For now use BROADCAST dst
         // and our iface mac as src if available.
-        let dst = crate::network::MacAddr::BROADCAST;
-        let src = crate::network::MacAddr(self.ifmac.unwrap_or([0u8; 6]));
+        let dst = crate::MacAddr::BROADCAST;
+        let src = crate::MacAddr(self.ifmac.unwrap_or([0u8; 6]));
         // In cooked mode, sockaddr_ll::sll_protocol is the L3 protocol in network byte order,
         // but its *values* are Linux ETH_P_* constants (e.g. ETH_P_IP=0x0800).
         // Convert to host order so downstream sees standard ethertypes.
         let ethertype = u16::from_be(addr.sll_protocol);
-        let eth = crate::network::EthernetHeader {
+        let eth = crate::EthernetHeader {
             dst,
             src,
             ethertype,
         };
-        eth.write(&mut out[..crate::network::EthernetHeader::LEN])?;
+        eth.write(&mut out[..crate::EthernetHeader::LEN])?;
 
-        Ok(Some(crate::network::EthernetHeader::LEN + n as usize))
+        Ok(Some(crate::EthernetHeader::LEN + n as usize))
     }
 }
 
@@ -412,13 +412,10 @@ impl Nic for AfPacketDgramNic {
             anyhow::bail!("frame too small: 0");
         }
 
-        let (l3, proto): (&[u8], u16) = if frame.len() >= crate::network::EthernetHeader::LEN {
+        let (l3, proto): (&[u8], u16) = if frame.len() >= crate::EthernetHeader::LEN {
             let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
-            if ethertype == crate::network::ETH_TYPE_IPV4 {
-                (
-                    &frame[crate::network::EthernetHeader::LEN..],
-                    libc::ETH_P_IP as u16,
-                )
+            if ethertype == crate::ETH_TYPE_IPV4 {
+                (&frame[crate::EthernetHeader::LEN..], libc::ETH_P_IP as u16)
             } else {
                 // Not Ethernet+IPv4; maybe it's raw IPv4.
                 let ver = frame[0] >> 4;

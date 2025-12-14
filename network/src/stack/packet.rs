@@ -1,4 +1,4 @@
-use crate::network::{EthernetHeader, Ipv4Header, TcpHeader, UdpHeader};
+use crate::{EthernetHeader, Ipv4Header, TcpHeader, UdpHeader};
 
 /// Parsed view of a received frame.
 ///
@@ -58,7 +58,7 @@ impl PacketContext {
         };
 
         // Try IPv4.
-        if eth.ethertype == crate::network::ETH_TYPE_IPV4 {
+        if eth.ethertype == crate::ETH_TYPE_IPV4 {
             let (ip, l4) = Ipv4Header::parse(l3)?;
             decoded.ip = Some(ip);
             decoded.payload = l4;

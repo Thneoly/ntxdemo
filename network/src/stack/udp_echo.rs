@@ -1,4 +1,4 @@
-use crate::network::MacAddr;
+use crate::MacAddr;
 
 use super::{Action, DecodedPacket, PacketHandler, build_udp_reply};
 
