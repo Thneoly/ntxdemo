@@ -113,6 +113,101 @@ pub fn build_packet_no_payload(
     build_packet(layers, &[], registry)
 }
 
+/// Build a packet while applying small, protocol-specific "build glue" to layers.
+///
+/// Today this focuses on the one annoying real-world detail for UDP: its checksum
+/// needs IPv4 src/dst. When building from layers, we allow the UDP layer to carry
+/// optional IPs, then fill them from the IPv4 layer when present.
+///
+/// Contract:
+/// - Callers still provide the registry explicitly (no hidden global state).
+/// - If the chain contains `Ipv4` and `Udp`, and the `Udp` layer has missing
+///   `src_ip/dst_ip`, they will be filled from the `Ipv4` layer.
+pub fn build_packet_with_glue(
+    layers: &[LayerInstance],
+    payload: &[u8],
+    registry: &LayerRegistry,
+) -> Result<Vec<u8>, String> {
+    use crate::packet::layers::{Ipv4, Udp};
+
+    // Find IPv4 src/dst if present.
+    let mut ipv4_pair: Option<(crate::Ipv4Addr, crate::Ipv4Addr)> = None;
+    for l in layers {
+        if l.id == LayerId::Ipv4 {
+            if let Some(ip) = l.downcast_ref::<Ipv4>() {
+                ipv4_pair = Some((ip.src, ip.dst));
+            }
+            break;
+        }
+    }
+
+    // Clone layers only if we actually need to patch anything.
+    let Some((src, dst)) = ipv4_pair else {
+        return build_packet(layers, payload, registry);
+    };
+
+    let mut patched: Vec<LayerInstance> = Vec::new();
+    let mut changed = false;
+    for l in layers {
+        if l.id == LayerId::Udp {
+            if let Some(udp) = l.downcast_ref::<Udp>() {
+                let mut u = *udp;
+                if u.src_ip.is_none() {
+                    u.src_ip = Some(src);
+                    changed = true;
+                }
+                if u.dst_ip.is_none() {
+                    u.dst_ip = Some(dst);
+                    changed = true;
+                }
+                patched.push(LayerInstance {
+                    id: LayerId::Udp,
+                    inner: Box::new(u),
+                });
+                continue;
+            }
+        }
+        // We can't clone arbitrary `Box<dyn Any>` here, so we only support patching
+        // the UDP layer and only when the chain contains *exactly* the built-in
+        // Ether/Ipv4/Udp triplet.
+        if l.id == LayerId::Ether {
+            if let Some(eth) = l.downcast_ref::<crate::packet::layers::Ether>() {
+                patched.push(LayerInstance {
+                    id: LayerId::Ether,
+                    inner: Box::new(*eth),
+                });
+                continue;
+            }
+        }
+        if l.id == LayerId::Ipv4 {
+            if let Some(ip) = l.downcast_ref::<Ipv4>() {
+                patched.push(LayerInstance {
+                    id: LayerId::Ipv4,
+                    inner: Box::new(*ip),
+                });
+                continue;
+            }
+        }
+
+        // Unknown layer in chain => no glue applied.
+        return build_packet(layers, payload, registry);
+    }
+
+    if changed {
+        build_packet(&patched, payload, registry)
+    } else {
+        build_packet(layers, payload, registry)
+    }
+}
+
+/// Wrapper over [`build_packet_with_glue`] that defaults payload to empty.
+pub fn build_packet_no_payload_with_glue(
+    layers: &[LayerInstance],
+    registry: &LayerRegistry,
+) -> Result<Vec<u8>, String> {
+    build_packet_with_glue(layers, &[], registry)
+}
+
 /// Parse a packet into a graph.
 ///
 /// MVP: this is a thin wrapper over `parse_packet` producing a linear chain graph.

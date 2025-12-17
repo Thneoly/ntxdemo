@@ -22,3 +22,11 @@ wasmtime = "39.0.1"
 wasmtime-wasi = "39.0.1"
 wit-bindgen = "0.49.0"
 ntx-network = { path = "network" }
+
+[[example]]
+name = "ntx-echo-client"
+path = "examples/ntx-echo/client.rs"
+
+[[example]]
+name = "ntx-echo-server"
+path = "examples/ntx-echo/server.rs"
