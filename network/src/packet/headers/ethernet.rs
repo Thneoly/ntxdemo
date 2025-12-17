@@ -30,7 +30,10 @@ pub struct EthernetHeader {
 impl EthernetHeader {
     pub const LEN: usize = 14;
 
-    pub fn parse(frame: &[u8]) -> anyhow::Result<(Self, &[u8])> {
+    /// Decode an Ethernet header from the beginning of `frame`.
+    ///
+    /// Returns `(header, payload_slice)`.
+    pub fn decode(frame: &[u8]) -> anyhow::Result<(Self, &[u8])> {
         if frame.len() < Self::LEN {
             bail!("frame too short for ethernet: {}", frame.len());
         }
@@ -47,7 +50,8 @@ impl EthernetHeader {
         ))
     }
 
-    pub fn write(&self, out: &mut [u8]) -> anyhow::Result<()> {
+    /// Encode this Ethernet header into `out`.
+    pub fn encode(&self, out: &mut [u8]) -> anyhow::Result<()> {
         if out.len() < Self::LEN {
             bail!("buffer too small for ethernet header");
         }

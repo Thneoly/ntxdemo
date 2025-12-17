@@ -329,7 +329,7 @@ impl AfPacketDgramNic {
             src,
             ethertype,
         };
-        eth.write(&mut out[..crate::EthernetHeader::LEN])?;
+        eth.encode(&mut out[..crate::EthernetHeader::LEN])?;
 
         Ok(Some(crate::EthernetHeader::LEN + n as usize))
     }

@@ -5,7 +5,8 @@ use wasmtime::Store;
 use wasmtime::component::{Func, Val};
 
 use crate::component_utils::{find_iface_parent, get_func_from_iface};
-use crate::network::stack::{PacketContext, build_udp_reply};
+use crate::network::stack::layers::{Ether, Ipv4, Udp, register_all};
+use crate::network::stack::{LayerId, LayerRegistry, ParsedPacket, build_udp_reply, parse_packet};
 use crate::network::{self, EthernetHeader, Ipv4Addr, Ipv4Header, MacAddr, Nic, UdpHeader};
 use crate::{Backend, Opt, State};
 
@@ -87,7 +88,8 @@ fn run_echo_server_wasm_loop(
     );
 
     let mut buf = vec![0u8; opt.snaplen];
-    let mut ctx = PacketContext::with_capacity(opt.snaplen);
+    let mut reg = LayerRegistry::new();
+    register_all(&mut reg);
 
     let mut rx: u64 = 0;
     let mut decoded_udp: u64 = 0;
@@ -116,17 +118,16 @@ fn run_echo_server_wasm_loop(
         };
 
         rx = rx.wrapping_add(1);
-        ctx.set_frame(&buf[..n]);
-
-        let decoded = match ctx.decode() {
-            Ok(d) => d,
+        let (layers, payload) = match parse_packet(&buf[..n], LayerId::Ether, &reg) {
+            Ok(v) => v,
             Err(_) => continue,
         };
+        let pkt = ParsedPacket { layers, payload };
 
-        let Some(_ip) = decoded.ip else {
+        let Some(_ip) = pkt.get::<Ipv4>() else {
             continue;
         };
-        let Some(udp) = decoded.udp else {
+        let Some(udp) = pkt.get::<Udp>() else {
             continue;
         };
 
@@ -135,7 +136,7 @@ fn run_echo_server_wasm_loop(
         }
         decoded_udp = decoded_udp.wrapping_add(1);
 
-        let payload_val = Val::List(decoded.payload.iter().copied().map(Val::U8).collect());
+        let payload_val = Val::List(pkt.payload.iter().copied().map(Val::U8).collect());
         let mut results = [Val::Bool(false)];
 
         match on_packet_received.call(&mut *store, &[payload_val], &mut results) {
@@ -208,16 +209,17 @@ fn run_echo_server_wasm_loop(
             continue;
         };
 
-        let reply = {
-            let shim = network::stack::DecodedPacket {
-                eth: decoded.eth,
-                ip: decoded.ip,
-                udp: decoded.udp,
-                tcp: None,
-                payload: &new_payload,
-            };
-            build_udp_reply(&shim, MacAddr(iface_mac))?
+        // Rebuild a ParsedPacket with the same headers but a replaced payload.
+        // MVP: we re-parse and then swap payload slice to the new guest-produced bytes.
+        let (layers2, _payload2) = match parse_packet(&buf[..n], LayerId::Ether, &reg) {
+            Ok(v) => v,
+            Err(_) => continue,
         };
+        let pkt2 = ParsedPacket {
+            layers: layers2,
+            payload: &new_payload,
+        };
+        let reply = build_udp_reply(&pkt2, MacAddr(iface_mac))?;
 
         if nic.send(&reply.bytes).is_ok() {
             sent = sent.wrapping_add(1);
@@ -262,8 +264,9 @@ pub fn run_echo_server_native_impl(opt: &Opt) -> Result<()> {
         opt.backend
     );
 
+    let mut reg = LayerRegistry::new();
+    register_all(&mut reg);
     let mut buf = vec![0u8; opt.snaplen];
-    let mut ctx = PacketContext::with_capacity(opt.snaplen);
 
     let mut rx: u64 = 0;
     let mut decoded_udp: u64 = 0;
@@ -291,17 +294,16 @@ pub fn run_echo_server_native_impl(opt: &Opt) -> Result<()> {
         };
 
         rx = rx.wrapping_add(1);
-        ctx.set_frame(&buf[..n]);
-
-        let decoded = match ctx.decode() {
-            Ok(d) => d,
+        let (layers, payload) = match parse_packet(&buf[..n], LayerId::Ether, &reg) {
+            Ok(v) => v,
             Err(_) => continue,
         };
+        let pkt = ParsedPacket { layers, payload };
 
-        let Some(_ip) = decoded.ip else {
+        let Some(_ip) = pkt.get::<Ipv4>() else {
             continue;
         };
-        let Some(udp) = decoded.udp else {
+        let Some(udp) = pkt.get::<Udp>() else {
             continue;
         };
 
@@ -311,7 +313,7 @@ pub fn run_echo_server_native_impl(opt: &Opt) -> Result<()> {
 
         decoded_udp = decoded_udp.wrapping_add(1);
 
-        let reply = build_udp_reply(&decoded, MacAddr(iface_mac))?;
+        let reply = build_udp_reply(&pkt, MacAddr(iface_mac))?;
 
         if nic.send(&reply.bytes).is_ok() {
             sent = sent.wrapping_add(1);
@@ -459,8 +461,9 @@ pub fn run_echo_client_native(opt: &Opt) -> Result<()> {
     let mut last_report = start_time;
     let report_iv = Duration::from_secs(1);
 
+    let mut reg = LayerRegistry::new();
+    register_all(&mut reg);
     let mut buf = vec![0u8; opt.snaplen];
-    let mut ctx = PacketContext::with_capacity(opt.snaplen);
 
     eprintln!(
         "[echo-client] Generating {} requests at {} pps",
@@ -501,15 +504,15 @@ pub fn run_echo_client_native(opt: &Opt) -> Result<()> {
         if let Some(n) = nic.recv_nonblocking(&mut buf)? {
             received = received.wrapping_add(1);
 
-            ctx.set_frame(&buf[..n]);
-            if let Ok(decoded) = ctx.decode() {
-                if decoded.udp.is_some() {
-                    if decoded.payload.len() >= 4 {
+            if let Ok((layers, payload)) = parse_packet(&buf[..n], LayerId::Ether, &reg) {
+                let pkt = ParsedPacket { layers, payload };
+                if pkt.get::<Udp>().is_some() {
+                    if pkt.payload.len() >= 4 {
                         let seq_bytes = [
-                            decoded.payload[0],
-                            decoded.payload[1],
-                            decoded.payload[2],
-                            decoded.payload[3],
+                            pkt.payload[0],
+                            pkt.payload[1],
+                            pkt.payload[2],
+                            pkt.payload[3],
                         ];
                         let seq = u32::from_be_bytes(seq_bytes);
                         if seq < sent {
@@ -603,8 +606,9 @@ pub fn run_echo_client_native_with_wasm(
     let mut last_report = start_time;
     let report_iv = Duration::from_secs(1);
 
+    let mut reg = LayerRegistry::new();
+    register_all(&mut reg);
     let mut buf = vec![0u8; opt.snaplen];
-    let mut ctx = PacketContext::with_capacity(opt.snaplen);
 
     eprintln!(
         "[echo-client] Generating {} requests at {} pps (payload from WASM)",
@@ -690,11 +694,11 @@ pub fn run_echo_client_native_with_wasm(
 
         if let Some(n) = nic.recv_nonblocking(&mut buf)? {
             received = received.wrapping_add(1);
-            ctx.set_frame(&buf[..n]);
-            if let Ok(decoded) = ctx.decode() {
-                if let Some(udp) = decoded.udp {
+            if let Ok((layers, payload)) = parse_packet(&buf[..n], LayerId::Ether, &reg) {
+                let pkt = ParsedPacket { layers, payload };
+                if let Some(udp) = pkt.get::<Udp>() {
                     if udp.dst_port == src_port {
-                        let payload = decoded.payload;
+                        let payload = pkt.payload;
                         if payload.len() >= 4 {
                             let seq_bytes = [payload[0], payload[1], payload[2], payload[3]];
                             let seq = u32::from_be_bytes(seq_bytes);

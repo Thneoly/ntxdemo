@@ -26,7 +26,10 @@ pub struct Ipv4Header {
 impl Ipv4Header {
     pub const MIN_LEN: usize = 20;
 
-    pub fn parse(pkt: &[u8]) -> anyhow::Result<(Self, &[u8])> {
+    /// Decode an IPv4 header from `pkt`.
+    ///
+    /// Returns `(header, payload_slice)` where payload length is derived from total_len.
+    pub fn decode(pkt: &[u8]) -> anyhow::Result<(Self, &[u8])> {
         if pkt.len() < Self::MIN_LEN {
             bail!("ipv4 packet too short: {}", pkt.len());
         }
@@ -80,7 +83,7 @@ impl Ipv4Header {
         ))
     }
 
-    pub fn write(&self, out: &mut [u8], payload_len: usize, dscp_ecn: u8) -> anyhow::Result<()> {
+    pub fn encode(&self, out: &mut [u8], payload_len: usize, dscp_ecn: u8) -> anyhow::Result<()> {
         if out.len() < Self::MIN_LEN {
             bail!("buffer too small for ipv4 header");
         }

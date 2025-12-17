@@ -38,7 +38,7 @@ pub struct ArpPacket {
 impl ArpPacket {
     pub const LEN: usize = 28;
 
-    pub fn parse(payload: &[u8]) -> anyhow::Result<Self> {
+    pub fn decode(payload: &[u8]) -> anyhow::Result<Self> {
         if payload.len() < Self::LEN {
             bail!("arp payload too short: {}", payload.len());
         }
@@ -71,7 +71,7 @@ impl ArpPacket {
         })
     }
 
-    pub fn write(&self, out: &mut [u8]) -> anyhow::Result<()> {
+    pub fn encode(&self, out: &mut [u8]) -> anyhow::Result<()> {
         if out.len() < Self::LEN {
             bail!("buffer too small for arp: {}", out.len());
         }
@@ -109,8 +109,8 @@ pub fn build_arp_request_frame(
     };
 
     let mut bytes = vec![0u8; EthernetHeader::LEN + ArpPacket::LEN];
-    eth.write(&mut bytes[..EthernetHeader::LEN])?;
-    arp.write(&mut bytes[EthernetHeader::LEN..])?;
+    eth.encode(&mut bytes[..EthernetHeader::LEN])?;
+    arp.encode(&mut bytes[EthernetHeader::LEN..])?;
     Ok(bytes)
 }
 
@@ -119,11 +119,11 @@ pub fn build_arp_request_frame(
 /// Returns `Some((sender_ip, sender_mac))` if this is an ARP reply.
 #[allow(dead_code)]
 pub fn parse_arp_reply(frame: &[u8]) -> anyhow::Result<Option<(Ipv4Addr, MacAddr)>> {
-    let (eth, payload) = EthernetHeader::parse(frame).context("parse ethernet")?;
+    let (eth, payload) = EthernetHeader::decode(frame).context("parse ethernet")?;
     if eth.ethertype != ETH_TYPE_ARP {
         return Ok(None);
     }
-    let arp = ArpPacket::parse(payload).context("parse arp")?;
+    let arp = ArpPacket::decode(payload).context("parse arp")?;
     if arp.oper != ARP_OP_REPLY {
         return Ok(None);
     }

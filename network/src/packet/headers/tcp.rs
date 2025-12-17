@@ -44,7 +44,7 @@ impl TcpHeader {
         (self.data_offset_words as usize) * 4
     }
 
-    pub fn parse(pkt: &[u8]) -> anyhow::Result<(Self, &[u8])> {
+    pub fn decode(pkt: &[u8]) -> anyhow::Result<(Self, &[u8])> {
         if pkt.len() < Self::MIN_LEN {
             bail!("tcp packet too short: {}", pkt.len());
         }
@@ -93,7 +93,7 @@ impl TcpHeader {
         ))
     }
 
-    pub fn write(
+    pub fn encode(
         &self,
         out: &mut [u8],
         payload: &[u8],
@@ -201,10 +201,10 @@ mod tests {
         };
 
         let mut buf = vec![0u8; TcpHeader::MIN_LEN + payload.len()];
-        hdr.write(&mut buf, payload, src, dst).unwrap();
+        hdr.encode(&mut buf, payload, src, dst).unwrap();
 
         // Parse and verify fields survive.
-        let (p, pl) = TcpHeader::parse(&buf).unwrap();
+        let (p, pl) = TcpHeader::decode(&buf).unwrap();
         assert_eq!(pl, payload);
         assert_eq!(p.src_port, 1234);
         assert_eq!(p.dst_port, 80);

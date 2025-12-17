@@ -13,7 +13,10 @@ pub struct UdpHeader {
 impl UdpHeader {
     pub const LEN: usize = 8;
 
-    pub fn parse(pkt: &[u8]) -> anyhow::Result<(Self, &[u8])> {
+    /// Decode a UDP header from `pkt`.
+    ///
+    /// Returns `(header, payload_slice)` where payload length is derived from UDP len.
+    pub fn decode(pkt: &[u8]) -> anyhow::Result<(Self, &[u8])> {
         if pkt.len() < Self::LEN {
             bail!("udp packet too short: {}", pkt.len());
         }
@@ -29,7 +32,7 @@ impl UdpHeader {
         Ok((UdpHeader { src_port, dst_port }, &pkt[Self::LEN..len]))
     }
 
-    pub fn write(
+    pub fn encode(
         &self,
         out: &mut [u8],
         payload: &[u8],

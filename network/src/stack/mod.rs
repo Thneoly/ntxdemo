@@ -1,14 +1,26 @@
 //! Userspace network stack building blocks.
 //!
-//! The goal of this module is to keep **protocol processing** independent from the
-//! underlying I/O backend (AF_PACKET today, AF_XDP later).
+//! This module provides a Scapy-like, runtime-extensible packet layering system:
+//!
+//! - Packets are parsed into an ordered list of layers (`LayerInstance`).
+//! - Next-layer selection is driven by a runtime registry (`LayerRegistry`).
+//! - Handlers operate on a parsed packet view (`ParsedPacket`), not a fixed struct.
+//!
+//! The goal is to keep protocol processing independent from the underlying I/O backend
+//! and make adding new protocol layers a registration-only operation.
 
-mod packet;
+mod graph;
+mod layer;
+pub use crate::packet::layers;
+mod parser;
 mod pipeline;
-mod tcp_utils;
-mod udp_echo;
+mod registry;
 
-pub use packet::*;
+#[cfg(test)]
+mod tests;
+
+pub use graph::*;
+pub use layer::*;
+pub use parser::*;
 pub use pipeline::*;
-pub use tcp_utils::*;
-pub use udp_echo::*;
+pub use registry::*;

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use ntx::network::stack::{Action, PacketContext, Pipeline, UdpEchoHandler};
+use ntx::network::stack::{Action, Pipeline, UdpEchoHandler};
 use ntx::network::{MacAddr, Nic};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,7 +122,6 @@ fn main() -> Result<()> {
     let mut buf = vec![0u8; opt.snaplen];
 
     // Pluggable pipeline: decode once, run handlers.
-    let mut ctx = PacketContext::with_capacity(opt.snaplen);
     let mut pipeline = Pipeline::new();
     pipeline.add_handler(UdpEchoHandler {
         listen_port: opt.port,
@@ -146,8 +145,7 @@ fn main() -> Result<()> {
             }
         };
         rx_cnt = rx_cnt.wrapping_add(1);
-        ctx.set_frame(&buf[..n]);
-        let action = match pipeline.process(&ctx) {
+        let action = match pipeline.process(&buf[..n]) {
             Ok(a) => a,
             Err(_) => continue,
         };
