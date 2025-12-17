@@ -1,10 +1,10 @@
 package scheduler:echo-client;
 
 # 导入 Client 模式的组件
-let corelibs = new component "file://../core-libs/target/wasm32-wasip2/debug/scheduler_core_libs.wasm";
-let eventbus = new component "file://../eventbus/target/wasm32-wasip2/debug/scheduler_eventbus.wasm";
-let actions = new component "file://../actions-executor-client/target/wasm32-wasip2/debug/scheduler_actions_executor_client.wasm";
-let scheduler = new component "file://../scheduler/target/wasm32-wasip2/debug/scheduler.wasm";
+let corelibs = new component "file://../core-libs/target/wasm32-wasip2/release/scheduler_core_libs.wasm";
+let eventbus = new component "file://../eventbus/target/wasm32-wasip2/release/scheduler_eventbus.wasm";
+let actions = new component "file://../actions-executor-client/target/wasm32-wasip2/release/scheduler_actions_executor_client.wasm";
+let scheduler = new component "file://../scheduler/target/wasm32-wasip2/release/scheduler.wasm";
 
 # Client 专用的链接关系
 connect eventbus with corelibs;
