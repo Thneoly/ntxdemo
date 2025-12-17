@@ -1,5 +1,5 @@
 use crate::stack::{Layer, LayerId};
-use crate::{ETH_TYPE_IPV4, EthernetHeader, MacAddr};
+use crate::{ETH_TYPE_ARP, ETH_TYPE_IPV4, EthernetHeader, MacAddr};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Ether {
@@ -39,6 +39,7 @@ impl<'a> Layer<'a> for Ether {
     fn next_layer(&self) -> Option<LayerId> {
         match self.ethertype {
             ETH_TYPE_IPV4 => Some(LayerId::Ipv4),
+            ETH_TYPE_ARP => Some(LayerId::Arp),
             _ => None,
         }
     }

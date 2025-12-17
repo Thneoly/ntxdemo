@@ -6,6 +6,7 @@ use std::any::Any;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LayerId {
     Ether,
+    Arp,
     Ipv4,
     Udp,
     Tcp,

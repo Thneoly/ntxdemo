@@ -2,12 +2,14 @@
 //!
 //! `stack` orchestrates parsing/building; these are the protocol implementations.
 
+mod arp;
 mod ether;
 mod ipv4;
 mod tcp;
 mod udp;
 mod vxlan;
 
+pub use arp::Arp;
 pub use ether::Ether;
 pub use ipv4::Ipv4;
 pub use tcp::Tcp;
@@ -46,6 +48,27 @@ pub fn register_all(reg: &mut LayerRegistry) {
         let l = any
             .downcast_ref::<Ether>()
             .ok_or_else(|| "encoder type mismatch: Ether".to_string())?;
+        l.encode(payload, out);
+        Ok(())
+    });
+
+    // ARP
+    reg.register_decoder(LayerId::Arp, |data| {
+        let (l, n) = Arp::decode(data)?;
+        Ok((
+            LayerInstance {
+                id: LayerId::Arp,
+                inner: Box::new(l),
+            },
+            n,
+            l.next_layer(),
+            None,
+        ))
+    });
+    reg.register_encoder(LayerId::Arp, |any, payload, out| {
+        let l = any
+            .downcast_ref::<Arp>()
+            .ok_or_else(|| "encoder type mismatch: Arp".to_string())?;
         l.encode(payload, out);
         Ok(())
     });

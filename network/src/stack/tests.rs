@@ -210,3 +210,75 @@ fn build_no_payload_eth_ipv4_udp_roundtrip() {
     assert!(parsed.iter().any(|l| l.id == LayerId::Udp));
     assert_eq!(payload, b"");
 }
+
+#[test]
+fn decode_chain_eth_arp() {
+    // Build an Ethernet + ARP request and ensure it decodes into Ether->Arp.
+    let eth = crate::EthernetHeader {
+        dst: crate::MacAddr([0xff; 6]),
+        src: crate::MacAddr([1, 2, 3, 4, 5, 6]),
+        ethertype: crate::ETH_TYPE_ARP,
+    };
+    let arp = crate::ArpPacket {
+        oper: 1,
+        sha: eth.src,
+        spa: crate::Ipv4Addr([10, 0, 0, 1]),
+        tha: crate::MacAddr([0, 0, 0, 0, 0, 0]),
+        tpa: crate::Ipv4Addr([10, 0, 0, 2]),
+    };
+    let mut frame = vec![0u8; crate::EthernetHeader::LEN + crate::ArpPacket::LEN];
+    eth.encode(&mut frame[..crate::EthernetHeader::LEN])
+        .unwrap();
+    arp.encode(&mut frame[crate::EthernetHeader::LEN..])
+        .unwrap();
+
+    let mut reg = LayerRegistry::new();
+    register_all(&mut reg);
+    let (layers, payload) = parse_packet(&frame, LayerId::Ether, &reg).unwrap();
+
+    assert_eq!(layers.len(), 2);
+    assert_eq!(layers[0].id, LayerId::Ether);
+    assert_eq!(layers[1].id, LayerId::Arp);
+    assert_eq!(payload, b"");
+}
+
+#[test]
+fn build_no_payload_eth_arp_roundtrip() {
+    // Build Ether/ARP with no payload and ensure we can parse it back.
+    let mut reg = LayerRegistry::new();
+    register_all(&mut reg);
+
+    let src_mac = crate::MacAddr([1, 2, 3, 4, 5, 6]);
+    let dst_mac = crate::MacAddr([0xff; 6]);
+    let src_ip = crate::Ipv4Addr([10, 0, 0, 1]);
+    let dst_ip = crate::Ipv4Addr([10, 0, 0, 2]);
+
+    let layers = vec![
+        LayerInstance {
+            id: LayerId::Ether,
+            inner: Box::new(crate::stack::layers::Ether {
+                dst: dst_mac,
+                src: src_mac,
+                ethertype: crate::ETH_TYPE_ARP,
+            }),
+        },
+        LayerInstance {
+            id: LayerId::Arp,
+            inner: Box::new(crate::stack::layers::Arp {
+                oper: 1,
+                sha: src_mac,
+                spa: src_ip,
+                tha: crate::MacAddr([0, 0, 0, 0, 0, 0]),
+                tpa: dst_ip,
+            }),
+        },
+    ];
+
+    let bytes = build_packet_no_payload(&layers, &reg).unwrap();
+    let (parsed, payload) = parse_packet(&bytes, LayerId::Ether, &reg).unwrap();
+
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0].id, LayerId::Ether);
+    assert_eq!(parsed[1].id, LayerId::Arp);
+    assert_eq!(payload, b"");
+}
