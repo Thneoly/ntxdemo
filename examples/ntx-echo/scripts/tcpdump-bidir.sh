@@ -22,7 +22,7 @@ IFACE_HOST="${IFACE_HOST:-ntx0}"
 NS="${NS:-ntxns1}"
 IFACE_NS="${IFACE_NS:-ntx1}"
 FILTER="${FILTER:-arp or (udp and port 7)}"
-DIR="${DIR:-in}"
+DIR="${DIR:-inout}"
 OUT_DIR="${OUT_DIR:-target/ntx-echo}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"

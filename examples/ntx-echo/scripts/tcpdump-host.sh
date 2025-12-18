@@ -13,7 +13,7 @@ set -euo pipefail
 
 IFACE="${IFACE:-ntx0}"
 FILTER="${FILTER:-arp or (udp and port 7)}"
-DIR="${DIR:-in}"
+DIR="${DIR:-inout}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "${repo_root}"

@@ -1,4 +1,4 @@
-use crate::stack::{Layer, LayerId};
+use crate::stack::{AcceptResult, Layer, LayerId, PacketContext};
 use crate::{ArpPacket, ETH_TYPE_ARP, EthernetHeader, MacAddr};
 
 /// ARP layer.
@@ -52,6 +52,22 @@ impl<'a> Layer<'a> for Arp {
         let p: ArpPacket = (*self).into();
         // Safe to ignore: we sized the buffer correctly.
         let _ = p.encode(&mut out[..]);
+    }
+
+    fn accept(&self, ctx: &PacketContext) -> AcceptResult {
+        // If ABR is present, only accept ARP that targets an active/bound local IP.
+        // Otherwise fall back to permissive behavior.
+        let Some(view) = ctx.abr.as_ref() else {
+            return AcceptResult::Accept;
+        };
+
+        let tpa_be = u32::from_be_bytes(self.tpa.octets());
+        if view.ipv4.contains_be(tpa_be) {
+            AcceptResult::Accept
+        } else {
+            // Valid ARP, but not for our IP resource.
+            AcceptResult::Poison
+        }
     }
 
     fn next_layer(&self) -> Option<LayerId> {

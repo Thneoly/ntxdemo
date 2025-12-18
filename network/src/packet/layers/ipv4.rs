@@ -1,4 +1,4 @@
-use crate::stack::{Layer, LayerId};
+use crate::stack::{AcceptResult, Layer, LayerId, PacketContext};
 use crate::{Ipv4Addr, Ipv4Header};
 
 #[derive(Debug, Clone, Copy)]
@@ -64,6 +64,30 @@ impl<'a> Layer<'a> for Ipv4 {
         };
         let _ = hdr.encode(&mut out[..ip_len], payload.len(), 0);
         out[ip_len..].copy_from_slice(payload);
+    }
+
+    fn accept(&self, ctx: &PacketContext) -> AcceptResult {
+        // Prefer ABR (Active Binding Resource) view as the single source of truth.
+        if let Some(view) = ctx.abr.as_ref() {
+            // Convention: ABR stores IPv4 as big-endian u32.
+            let dst_be = u32::from_be_bytes(self.dst.octets());
+            if view.ipv4.contains_be(dst_be) {
+                return AcceptResult::Accept;
+            }
+            // Not bound to us.
+            return AcceptResult::Poison;
+        }
+
+        // Back-compat fallback: if caller didn't configure local IPv4 ownership, accept all.
+        if ctx.local_ipv4.is_empty() {
+            return AcceptResult::Accept;
+        }
+
+        if ctx.local_ipv4.iter().any(|ip| *ip == self.dst) {
+            AcceptResult::Accept
+        } else {
+            AcceptResult::Poison
+        }
     }
 
     fn next_layer(&self) -> Option<LayerId> {

@@ -1,7 +1,8 @@
+use crate::abr::{Binding, BindingOwner, BindingStore};
 use crate::stack::layers::register_all;
 use crate::stack::{
-    EdgeKind, LayerId, LayerInstance, LayerRegistry, build_packet_no_payload, parse_packet,
-    parse_packet_graph,
+    EdgeKind, LayerId, LayerInstance, LayerRegistry, PacketContext, build_packet_no_payload,
+    build_packet_with_glue, parse_packet, parse_packet_graph, parse_packet_with_ctx,
 };
 
 #[test]
@@ -209,6 +210,276 @@ fn build_no_payload_eth_ipv4_udp_roundtrip() {
     assert!(parsed.iter().any(|l| l.id == LayerId::Ipv4));
     assert!(parsed.iter().any(|l| l.id == LayerId::Udp));
     assert_eq!(payload, b"");
+}
+
+#[test]
+fn accept_ipv4_not_owned_poison_stops_before_udp() {
+    let mut reg = LayerRegistry::new();
+    register_all(&mut reg);
+
+    let layers = vec![
+        LayerInstance {
+            id: LayerId::Ether,
+            inner: Box::new(crate::stack::layers::Ether {
+                src: crate::MacAddr([1, 1, 1, 1, 1, 1]),
+                dst: crate::MacAddr([2, 2, 2, 2, 2, 2]),
+                ethertype: crate::ETH_TYPE_IPV4,
+            }),
+        },
+        LayerInstance {
+            id: LayerId::Ipv4,
+            inner: Box::new(crate::stack::layers::Ipv4 {
+                src: crate::Ipv4Addr([10, 0, 0, 1]),
+                dst: crate::Ipv4Addr([10, 0, 0, 123]),
+                ttl: 64,
+                proto: 17,
+                identification: 0,
+                flags_fragment: 0,
+                ihl_bytes: 20,
+            }),
+        },
+        LayerInstance {
+            id: LayerId::Udp,
+            inner: Box::new(crate::stack::layers::Udp {
+                src_port: 1234,
+                dst_port: 7,
+                src_ip: None,
+                dst_ip: None,
+            }),
+        },
+    ];
+
+    let frame = build_packet_with_glue(&layers, b"hi", &reg).unwrap();
+    let mut store = BindingStore::default();
+    store.add(Binding::ipv4_be(0x0a00_0001, BindingOwner::KernelIface)); // 10.0.0.1
+    let view = store.snapshot();
+
+    let ctx = PacketContext {
+        iface_mac: None,
+        abr: Some(std::sync::Arc::new(view)),
+        local_ipv4: vec![],
+    };
+
+    let (decoded, payload) = parse_packet_with_ctx(&frame, LayerId::Ether, &reg, &ctx).unwrap();
+    assert!(decoded.iter().any(|l| l.id == LayerId::Ether));
+    assert!(decoded.iter().any(|l| l.id == LayerId::Ipv4));
+    assert!(!decoded.iter().any(|l| l.id == LayerId::Udp));
+
+    // Because we stop at IPv4, the remaining bytes are the UDP header + payload.
+    assert_eq!(payload.len(), 8 + 2);
+}
+
+#[test]
+fn accept_ether_not_to_us_drop_errors() {
+    let mut reg = LayerRegistry::new();
+    register_all(&mut reg);
+
+    // Minimal ether header.
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&[0x10, 0x10, 0x10, 0x10, 0x10, 0x10]); // dst
+    frame.extend_from_slice(&[0x20, 0x20, 0x20, 0x20, 0x20, 0x20]); // src
+    frame.extend_from_slice(&0x0800u16.to_be_bytes()); // IPv4
+    frame.extend_from_slice(&[0u8; 20]);
+
+    let ctx = PacketContext {
+        iface_mac: Some(crate::MacAddr([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff])),
+        abr: None,
+        local_ipv4: vec![],
+    };
+
+    let err = parse_packet_with_ctx(&frame, LayerId::Ether, &reg, &ctx).unwrap_err();
+    assert!(err.contains("dropped"));
+}
+
+#[test]
+fn accept_arp_tpa_not_owned_poison_stops_at_arp() {
+    let mut reg = LayerRegistry::new();
+    register_all(&mut reg);
+
+    // Ethernet + ARP request for 10.0.0.2
+    let eth = LayerInstance {
+        id: LayerId::Ether,
+        inner: Box::new(crate::stack::layers::Ether {
+            src: crate::MacAddr([1, 1, 1, 1, 1, 1]),
+            dst: crate::MacAddr([0xff; 6]),
+            ethertype: crate::ETH_TYPE_ARP,
+        }),
+    };
+    let arp = LayerInstance {
+        id: LayerId::Arp,
+        inner: Box::new(crate::stack::layers::Arp {
+            oper: 1,
+            sha: crate::MacAddr([1, 1, 1, 1, 1, 1]),
+            spa: crate::Ipv4Addr([10, 0, 0, 1]),
+            tha: crate::MacAddr([0, 0, 0, 0, 0, 0]),
+            tpa: crate::Ipv4Addr([10, 0, 0, 2]),
+        }),
+    };
+
+    let frame = build_packet_no_payload(&[eth, arp], &reg).unwrap();
+
+    // ABR owns only 10.0.0.1, not 10.0.0.2
+    let mut store = BindingStore::default();
+    store.add(Binding::ipv4_be(0x0a00_0001, BindingOwner::KernelIface));
+    let ctx = PacketContext {
+        iface_mac: None,
+        abr: Some(std::sync::Arc::new(store.snapshot())),
+        local_ipv4: vec![],
+    };
+
+    let (layers, _payload) = parse_packet_with_ctx(&frame, LayerId::Ether, &reg, &ctx).unwrap();
+    assert!(layers.iter().any(|l| l.id == LayerId::Ether));
+    assert!(layers.iter().any(|l| l.id == LayerId::Arp));
+    // Stop at ARP, nothing above.
+    assert_eq!(layers.last().unwrap().id, LayerId::Arp);
+}
+
+#[test]
+fn accept_udp_port_not_bound_poison_stops_before_udp() {
+    let mut reg = LayerRegistry::new();
+    register_all(&mut reg);
+
+    let layers = vec![
+        LayerInstance {
+            id: LayerId::Ether,
+            inner: Box::new(crate::stack::layers::Ether {
+                src: crate::MacAddr([1, 1, 1, 1, 1, 1]),
+                dst: crate::MacAddr([2, 2, 2, 2, 2, 2]),
+                ethertype: crate::ETH_TYPE_IPV4,
+            }),
+        },
+        LayerInstance {
+            id: LayerId::Ipv4,
+            inner: Box::new(crate::stack::layers::Ipv4 {
+                src: crate::Ipv4Addr([10, 0, 0, 1]),
+                dst: crate::Ipv4Addr([10, 0, 0, 2]),
+                ttl: 64,
+                proto: 17,
+                identification: 0,
+                flags_fragment: 0,
+                ihl_bytes: 20,
+            }),
+        },
+        LayerInstance {
+            id: LayerId::Udp,
+            inner: Box::new(crate::stack::layers::Udp {
+                src_port: 1234,
+                dst_port: 9999,
+                src_ip: None,
+                dst_ip: None,
+            }),
+        },
+    ];
+
+    let frame = build_packet_with_glue(&layers, b"hi", &reg).unwrap();
+
+    let mut store = BindingStore::default();
+    // Own dst ip so IPv4 accept passes, but do NOT bind udp port 9999.
+    store.add(Binding::ipv4_be(0x0a00_0002, BindingOwner::KernelIface));
+    // Bind some other UDP port (wildcard ip).
+    store.add(Binding::udp_port_be(0, 7, BindingOwner::KernelIface));
+
+    let ctx = PacketContext {
+        iface_mac: None,
+        abr: Some(std::sync::Arc::new(store.snapshot())),
+        local_ipv4: vec![],
+    };
+
+    let (decoded, payload) = parse_packet_with_ctx(&frame, LayerId::Ether, &reg, &ctx).unwrap();
+    assert!(decoded.iter().any(|l| l.id == LayerId::Ether));
+    assert!(decoded.iter().any(|l| l.id == LayerId::Ipv4));
+    // UDP is decoded, then accept() returns Poison, so the chain stops *at* UDP.
+    assert!(decoded.iter().any(|l| l.id == LayerId::Udp));
+    assert_eq!(decoded.last().unwrap().id, LayerId::Udp);
+
+    // Because we stop at UDP, the remaining bytes are the UDP payload ("hi").
+    assert_eq!(payload, b"hi");
+}
+
+#[test]
+fn accept_vxlan_vni_not_bound_poison_stops_at_vxlan() {
+    let mut reg = LayerRegistry::new();
+    register_all(&mut reg);
+
+    // Outer Ether + IPv4 + UDP(dport=4789) + VXLAN(vni=42) + inner ether bytes.
+    let mut frame = Vec::new();
+
+    // Ether
+    frame.extend_from_slice(&[0u8; 6]);
+    frame.extend_from_slice(&[1u8; 6]);
+    frame.extend_from_slice(&0x0800u16.to_be_bytes());
+
+    // IPv4 header minimal (checksum left 0, but total_len must be valid)
+    frame.push(0x45);
+    frame.push(0);
+    // total_len placeholder; fill later
+    let total_len_off = frame.len();
+    frame.extend_from_slice(&0u16.to_be_bytes());
+    frame.extend_from_slice(&0u16.to_be_bytes());
+    frame.extend_from_slice(&0u16.to_be_bytes());
+    frame.push(64);
+    frame.push(17);
+    frame.extend_from_slice(&0u16.to_be_bytes());
+    frame.extend_from_slice(&[10, 0, 0, 1]);
+    frame.extend_from_slice(&[10, 0, 0, 2]);
+
+    // UDP header (4789)
+    frame.extend_from_slice(&1234u16.to_be_bytes());
+    frame.extend_from_slice(&4789u16.to_be_bytes());
+    // udp len placeholder
+    let udp_len_off = frame.len();
+    frame.extend_from_slice(&0u16.to_be_bytes());
+    frame.extend_from_slice(&0u16.to_be_bytes());
+
+    // VXLAN vni=42
+    frame.push(0x08);
+    frame.extend_from_slice(&[0, 0, 0]);
+    frame.extend_from_slice(&[0, 0, 42]);
+    frame.push(0);
+
+    // inner eth header only (14 bytes)
+    frame.extend_from_slice(&[2u8; 6]);
+    frame.extend_from_slice(&[3u8; 6]);
+    frame.extend_from_slice(&0x88B5u16.to_be_bytes());
+
+    // Fill IPv4 total_len and UDP length so decoding succeeds.
+    let ip_header_len = 20usize;
+    let ip_payload_len = frame.len() - 14 - ip_header_len;
+    let total_len = (ip_header_len + ip_payload_len) as u16;
+    frame[total_len_off] = (total_len >> 8) as u8;
+    frame[total_len_off + 1] = (total_len & 0xff) as u8;
+
+    let udp_payload_len = frame.len() - (14 + ip_header_len + 8);
+    let udp_len = (8 + udp_payload_len) as u16;
+    frame[udp_len_off] = (udp_len >> 8) as u8;
+    frame[udp_len_off + 1] = (udp_len & 0xff) as u8;
+
+    let mut store = BindingStore::default();
+    // Own IPv4 dst so we reach UDP/VXLAN.
+    store.add(Binding::ipv4_be(0x0a00_0002, BindingOwner::KernelIface));
+    // bind udp 4789 so we parse VXLAN
+    store.add(Binding::udp_port_be(0, 4789, BindingOwner::KernelIface));
+    // Configure a non-empty VNI set that does NOT include 42, so VXLAN accept() will Poison.
+    store.add(Binding {
+        kind: crate::abr::ResourceKind::Vni,
+        key: crate::abr::BindingKey::Vni(1),
+        owner: crate::abr::BindingOwner::Tunnel { id: 1 },
+        flags: crate::abr::BindingFlags::NONE,
+    });
+
+    let ctx = PacketContext {
+        iface_mac: None,
+        abr: Some(std::sync::Arc::new(store.snapshot())),
+        local_ipv4: vec![],
+    };
+
+    let (decoded, _payload) = parse_packet_with_ctx(&frame, LayerId::Ether, &reg, &ctx).unwrap();
+    assert!(decoded.iter().any(|l| l.id == LayerId::Ipv4));
+    assert!(decoded.iter().any(|l| l.id == LayerId::Udp));
+    assert!(decoded.iter().any(|l| l.id == LayerId::Vxlan));
+
+    // VXLAN accept() returns Poison because vni=42 isn't in ABR. The chain stops at VXLAN.
+    assert_eq!(decoded.last().unwrap().id, LayerId::Vxlan);
 }
 
 #[test]

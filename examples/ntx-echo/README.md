@@ -97,6 +97,8 @@ sudo IFACE=ntx0 FILTER='arp or (udp and port 7)' ./examples/ntx-echo/scripts/tcp
 sudo NS=ntxns1 IFACE=ntx1 FILTER='arp or (udp and port 7)' ./examples/ntx-echo/scripts/tcpdump-netns.sh
 ```
 
+默认会抓双向（tcpdump 的 `-Q inout`），这样 client/server 两侧都能在各自的 pcap 里看到 request/response。
+
 如果你希望 pcap 里尽量不要出现“本机自己发出去的包”导致的重复帧，可以用 `DIR=in` 只抓入方向（tcpdump 的 `-Q`）：
 
 ```bash

@@ -1,8 +1,8 @@
 use crate::{ETH_TYPE_IPV4, EthernetHeader, Ipv4Header, MacAddr, UdpHeader};
 
-use super::layer::{LayerId, LayerInstance};
+use super::layer::{LayerId, LayerInstance, PacketContext};
 use super::layers::{Ether, Ipv4, Udp, register_all};
-use super::parser::parse_packet;
+use super::parser::{parse_packet, parse_packet_with_ctx};
 use super::registry::LayerRegistry;
 
 /// Create a registry pre-populated with the built-in layers.
@@ -231,6 +231,29 @@ impl Pipeline {
     pub fn process(&mut self, frame: &[u8]) -> anyhow::Result<Action> {
         let (layers, payload) =
             parse_packet(frame, LayerId::Ether, &self.registry).map_err(anyhow::Error::msg)?;
+        let pkt = ParsedPacket { layers, payload };
+
+        for h in self.handlers.iter_mut() {
+            match h.handle(&pkt)? {
+                Action::Pass => continue,
+                r @ Action::Reply(_) => return Ok(r),
+            }
+        }
+        Ok(Action::Pass)
+    }
+
+    /// Like [`Pipeline::process`], but uses the provided [`PacketContext`] for per-layer
+    /// `accept()` decisions.
+    ///
+    /// Intended usage: the caller loads a stable ABR snapshot once per batch and stores it
+    /// in `ctx.abr`, then calls this for each packet in the batch.
+    pub fn process_with_ctx(
+        &mut self,
+        frame: &[u8],
+        ctx: &PacketContext,
+    ) -> anyhow::Result<Action> {
+        let (layers, payload) = parse_packet_with_ctx(frame, LayerId::Ether, &self.registry, ctx)
+            .map_err(anyhow::Error::msg)?;
         let pkt = ParsedPacket { layers, payload };
 
         for h in self.handlers.iter_mut() {

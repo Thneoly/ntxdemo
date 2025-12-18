@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::collections::HashMap;
 
-use super::layer::{LayerId, LayerInstance};
+use super::layer::{AcceptResult, Layer, LayerId, LayerInstance, PacketContext};
 
 /// Extra information a decoder can optionally provide to help the registry choose
 /// the next layer (Scapy-like `bind_layers`).
@@ -92,6 +92,55 @@ impl LayerRegistry {
             .get(&id)
             .ok_or_else(|| format!("unknown layer decoder: {:?}", id))?;
         f(input)
+    }
+
+    /// Apply the typed `Layer::accept()` hook for a decoded layer instance.
+    ///
+    /// For now, this supports the built-in layers. Unknown layers default to `Accept`.
+    pub fn accept(
+        &self,
+        layer: &LayerInstance,
+        ctx: &PacketContext,
+    ) -> Result<AcceptResult, String> {
+        match layer.id {
+            LayerId::Ether => {
+                let l = layer
+                    .downcast_ref::<crate::packet::layers::Ether>()
+                    .ok_or_else(|| "accept type mismatch: Ether".to_string())?;
+                Ok(l.accept(ctx))
+            }
+            LayerId::Arp => {
+                let l = layer
+                    .downcast_ref::<crate::packet::layers::Arp>()
+                    .ok_or_else(|| "accept type mismatch: Arp".to_string())?;
+                Ok(l.accept(ctx))
+            }
+            LayerId::Ipv4 => {
+                let l = layer
+                    .downcast_ref::<crate::packet::layers::Ipv4>()
+                    .ok_or_else(|| "accept type mismatch: Ipv4".to_string())?;
+                Ok(l.accept(ctx))
+            }
+            LayerId::Udp => {
+                let l = layer
+                    .downcast_ref::<crate::packet::layers::Udp>()
+                    .ok_or_else(|| "accept type mismatch: Udp".to_string())?;
+                Ok(l.accept(ctx))
+            }
+            LayerId::Tcp => {
+                let l = layer
+                    .downcast_ref::<crate::packet::layers::Tcp>()
+                    .ok_or_else(|| "accept type mismatch: Tcp".to_string())?;
+                Ok(l.accept(ctx))
+            }
+            LayerId::Vxlan => {
+                let l = layer
+                    .downcast_ref::<crate::packet::layers::Vxlan>()
+                    .ok_or_else(|| "accept type mismatch: Vxlan".to_string())?;
+                Ok(l.accept(ctx))
+            }
+            LayerId::Payload => Ok(AcceptResult::Accept),
+        }
     }
 
     /// Resolve a registry-driven next layer using `parent` and the provided `BindKey`.

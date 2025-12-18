@@ -1,5 +1,5 @@
 use super::graph::{EdgeKind, PacketGraph};
-use super::layer::{LayerId, LayerInstance};
+use super::layer::{AcceptResult, LayerId, LayerInstance, PacketContext};
 use super::registry::LayerRegistry;
 
 /// The "never changes" parsing loop.
@@ -10,7 +10,17 @@ pub fn parse_packet<'a>(
     first: LayerId,
     registry: &LayerRegistry,
 ) -> Result<(Vec<LayerInstance>, &'a [u8]), String> {
-    let mut layers = Vec::new();
+    parse_packet_with_ctx(data, first, registry, &PacketContext::default())
+}
+
+/// Parse a packet with an explicit [`PacketContext`] used by per-layer `accept()` hooks.
+pub fn parse_packet_with_ctx<'a>(
+    data: &'a [u8],
+    first: LayerId,
+    registry: &LayerRegistry,
+    ctx: &PacketContext,
+) -> Result<(Vec<LayerInstance>, &'a [u8]), String> {
+    let mut layers: Vec<LayerInstance> = Vec::new();
     let mut offset = 0usize;
     let mut current = Some(first);
 
@@ -18,7 +28,48 @@ pub fn parse_packet<'a>(
         if offset > data.len() {
             return Err("offset beyond input".into());
         }
-        let (layer, used, next_hint, bind_key) = registry.decode(id, &data[offset..])?;
+        let (mut layer, used, next_hint, bind_key) = registry.decode(id, &data[offset..])?;
+
+        // Small decode glue: propagate IPv4 src/dst into UDP to allow ABR-based accept()
+        // decisions on (dst_ip, dst_port) without requiring the UDP decoder to peek
+        // at previous layers.
+        if id == LayerId::Udp {
+            if let Some(ip) = layers
+                .iter()
+                .rev()
+                .find(|l| l.id == LayerId::Ipv4)
+                .and_then(|l| l.downcast_ref::<crate::packet::layers::Ipv4>())
+            {
+                if let Some(udp) = layer.downcast_ref::<crate::packet::layers::Udp>() {
+                    let mut u = *udp;
+                    if u.src_ip.is_none() {
+                        u.src_ip = Some(ip.src);
+                    }
+                    if u.dst_ip.is_none() {
+                        u.dst_ip = Some(ip.dst);
+                    }
+                    layer = LayerInstance {
+                        id: LayerId::Udp,
+                        inner: Box::new(u),
+                    };
+                }
+            }
+        }
+
+        // Give the layer a chance to filter / stop parsing.
+        match registry.accept(&layer, ctx)? {
+            AcceptResult::Accept => {}
+            AcceptResult::Drop => return Err("dropped by accept()".into()),
+            AcceptResult::Poison => {
+                // Keep the accepted layers so far + this layer, but stop parsing further.
+                offset = offset
+                    .checked_add(used)
+                    .ok_or_else(|| "offset overflow".to_string())?;
+                layers.push(layer);
+                return Ok((layers, &data[offset..]));
+            }
+        }
+
         offset = offset
             .checked_add(used)
             .ok_or_else(|| "offset overflow".to_string())?;
@@ -48,7 +99,17 @@ pub fn parse_packet_with_spans<'a>(
     first: LayerId,
     registry: &LayerRegistry,
 ) -> Result<(Vec<LayerInstance>, Vec<(usize, usize)>, &'a [u8]), String> {
-    let mut layers = Vec::new();
+    parse_packet_with_spans_ctx(data, first, registry, &PacketContext::default())
+}
+
+/// Like [`parse_packet_with_spans`] but applies per-layer `accept()` hooks using `ctx`.
+pub fn parse_packet_with_spans_ctx<'a>(
+    data: &'a [u8],
+    first: LayerId,
+    registry: &LayerRegistry,
+    ctx: &PacketContext,
+) -> Result<(Vec<LayerInstance>, Vec<(usize, usize)>, &'a [u8]), String> {
+    let mut layers: Vec<LayerInstance> = Vec::new();
     let mut spans = Vec::new();
     let mut offset = 0usize;
     let mut current = Some(first);
@@ -58,7 +119,45 @@ pub fn parse_packet_with_spans<'a>(
             return Err("offset beyond input".into());
         }
         let start = offset;
-        let (layer, used, next_hint, bind_key) = registry.decode(id, &data[offset..])?;
+        let (mut layer, used, next_hint, bind_key) = registry.decode(id, &data[offset..])?;
+
+        if id == LayerId::Udp {
+            if let Some(ip) = layers
+                .iter()
+                .rev()
+                .find(|l| l.id == LayerId::Ipv4)
+                .and_then(|l| l.downcast_ref::<crate::packet::layers::Ipv4>())
+            {
+                if let Some(udp) = layer.downcast_ref::<crate::packet::layers::Udp>() {
+                    let mut u = *udp;
+                    if u.src_ip.is_none() {
+                        u.src_ip = Some(ip.src);
+                    }
+                    if u.dst_ip.is_none() {
+                        u.dst_ip = Some(ip.dst);
+                    }
+                    layer = LayerInstance {
+                        id: LayerId::Udp,
+                        inner: Box::new(u),
+                    };
+                }
+            }
+        }
+
+        match registry.accept(&layer, ctx)? {
+            AcceptResult::Accept => {}
+            AcceptResult::Drop => return Err("dropped by accept()".into()),
+            AcceptResult::Poison => {
+                offset = offset
+                    .checked_add(used)
+                    .ok_or_else(|| "offset overflow".to_string())?;
+                let end = offset;
+                layers.push(layer);
+                spans.push((start, end));
+                return Ok((layers, spans, &data[offset..]));
+            }
+        }
+
         offset = offset
             .checked_add(used)
             .ok_or_else(|| "offset overflow".to_string())?;

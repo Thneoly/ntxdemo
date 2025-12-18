@@ -1,4 +1,4 @@
-use crate::stack::{Layer, LayerId};
+use crate::stack::{AcceptResult, Layer, LayerId, PacketContext};
 use crate::{Ipv4Addr, UdpHeader};
 
 #[derive(Debug, Clone, Copy)]
@@ -45,6 +45,31 @@ impl<'a> Layer<'a> for Udp {
             out[4..6].copy_from_slice(&((UdpHeader::LEN + payload.len()) as u16).to_be_bytes());
             out[6..8].copy_from_slice(&0u16.to_be_bytes());
             out[UdpHeader::LEN..].copy_from_slice(payload);
+        }
+    }
+
+    fn accept(&self, ctx: &PacketContext) -> AcceptResult {
+        let Some(view) = ctx.abr.as_ref() else {
+            return AcceptResult::Accept;
+        };
+
+        // Require dst_ip to be known (filled by build glue / previous layers) to apply
+        // ip+port binding. If not known, be permissive.
+        let Some(dst_ip) = self.dst_ip else {
+            return AcceptResult::Accept;
+        };
+        let dst_ip_be = u32::from_be_bytes(dst_ip.octets());
+
+        // Policy:
+        // - exact (dst_ip, dst_port) bound => Accept
+        // - wildcard ip (0.0.0.0, dst_port) bound => Accept
+        // - else => Poison (valid UDP but not for our bound ports)
+        if view.udp_ports.contains_be(dst_ip_be, self.dst_port)
+            || view.udp_ports.contains_be(0, self.dst_port)
+        {
+            AcceptResult::Accept
+        } else {
+            AcceptResult::Poison
         }
     }
 

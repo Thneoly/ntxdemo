@@ -9,6 +9,7 @@
 //! The goal is to keep protocol processing independent from the underlying I/O backend
 //! and make adding new protocol layers a registration-only operation.
 
+mod dsl;
 mod graph;
 mod layer;
 pub use crate::packet::layers;
@@ -19,6 +20,10 @@ mod registry;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod dsl_tests;
+
+pub use dsl::*;
 pub use graph::*;
 pub use layer::*;
 pub use parser::*;

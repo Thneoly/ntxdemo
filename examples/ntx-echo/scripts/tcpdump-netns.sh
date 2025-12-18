@@ -14,7 +14,7 @@ set -euo pipefail
 NS="${NS:-ntxns1}"
 IFACE="${IFACE:-ntx1}"
 FILTER="${FILTER:-arp or (udp and port 7)}"
-DIR="${DIR:-in}"
+DIR="${DIR:-inout}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "${repo_root}"

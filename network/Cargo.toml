@@ -9,6 +9,8 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1.0.100"
+arc-swap = "1.7.1"
+bitflags = "2.9.4"
 libc = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9.34-deprecated"

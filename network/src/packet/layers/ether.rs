@@ -1,4 +1,4 @@
-use crate::stack::{Layer, LayerId};
+use crate::stack::{AcceptResult, Layer, LayerId, PacketContext};
 use crate::{ETH_TYPE_ARP, ETH_TYPE_IPV4, EthernetHeader, MacAddr};
 
 #[derive(Debug, Clone, Copy)]
@@ -34,6 +34,24 @@ impl<'a> Layer<'a> for Ether {
         // Safe to unwrap: buffer sizes are correct
         let _ = hdr.encode(&mut out[..EthernetHeader::LEN]);
         out[EthernetHeader::LEN..].copy_from_slice(payload);
+    }
+
+    fn accept(&self, ctx: &PacketContext) -> AcceptResult {
+        let Some(local) = ctx.iface_mac else {
+            return AcceptResult::Accept;
+        };
+
+        // Accept unicast to us, broadcast, and multicast.
+        if self.dst == local {
+            return AcceptResult::Accept;
+        }
+        if self.dst.0 == [0xff; 6] {
+            return AcceptResult::Accept;
+        }
+        if (self.dst.0[0] & 0x01) == 0x01 {
+            return AcceptResult::Accept;
+        }
+        AcceptResult::Drop
     }
 
     fn next_layer(&self) -> Option<LayerId> {

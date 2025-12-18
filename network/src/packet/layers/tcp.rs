@@ -1,5 +1,5 @@
 use crate::TcpHeader;
-use crate::stack::{Layer, LayerId};
+use crate::stack::{AcceptResult, Layer, LayerId, PacketContext};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Tcp {
@@ -29,6 +29,24 @@ impl<'a> Layer<'a> for Tcp {
         // builder with checksum and flags here like UDP. For now, just preserve payload.
         out.clear();
         out.extend_from_slice(payload);
+    }
+
+    fn accept(&self, ctx: &PacketContext) -> AcceptResult {
+        let Some(view) = ctx.abr.as_ref() else {
+            return AcceptResult::Accept;
+        };
+
+        // We currently don't carry IPv4 dst in the TCP layer, so we can't do ip+port matching
+        // here. In ABR terms, this means we can only enforce a wildcard (0.0.0.0, port) bind.
+        //
+        // Callers that want strict (ip, port) enforcement should:
+        // - either extend the TCP layer to carry dst_ip (like UDP does), or
+        // - enforce at IPv4 layer before parsing TCP.
+        if view.tcp_ports.contains_be(0, self.dst_port) {
+            AcceptResult::Accept
+        } else {
+            AcceptResult::Poison
+        }
     }
 
     fn next_layer(&self) -> Option<LayerId> {

@@ -26,8 +26,16 @@ pub struct PacketGraph<'a> {
 }
 
 impl<'a> PacketGraph<'a> {
-    pub fn new(nodes: Vec<LayerInstance>, edges: Vec<(usize, usize, EdgeKind)>, payload: &'a [u8]) -> Self {
-        Self { nodes, edges, payload }
+    pub fn new(
+        nodes: Vec<LayerInstance>,
+        edges: Vec<(usize, usize, EdgeKind)>,
+        payload: &'a [u8],
+    ) -> Self {
+        Self {
+            nodes,
+            edges,
+            payload,
+        }
     }
 
     pub fn nodes(&self) -> &[LayerInstance] {
