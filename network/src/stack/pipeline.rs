@@ -253,7 +253,7 @@ impl Pipeline {
         ctx: &PacketContext,
     ) -> anyhow::Result<Action> {
         let (layers, payload) = parse_packet_with_ctx(frame, LayerId::Ether, &self.registry, ctx)
-            .map_err(anyhow::Error::msg)?;
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         let pkt = ParsedPacket { layers, payload };
 
         for h in self.handlers.iter_mut() {

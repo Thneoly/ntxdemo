@@ -43,4 +43,4 @@ echo "[tcpdump] netns=${NS} iface=${IFACE} out=${OUT} filter=${FILTER}"
 echo "[tcpdump] direction=${DIR} (set DIR=in|out|inout)"
 echo "Stop with Ctrl-C"
 
-exec ip netns exec "${NS}" tcpdump -ni "${IFACE}" -Q "${DIR}" -s 0 -w "${OUT}" ${FILTER}
+exec ip netns exec "${NS}" tcpdump -Z root -ni "${IFACE}" -Q "${DIR}" -s 0 -w "${OUT}" ${FILTER}

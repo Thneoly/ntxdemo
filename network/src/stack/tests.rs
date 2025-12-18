@@ -288,7 +288,10 @@ fn accept_ether_not_to_us_drop_errors() {
     };
 
     let err = parse_packet_with_ctx(&frame, LayerId::Ether, &reg, &ctx).unwrap_err();
-    assert!(err.contains("dropped"));
+    assert_eq!(
+        err.to_string(),
+        "dropped by accept(): layer=Ether result=Drop".to_string()
+    );
 }
 
 #[test]

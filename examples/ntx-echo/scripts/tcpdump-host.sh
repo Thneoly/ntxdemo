@@ -36,4 +36,4 @@ echo "[tcpdump] iface=${IFACE} out=${OUT} filter=${FILTER}"
 echo "[tcpdump] direction=${DIR} (set DIR=in|out|inout)"
 echo "Stop with Ctrl-C"
 
-exec tcpdump -ni "${IFACE}" -Q "${DIR}" -s 0 -w "${OUT}" ${FILTER}
+exec tcpdump -Z root -ni "${IFACE}" -Q "${DIR}" -s 0 -w "${OUT}" ${FILTER}

@@ -1,0 +1,24 @@
+# ntx-echo client resources
+#
+# Provides 10 client identities:
+#   - ipv4 10.0.0.1..10.0.0.10 (from /28 host range)
+#   - mac  02:00:00:00:00:10..02:00:00:00:00:19
+#   - udp source ports 40000..40009
+#
+# The client will send echo requests to BOTH server identities (2 targets).
+
+ipv4:
+  - name: client
+    cidr: "10.0.0.0/28"
+    # Make it obvious we don't want to use server IPs.
+    exclude: ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+
+mac:
+  - name: client
+    start: "02:00:00:00:00:10"
+    end:   "02:00:00:00:00:19"
+
+udp_port:
+  - name: client
+    start: 40000
+    end: 40009

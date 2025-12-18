@@ -1,0 +1,12 @@
+# Common targets definition for the multi-identity echo scenario.
+#
+# Client can load this file to know where to send traffic.
+# Server can load it to know which identities to listen on.
+
+server:
+  udp_port: 7
+  targets:
+    - ip: [10, 0, 0, 2]
+      mac: [2, 0, 0, 0, 0, 162]
+    - ip: [10, 0, 0, 3]
+      mac: [2, 0, 0, 0, 0, 163]

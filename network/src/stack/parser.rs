@@ -2,6 +2,29 @@ use super::graph::{EdgeKind, PacketGraph};
 use super::layer::{AcceptResult, LayerId, LayerInstance, PacketContext};
 use super::registry::LayerRegistry;
 
+/// Structured parse error to make `accept()` drops diagnosable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    Message(String),
+    Accept {
+        layer: LayerId,
+        result: AcceptResult,
+    },
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseError::Message(s) => write!(f, "{s}"),
+            ParseError::Accept { layer, result } => {
+                write!(f, "dropped by accept(): layer={layer:?} result={result:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
+
 /// The "never changes" parsing loop.
 ///
 /// New protocol support = implement a new `Layer` + register in `LayerRegistry`.
@@ -9,7 +32,7 @@ pub fn parse_packet<'a>(
     data: &'a [u8],
     first: LayerId,
     registry: &LayerRegistry,
-) -> Result<(Vec<LayerInstance>, &'a [u8]), String> {
+) -> Result<(Vec<LayerInstance>, &'a [u8]), ParseError> {
     parse_packet_with_ctx(data, first, registry, &PacketContext::default())
 }
 
@@ -19,16 +42,18 @@ pub fn parse_packet_with_ctx<'a>(
     first: LayerId,
     registry: &LayerRegistry,
     ctx: &PacketContext,
-) -> Result<(Vec<LayerInstance>, &'a [u8]), String> {
+) -> Result<(Vec<LayerInstance>, &'a [u8]), ParseError> {
     let mut layers: Vec<LayerInstance> = Vec::new();
     let mut offset = 0usize;
     let mut current = Some(first);
 
     while let Some(id) = current {
         if offset > data.len() {
-            return Err("offset beyond input".into());
+            return Err(ParseError::Message("offset beyond input".into()));
         }
-        let (mut layer, used, next_hint, bind_key) = registry.decode(id, &data[offset..])?;
+        let (mut layer, used, next_hint, bind_key) = registry
+            .decode(id, &data[offset..])
+            .map_err(ParseError::Message)?;
 
         // Small decode glue: propagate IPv4 src/dst into UDP to allow ABR-based accept()
         // decisions on (dst_ip, dst_port) without requiring the UDP decoder to peek
@@ -57,14 +82,19 @@ pub fn parse_packet_with_ctx<'a>(
         }
 
         // Give the layer a chance to filter / stop parsing.
-        match registry.accept(&layer, ctx)? {
+        match registry.accept(&layer, ctx).map_err(ParseError::Message)? {
             AcceptResult::Accept => {}
-            AcceptResult::Drop => return Err("dropped by accept()".into()),
+            AcceptResult::Drop => {
+                return Err(ParseError::Accept {
+                    layer: id,
+                    result: AcceptResult::Drop,
+                });
+            }
             AcceptResult::Poison => {
                 // Keep the accepted layers so far + this layer, but stop parsing further.
                 offset = offset
                     .checked_add(used)
-                    .ok_or_else(|| "offset overflow".to_string())?;
+                    .ok_or_else(|| ParseError::Message("offset overflow".to_string()))?;
                 layers.push(layer);
                 return Ok((layers, &data[offset..]));
             }
@@ -72,7 +102,7 @@ pub fn parse_packet_with_ctx<'a>(
 
         offset = offset
             .checked_add(used)
-            .ok_or_else(|| "offset overflow".to_string())?;
+            .ok_or_else(|| ParseError::Message("offset overflow".to_string()))?;
 
         // Hybrid next-layer selection:
         // 1) layer-chosen `next_hint` (fast path)
@@ -98,7 +128,7 @@ pub fn parse_packet_with_spans<'a>(
     data: &'a [u8],
     first: LayerId,
     registry: &LayerRegistry,
-) -> Result<(Vec<LayerInstance>, Vec<(usize, usize)>, &'a [u8]), String> {
+) -> Result<(Vec<LayerInstance>, Vec<(usize, usize)>, &'a [u8]), ParseError> {
     parse_packet_with_spans_ctx(data, first, registry, &PacketContext::default())
 }
 
@@ -108,7 +138,7 @@ pub fn parse_packet_with_spans_ctx<'a>(
     first: LayerId,
     registry: &LayerRegistry,
     ctx: &PacketContext,
-) -> Result<(Vec<LayerInstance>, Vec<(usize, usize)>, &'a [u8]), String> {
+) -> Result<(Vec<LayerInstance>, Vec<(usize, usize)>, &'a [u8]), ParseError> {
     let mut layers: Vec<LayerInstance> = Vec::new();
     let mut spans = Vec::new();
     let mut offset = 0usize;
@@ -116,10 +146,12 @@ pub fn parse_packet_with_spans_ctx<'a>(
 
     while let Some(id) = current {
         if offset > data.len() {
-            return Err("offset beyond input".into());
+            return Err(ParseError::Message("offset beyond input".into()));
         }
         let start = offset;
-        let (mut layer, used, next_hint, bind_key) = registry.decode(id, &data[offset..])?;
+        let (mut layer, used, next_hint, bind_key) = registry
+            .decode(id, &data[offset..])
+            .map_err(ParseError::Message)?;
 
         if id == LayerId::Udp {
             if let Some(ip) = layers
@@ -144,13 +176,18 @@ pub fn parse_packet_with_spans_ctx<'a>(
             }
         }
 
-        match registry.accept(&layer, ctx)? {
+        match registry.accept(&layer, ctx).map_err(ParseError::Message)? {
             AcceptResult::Accept => {}
-            AcceptResult::Drop => return Err("dropped by accept()".into()),
+            AcceptResult::Drop => {
+                return Err(ParseError::Accept {
+                    layer: id,
+                    result: AcceptResult::Drop,
+                });
+            }
             AcceptResult::Poison => {
                 offset = offset
                     .checked_add(used)
-                    .ok_or_else(|| "offset overflow".to_string())?;
+                    .ok_or_else(|| ParseError::Message("offset overflow".to_string()))?;
                 let end = offset;
                 layers.push(layer);
                 spans.push((start, end));
@@ -160,7 +197,7 @@ pub fn parse_packet_with_spans_ctx<'a>(
 
         offset = offset
             .checked_add(used)
-            .ok_or_else(|| "offset overflow".to_string())?;
+            .ok_or_else(|| ParseError::Message("offset overflow".to_string()))?;
         let end = offset;
 
         current = match (next_hint, bind_key) {
@@ -317,7 +354,7 @@ pub fn parse_packet_graph<'a>(
     data: &'a [u8],
     first: LayerId,
     registry: &LayerRegistry,
-) -> Result<PacketGraph<'a>, String> {
+) -> Result<PacketGraph<'a>, ParseError> {
     fn build_graph<'a>(
         data: &'a [u8],
         base: usize,
@@ -326,7 +363,7 @@ pub fn parse_packet_graph<'a>(
         nodes: &mut Vec<LayerInstance>,
         spans: &mut Vec<(usize, usize)>,
         edges: &mut Vec<(usize, usize, EdgeKind)>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ParseError> {
         let (local_nodes, local_spans, _payload) = parse_packet_with_spans(data, first, registry)?;
         let start_idx = nodes.len();
 
@@ -346,7 +383,9 @@ pub fn parse_packet_graph<'a>(
             let (_abs_s, abs_e) = spans[i];
             let local_off = abs_e - base;
             let layer_payload = &data[local_off..];
-            let inner_first = registry.tunnel_next(nodes[i].id, &*nodes[i].inner, layer_payload)?;
+            let inner_first = registry
+                .tunnel_next(nodes[i].id, &*nodes[i].inner, layer_payload)
+                .map_err(ParseError::Message)?;
             if let Some(inner_first) = inner_first {
                 if !layer_payload.is_empty() {
                     let inner_first_idx = nodes.len();

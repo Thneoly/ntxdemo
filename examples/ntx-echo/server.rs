@@ -2,26 +2,67 @@ use anyhow::{Context, Result};
 
 use ntx::network::packet::headers::{Ipv4Addr, MacAddr};
 use ntx::network::prelude::*;
+use ntx::network::resources::ResourcePoolsConfig;
 use ntx::network::stack::{
     LayerId, LayerRegistry, PacketContext, Raw, default_registry, layers, parse_packet_with_ctx,
 };
 
+#[derive(Debug, Clone, serde::Deserialize)]
+struct TargetsYaml {
+    server: TargetsServer,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct TargetsServer {
+    targets: Vec<TargetItem>,
+    #[allow(dead_code)]
+    udp_port: u16,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct TargetItem {
+    #[allow(dead_code)]
+    ip: [u8; 4],
+    #[allow(dead_code)]
+    mac: [u8; 6],
+}
+
+fn env_debug_enabled() -> bool {
+    match std::env::var("NTX_ECHO_DEBUG") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !(v.is_empty() || v == "0" || v == "false" || v == "no")
+        }
+        Err(_) => false,
+    }
+}
+
 /// Userspace echo server on top of AF_PACKET.
 ///
 /// - iface: ntx1 (in netns ntxns1)
-/// - IP:    10.0.0.2
+/// - IP:    one or more identities (from resources.yaml; default scenario uses 10.0.0.2 and 10.0.0.3)
 /// - UDP:   port 7 (echo)
 ///
 /// Handles:
 /// - ARP request for 10.0.0.2 -> ARP reply
 /// - IPv4/UDP dst_port=7 -> echo reply (swap MAC/IP/ports)
 fn main() -> Result<()> {
+    let debug = env_debug_enabled();
+
     let iface = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "ntx1".to_string());
 
+    // Optional: provide a resource pool YAML file as argv[2].
+    // If omitted, we keep the historical fixed server identity (10.0.0.2 + iface MAC).
+    let resources_yaml = std::env::args().nth(2);
+
+    // Optional: provide a targets yaml as argv[3]. If present, we allocate as many identities
+    // as targets (to keep the old multi-identity behavior). If absent, default to 1 identity.
+    let targets_yaml = std::env::args().nth(3);
+
     // Fixed topology from scripts/ntx-veth-up.sh
-    let server_ip = Ipv4Addr([10, 0, 0, 2]);
+    let _fallback_server_ip = Ipv4Addr([10, 0, 0, 2]);
     let port: u16 = 7;
 
     let mut nic: Box<dyn Nic> =
@@ -30,7 +71,65 @@ fn main() -> Result<()> {
     let iface_mac = nic
         .iface_mac()
         .context("failed to query iface mac (SIOCGIFHWADDR); are you root?")?;
-    let server_mac = MacAddr(iface_mac);
+    let _iface_mac = MacAddr(iface_mac);
+
+    // Server identities (ip, mac): optionally from resources.yaml.
+    let mut server_identities: Vec<(Ipv4Addr, MacAddr)> = Vec::new();
+    if let Some(path) = resources_yaml.clone() {
+        eprintln!("loading resource pools from: {}", path);
+        let cfg = ResourcePoolsConfig::load_yaml_file(path)?;
+        let mut pools = cfg.build()?;
+
+        let identity_count = if let Some(path) = targets_yaml.as_deref() {
+            let yaml = std::fs::read_to_string(path)
+                .with_context(|| format!("read targets yaml: {path}"))?;
+            let t: TargetsYaml = serde_yaml::from_str(&yaml)
+                .with_context(|| format!("parse targets yaml: {path}"))?;
+            std::cmp::max(1, t.server.targets.len())
+        } else {
+            1
+        };
+
+        for i in 0..identity_count {
+            let ip = {
+                let pool = if let Some(p) = pools.ipv4("server") {
+                    p
+                } else if let Some(p) = pools.ipv4("demo") {
+                    p
+                } else {
+                    pools
+                        .ipv4("default")
+                        .context("missing ipv4 pool named server/demo/default")?
+                };
+                pool.acquire()
+                    .ok_or_else(|| anyhow::anyhow!("ipv4 pool exhausted"))
+                    .with_context(|| format!("allocate server ipv4 identity #{i}"))?
+            };
+
+            let mac = {
+                let pool = if let Some(p) = pools.mac("server") {
+                    p
+                } else if let Some(p) = pools.mac("demo") {
+                    p
+                } else {
+                    pools
+                        .mac("default")
+                        .context("missing mac pool named server/demo/default")?
+                };
+                pool.acquire()
+                    .ok_or_else(|| anyhow::anyhow!("mac pool exhausted"))
+                    .with_context(|| format!("allocate server mac identity #{i}"))?
+            };
+
+            server_identities.push((ip, mac));
+        }
+    } else {
+        // Historical fallback (kept for reference; scripts always pass server.yaml today).
+        server_identities.push((_fallback_server_ip, _iface_mac));
+    }
+
+    // For logging / ARP reply selection fallback.
+    let (server_ip, server_mac) = server_identities[0];
 
     eprintln!(
         "ntx-echo-server: iface={} ifindex={} ip={} mac={} udp_port={} (sudo required)",
@@ -43,20 +142,12 @@ fn main() -> Result<()> {
 
     let reg: LayerRegistry = default_registry();
 
-    // Publish ABR snapshot for accept()-based filtering.
-    // This example is single-threaded, so the simplest approach is to publish once.
-    // (In a real control plane, you'd periodically reconcile and publish updates.)
-    let mut abr_store = ntx::network::abr::BindingStore::default();
-    abr_store.add(ntx::network::abr::Binding::ipv4_be(
-        u32::from_be_bytes(server_ip.octets()),
-        ntx::network::abr::BindingOwner::KernelIface,
-    ));
-    abr_store.add(ntx::network::abr::Binding::udp_port_be(
-        u32::from_be_bytes(server_ip.octets()),
-        port,
-        ntx::network::abr::BindingOwner::KernelIface,
-    ));
-    ntx::network::abr::store_view(abr_store.snapshot());
+    // NOTE: ABR is a process-global view. The server and client examples run as separate
+    // processes, so publishing ABR here is normally fine.
+    //
+    // However, to keep the echo demo robust in mixed runner setups, we avoid relying on
+    // the global ABR view on the server side and instead use the (deprecated) local_ipv4
+    // ctx fallback plus explicit checks after parsing.
 
     let mut rx_arp: u64 = 0;
     let mut tx_arp: u64 = 0;
@@ -67,16 +158,15 @@ fn main() -> Result<()> {
     let mut buf = vec![0u8; 2048];
 
     // Reusable per-packet context (updated each loop iteration).
-    let mut ctx = PacketContext {
-        iface_mac: Some(server_mac),
+    let ctx = PacketContext {
+        // Ether::accept uses iface_mac; to receive frames for multiple local MACs we set None here.
+        // We'll filter on L2/L3/L4 manually after parsing.
+        iface_mac: None,
         abr: None,
-        local_ipv4: Vec::new(),
+        local_ipv4: server_identities.iter().map(|(ip, _)| *ip).collect(),
     };
 
     loop {
-        // Dataplane pattern: load a stable ABR snapshot once per loop iteration.
-        ctx.abr = Some(ntx::network::abr::load_view());
-
         let n = match nic.recv(&mut buf) {
             Ok(n) => n,
             Err(e) => {
@@ -89,7 +179,12 @@ fn main() -> Result<()> {
         // Try decode chain using the new runtime layers + accept()-based filtering.
         let (layers, payload) = match parse_packet_with_ctx(frame, LayerId::Ether, &reg, &ctx) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                if debug {
+                    eprintln!("[dbg][rx] drop: parse failed: {e}");
+                }
+                continue;
+            }
         };
 
         let eth_l2 = layers
@@ -112,17 +207,26 @@ fn main() -> Result<()> {
                     eprintln!("[arp rx] {}", ntx::network::fmt_arp!(arp));
                 }
 
-                if arp.tpa == server_ip && arp.oper == 1 {
+                if arp.oper == 1 {
+                    // If request targets one of our IPs, reply using that identity's MAC/IP.
+                    let Some((my_ip, my_mac)) = server_identities
+                        .iter()
+                        .copied()
+                        .find(|(ip, _mac)| *ip == arp.tpa)
+                    else {
+                        continue;
+                    };
+
                     let reply = layers::Ether {
                         dst: arp.sha,
-                        src: server_mac,
+                        src: my_mac,
                         ethertype: ntx::network::ETH_TYPE_ARP,
                     }
                     .pkt()
                     .arp(layers::Arp {
                         oper: 2,
-                        sha: server_mac,
-                        spa: server_ip,
+                        sha: my_mac,
+                        spa: my_ip,
                         tha: arp.sha,
                         tpa: arp.spa,
                     })
@@ -134,8 +238,8 @@ fn main() -> Result<()> {
                     eprintln!(
                         "[arp tx] to {}  {} is-at {} (tx_arp={})",
                         ntx::network::fmt_mac!(arp.sha),
-                        ntx::network::fmt_ipv4!(server_ip),
-                        ntx::network::fmt_mac!(server_mac),
+                        ntx::network::fmt_ipv4!(my_ip),
+                        ntx::network::fmt_mac!(my_mac),
                         tx_arp,
                     );
                 }
@@ -158,6 +262,9 @@ fn main() -> Result<()> {
             .and_then(|l| l.downcast_ref::<ntx::network::stack::layers::Udp>());
 
         let (Some(eth), Some(ip), Some(udp)) = (eth, ip, udp) else {
+            if debug {
+                eprintln!("[dbg][udp] drop: missing ether/ipv4/udp layers");
+            }
             continue;
         };
         // Note: Ether/Arp/Udp layers already applied accept() checks via ABR+ctx.
@@ -174,15 +281,34 @@ fn main() -> Result<()> {
             tx_udp,
         );
 
+        // Choose which server identity to reply from based on the dst IP of the request.
+        let Some((my_ip, my_mac)) = server_identities
+            .iter()
+            .copied()
+            .find(|(sip, _mac)| *sip == ip.dst)
+        else {
+            if debug {
+                eprintln!(
+                    "[dbg][udp] drop: dst_ip not owned: dst_ip={} (identities={:?})",
+                    ntx::network::fmt_ipv4!(ip.dst),
+                    server_identities
+                        .iter()
+                        .map(|(i, _)| ntx::network::fmt_ipv4!(*i).to_string())
+                        .collect::<Vec<_>>()
+                );
+            }
+            continue;
+        };
+
         // Echo reply: swap L2/L3/L4 src/dst and copy payload.
         let reply = layers::Ether {
             dst: eth.src,
-            src: server_mac,
+            src: my_mac,
             ethertype: ntx::network::ETH_TYPE_IPV4,
         }
         .pkt()
         .ipv4(layers::Ipv4 {
-            src: server_ip,
+            src: my_ip,
             dst: ip.src,
             proto: 17,
             ttl: 64,

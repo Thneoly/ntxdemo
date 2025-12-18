@@ -1,0 +1,23 @@
+# Default resource pools for `ntx-echo-client`.
+#
+# This file provides 10 (ip, mac, udp_port) identities.
+# The client will allocate 10 identities from these pools and send 10 echo requests.
+#
+# Notes:
+# - IPv4 in /28 gives enough host addresses for 10 identities.
+# - MAC range is 10 addresses.
+# - UDP port range is 10 ports.
+
+ipv4:
+  - name: demo
+    cidr: "10.0.0.0/28"
+
+mac:
+  - name: demo
+    start: "02:00:00:00:00:10"
+    end:   "02:00:00:00:00:19"
+
+udp_port:
+  - name: demo
+    start: 40000
+    end: 40009

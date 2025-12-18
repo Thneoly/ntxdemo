@@ -69,11 +69,11 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # Host capture
-( exec tcpdump -ni "${IFACE_HOST}" -Q "${DIR}" -s 0 -w "${OUT_HOST}" ${FILTER} ) &
+( exec tcpdump -Z root -ni "${IFACE_HOST}" -Q "${DIR}" -s 0 -w "${OUT_HOST}" ${FILTER} ) &
 PID_HOST=$!
 
 # Netns capture
-( exec ip netns exec "${NS}" tcpdump -ni "${IFACE_NS}" -Q "${DIR}" -s 0 -w "${OUT_NS}" ${FILTER} ) &
+( exec ip netns exec "${NS}" tcpdump -Z root -ni "${IFACE_NS}" -Q "${DIR}" -s 0 -w "${OUT_NS}" ${FILTER} ) &
 PID_NS=$!
 
 # Wait until one exits (Ctrl-C triggers trap).
