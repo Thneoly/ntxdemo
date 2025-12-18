@@ -10,3 +10,6 @@ pub use crate::stack::{Chain, LayerPkt, PacketBuilder, Raw, layers};
 
 // NIC trait is frequently used in examples.
 pub use crate::Nic;
+
+// Resource pools (config-driven).
+pub use crate::resources::{ResourcePools, ResourcePoolsConfig};

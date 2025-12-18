@@ -1,7 +1,7 @@
 use anyhow::bail;
 
 #[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Ipv4Addr(pub [u8; 4]);
 
 impl Ipv4Addr {

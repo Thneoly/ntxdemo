@@ -4,11 +4,11 @@ mod fmt;
 mod nic;
 pub mod packet;
 pub mod prelude;
+pub mod resources;
 pub mod stack;
 pub mod traffic;
 
-#[cfg(test)]
-mod abr_tests;
+// Unit tests moved to integration tests under `network/tests/`.
 
 // Back-compat: keep old top-level paths by re-exporting from `packet::headers`.
 // (These are used by various NIC + stack code.)

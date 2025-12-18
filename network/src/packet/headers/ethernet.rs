@@ -6,7 +6,7 @@ pub const ETH_TYPE_IPV4: u16 = 0x0800;
 pub const ETH_TYPE_ARP: u16 = 0x0806;
 
 #[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MacAddr(pub [u8; 6]);
 
 #[allow(dead_code)]
