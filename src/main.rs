@@ -7,9 +7,7 @@ mod echo;
 mod guest_packet_val;
 mod network;
 use component_utils::{find_iface_parent, find_top_level_func, get_func_from_iface};
-use echo::{
-    run_echo_client_local, run_echo_client_wasm, run_echo_server_local, run_echo_server_wasm,
-};
+use echo::{run_echo_client_local, run_echo_server_local};
 use network::stack::{PacketContext, build_udp_reply};
 use network::{MacAddr, Nic};
 
@@ -19,6 +17,7 @@ use wasmtime::{
 };
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView, p2::add_to_linker_sync};
 
+#[cfg(feature = "scheduler-component")]
 wasmtime::component::bindgen!({
     world: "scheduler:main/scheduler-component",
     path: [
@@ -247,7 +246,14 @@ fn main() -> Result<()> {
 
     // tcp-client is a pure host-mode runner; no WASM component needed.
     if opt.mode == Mode::TcpClient {
-        return run_tcp_client_mode(&opt);
+        #[cfg(feature = "tcp-client")]
+        {
+            return run_tcp_client_mode(&opt);
+        }
+        #[cfg(not(feature = "tcp-client"))]
+        {
+            bail!("tcp-client mode is disabled (build with --features tcp-client)");
+        }
     }
 
     // 设置 WASM 配置
@@ -307,12 +313,31 @@ fn main() -> Result<()> {
     match opt.mode {
         Mode::Scenario => run_scenario_mode(&mut store, &instance, &opt),
         Mode::Net => run_net_mode(&mut store, &instance, &opt),
-        Mode::EchoServer => run_echo_server_wasm(&mut store, &instance, &opt),
-        Mode::EchoClient => run_echo_client_wasm(&mut store, &instance, &opt),
+        Mode::EchoServer => {
+            #[cfg(feature = "scheduler-component")]
+            {
+                return echo::run_echo_server_wasm(&mut store, &instance, &opt);
+            }
+            #[cfg(not(feature = "scheduler-component"))]
+            {
+                return run_echo_server_local(&opt);
+            }
+        }
+        Mode::EchoClient => {
+            #[cfg(feature = "scheduler-component")]
+            {
+                return echo::run_echo_client_wasm(&mut store, &instance, &opt);
+            }
+            #[cfg(not(feature = "scheduler-component"))]
+            {
+                return run_echo_client_local(&opt);
+            }
+        }
         Mode::TcpClient => unreachable!(),
     }
 }
 
+#[cfg(feature = "tcp-client")]
 fn run_tcp_client_mode(opt: &Opt) -> Result<()> {
     use std::time::{Duration, Instant};
 
@@ -376,7 +401,7 @@ fn run_tcp_client_mode(opt: &Opt) -> Result<()> {
         dst_mac.0[5]
     );
 
-    let mut ctx = PacketContext::with_capacity(opt.snaplen);
+    let mut ctx = PacketContext::default();
     let mut buf = vec![0u8; opt.snaplen];
 
     let mut c = TcpClient::new(opt.tcp_local_port, opt.tcp_remote_port, opt.tcp_isn);
@@ -448,6 +473,12 @@ fn run_tcp_client_mode(opt: &Opt) -> Result<()> {
     }
 }
 
+#[cfg(not(feature = "tcp-client"))]
+#[allow(dead_code)]
+fn run_tcp_client_mode(_opt: &Opt) -> Result<()> {
+    bail!("tcp-client mode is disabled (build with --features tcp-client)")
+}
+
 fn resolve_arp_minimal(
     nic: &mut dyn crate::network::Nic,
     src_mac: crate::network::MacAddr,
@@ -504,24 +535,30 @@ fn parse_ipv4_local(s: &str) -> Result<crate::network::Ipv4Addr> {
     Ok(crate::network::Ipv4Addr(octets))
 }
 
-fn send_tcp_segment(
-    nic: &mut dyn crate::network::Nic,
-    src_mac: crate::network::MacAddr,
-    dst_mac: crate::network::MacAddr,
+#[cfg(feature = "tcp-client")]
+fn send_tcp_frame(
+    nic: &mut dyn Nic,
+    iface_mac: MacAddr,
+    dst_mac: MacAddr,
     src_ip: crate::network::Ipv4Addr,
     dst_ip: crate::network::Ipv4Addr,
     seg: crate::network::TcpSegment,
-) -> Result<()> {
-    let frame = crate::network::stack::build_tcp_frame(
-        src_mac,
-        dst_mac,
-        src_ip,
-        dst_ip,
-        &seg.hdr,
-        &seg.payload,
-    )?;
-    nic.send(&frame).context("send tcp frame")?;
-    Ok(())
+) -> bool {
+    let frame = crate::network::stack::build_tcp_frame(iface_mac, dst_mac, src_ip, dst_ip, seg);
+    nic.send(&frame).is_ok()
+}
+
+#[cfg(not(feature = "tcp-client"))]
+#[allow(dead_code)]
+fn send_tcp_frame(
+    _nic: &mut dyn Nic,
+    _iface_mac: MacAddr,
+    _dst_mac: MacAddr,
+    _src_ip: crate::network::Ipv4Addr,
+    _dst_ip: crate::network::Ipv4Addr,
+    _seg: (),
+) -> bool {
+    false
 }
 
 fn run_scenario_mode(store: &mut Store<State>, instance: &Instance, opt: &Opt) -> Result<()> {
@@ -606,7 +643,7 @@ fn run_net_mode(store: &mut Store<State>, instance: &Instance, opt: &Opt) -> Res
     );
 
     let mut buf = vec![0u8; opt.snaplen];
-    let mut ctx = PacketContext::with_capacity(opt.snaplen);
+    let mut ctx = PacketContext::default();
 
     let mut rx: u64 = 0;
     let mut decoded_udp: u64 = 0;
@@ -637,49 +674,56 @@ fn run_net_mode(store: &mut Store<State>, instance: &Instance, opt: &Opt) -> Res
 
         rx = rx.wrapping_add(1);
 
-        ctx.set_frame(&buf[..n]);
-        let decoded = match ctx.decode() {
-            Ok(d) => d,
+        // Parse using the stack parser. When ctx.abr is None, accept() is permissive.
+        let (layers, payload) = match network::stack::parse_packet_with_ctx(
+            &buf[..n],
+            network::stack::LayerId::Ether,
+            &network::stack::default_registry(),
+            &ctx,
+        ) {
+            Ok(v) => v,
             Err(_) => continue,
+        };
+
+        let Some(ip) = layers
+            .iter()
+            .find_map(|l| l.downcast_ref::<network::packet::layers::Ipv4>())
+        else {
+            continue;
+        };
+        let Some(udp) = layers
+            .iter()
+            .find_map(|l| l.downcast_ref::<network::packet::layers::Udp>())
+        else {
+            continue;
         };
 
         if debug && (rx <= 10 || rx % 200 == 0) {
             if let Some(pt) = nic.last_pkttype() {
                 eprintln!("debug: rx={} pkttype={}", rx, pt);
             }
-            if decoded.ip.is_none() {
-                eprintln!(
-                    "debug: rx={} decoded: non-ipv4 ethertype=0x{:04x}",
-                    rx, decoded.eth.ethertype
-                );
-            } else if decoded.udp.is_none() {
-                eprintln!(
-                    "debug: rx={} decoded: ipv4 protocol={} (not udp)",
-                    rx,
-                    decoded.ip.unwrap().protocol
-                );
-            }
         }
-
-        let Some(ip) = decoded.ip else {
-            continue;
-        };
-        let Some(udp) = decoded.udp else {
-            continue;
-        };
 
         if udp.dst_port != opt.port {
             continue;
         }
 
+        // Extract Ether layer for metadata.
+        let Some(eth) = layers
+            .iter()
+            .find_map(|l| l.downcast_ref::<network::packet::layers::Ether>())
+        else {
+            continue;
+        };
+
         let meta_val = Val::Record(vec![
             (
                 "src-mac".to_string(),
-                Val::List(decoded.eth.src.0.into_iter().map(Val::U8).collect()),
+                Val::List(eth.src.0.into_iter().map(Val::U8).collect()),
             ),
             (
                 "dst-mac".to_string(),
-                Val::List(decoded.eth.dst.0.into_iter().map(Val::U8).collect()),
+                Val::List(eth.dst.0.into_iter().map(Val::U8).collect()),
             ),
             (
                 "src-ip".to_string(),
@@ -704,7 +748,7 @@ fn run_net_mode(store: &mut Store<State>, instance: &Instance, opt: &Opt) -> Res
             ("rx-ifindex".to_string(), Val::U32(nic.ifindex() as u32)),
         ]);
 
-        let payload_val = Val::List(decoded.payload.iter().copied().map(Val::U8).collect());
+        let payload_val = Val::List(payload.iter().copied().map(Val::U8).collect());
         let mut results = [Val::Bool(false)];
         if let Err(e) = on_udp.call(&mut *store, &[meta_val, payload_val], &mut results) {
             guest_err = guest_err.wrapping_add(1);
@@ -744,17 +788,13 @@ fn run_net_mode(store: &mut Store<State>, instance: &Instance, opt: &Opt) -> Res
         };
 
         // Build reply frame with our iface MAC and the new payload.
-        // Reuse build_udp_reply by temporarily swapping ctx payload view.
+        // Reuse build_udp_reply by constructing a ParsedPacket view from layers.
         let reply = {
-            // build_udp_reply uses decoded.payload, so we create a small shim packet with payload pointing to new_payload
-            let shim = network::stack::DecodedPacket {
-                eth: decoded.eth,
-                ip: decoded.ip,
-                udp: decoded.udp,
-                tcp: None,
+            let pkt = network::stack::ParsedPacket {
+                layers,
                 payload: &new_payload,
             };
-            build_udp_reply(&shim, MacAddr(iface_mac))?
+            build_udp_reply(&pkt, MacAddr(iface_mac))?
         };
 
         if nic.send(&reply.bytes).is_ok() {

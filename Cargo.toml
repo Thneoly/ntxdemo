@@ -23,6 +23,17 @@ wasmtime-wasi = "39.0.1"
 wit-bindgen = "0.49.0"
 ntx-network = { path = "network" }
 
+[features]
+# By default, keep the root crate buildable without requiring optional plugin WIT
+# directories (e.g. `plugins/scheduler/wit/core`) to exist.
+default = []
+
+# Enable WASM scheduler component integration (wasmtime component bindgen + runner).
+scheduler-component = []
+
+# Enable experimental TCP client mode in the root binary.
+tcp-client = []
+
 [[example]]
 name = "ntx-echo-client"
 path = "examples/ntx-echo/client.rs"

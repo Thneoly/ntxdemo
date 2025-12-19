@@ -18,7 +18,7 @@ fn ipv4_header_checksum_matches_self() {
     };
 
     let mut out = [0u8; Ipv4Header::MIN_LEN];
-    hdr.write(&mut out, /*payload_len*/ 8, /*dscp_ecn*/ 0)
+    hdr.encode(&mut out, /*payload_len*/ 8, /*dscp_ecn*/ 0)
         .unwrap();
 
     let csum = u16::from_be_bytes([out[10], out[11]]);
@@ -40,7 +40,7 @@ fn udp_checksum_basic_nonzero() {
     };
 
     let mut buf = vec![0u8; UdpHeader::LEN + payload.len()];
-    udp.write(&mut buf, payload, src, dst).unwrap();
+    udp.encode(&mut buf, payload, src, dst).unwrap();
 
     let embedded = u16::from_be_bytes([buf[6], buf[7]]);
     assert_ne!(embedded, 0);
@@ -82,10 +82,10 @@ fn synthetic_frame_pipeline_parse_roundtrip() {
         vec![0u8; EthernetHeader::LEN + Ipv4Header::MIN_LEN + UdpHeader::LEN + payload.len()];
 
     // Write headers and payload
-    eth.write(&mut frame[..EthernetHeader::LEN]).unwrap();
+    eth.encode(&mut frame[..EthernetHeader::LEN]).unwrap();
 
     let ip_off = EthernetHeader::LEN;
-    ip.write(
+    ip.encode(
         &mut frame[ip_off..ip_off + Ipv4Header::MIN_LEN],
         UdpHeader::LEN + payload.len(),
         0,
@@ -93,7 +93,7 @@ fn synthetic_frame_pipeline_parse_roundtrip() {
     .unwrap();
 
     let udp_off = ip_off + Ipv4Header::MIN_LEN;
-    udp.write(
+    udp.encode(
         &mut frame[udp_off..udp_off + UdpHeader::LEN + payload.len()],
         payload,
         ip.src,
@@ -102,13 +102,13 @@ fn synthetic_frame_pipeline_parse_roundtrip() {
     .unwrap();
 
     // Parse back
-    let (eth2, l3) = EthernetHeader::parse(&frame).unwrap();
+    let (eth2, l3) = EthernetHeader::decode(&frame).unwrap();
     assert_eq!(eth2.ethertype, ETH_TYPE_IPV4);
 
-    let (ip2, l4) = Ipv4Header::parse(l3).unwrap();
+    let (ip2, l4) = Ipv4Header::decode(l3).unwrap();
     assert_eq!(ip2.protocol, IP_PROTO_UDP);
 
-    let (udp2, pl) = UdpHeader::parse(l4).unwrap();
+    let (udp2, pl) = UdpHeader::decode(l4).unwrap();
     assert_eq!(udp2.dst_port, 10001);
     assert_eq!(pl, payload);
 }

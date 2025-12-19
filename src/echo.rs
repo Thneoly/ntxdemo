@@ -122,12 +122,10 @@ fn run_echo_server_wasm_loop(
             Ok(v) => v,
             Err(_) => continue,
         };
-        let pkt = ParsedPacket { layers, payload };
-
-        let Some(_ip) = pkt.get::<Ipv4>() else {
+        let Some(_ip) = layers.iter().find_map(|l| l.downcast_ref::<Ipv4>()) else {
             continue;
         };
-        let Some(udp) = pkt.get::<Udp>() else {
+        let Some(udp) = layers.iter().find_map(|l| l.downcast_ref::<Udp>()) else {
             continue;
         };
 
@@ -136,7 +134,7 @@ fn run_echo_server_wasm_loop(
         }
         decoded_udp = decoded_udp.wrapping_add(1);
 
-        let payload_val = Val::List(pkt.payload.iter().copied().map(Val::U8).collect());
+        let payload_val = Val::List(payload.iter().copied().map(Val::U8).collect());
         let mut results = [Val::Bool(false)];
 
         match on_packet_received.call(&mut *store, &[payload_val], &mut results) {
@@ -507,12 +505,12 @@ pub fn run_echo_client_native(opt: &Opt) -> Result<()> {
             if let Ok((layers, payload)) = parse_packet(&buf[..n], LayerId::Ether, &reg) {
                 let pkt = ParsedPacket { layers, payload };
                 if pkt.get::<Udp>().is_some() {
-                    if pkt.payload.len() >= 4 {
+                    if pkt.payload().len() >= 4 {
                         let seq_bytes = [
-                            pkt.payload[0],
-                            pkt.payload[1],
-                            pkt.payload[2],
-                            pkt.payload[3],
+                            pkt.payload()[0],
+                            pkt.payload()[1],
+                            pkt.payload()[2],
+                            pkt.payload()[3],
                         ];
                         let seq = u32::from_be_bytes(seq_bytes);
                         if seq < sent {
@@ -698,7 +696,7 @@ pub fn run_echo_client_native_with_wasm(
                 let pkt = ParsedPacket { layers, payload };
                 if let Some(udp) = pkt.get::<Udp>() {
                     if udp.dst_port == src_port {
-                        let payload = pkt.payload;
+                        let payload = pkt.payload();
                         if payload.len() >= 4 {
                             let seq_bytes = [payload[0], payload[1], payload[2], payload[3]];
                             let seq = u32::from_be_bytes(seq_bytes);
@@ -818,7 +816,7 @@ fn build_udp_frame(
         src: src_mac,
         ethertype: network::ETH_TYPE_IPV4,
     };
-    eth.write(&mut bytes[..eth_len])?;
+    eth.encode(&mut bytes[..eth_len])?;
 
     let ip_hdr = Ipv4Header {
         src: src_ip,
@@ -828,14 +826,14 @@ fn build_udp_frame(
         identification: 0,
         flags_fragment: 0,
     };
-    ip_hdr.write(
+    ip_hdr.encode(
         &mut bytes[eth_len..eth_len + ip_len],
         udp_len + payload.len(),
         0,
     )?;
 
     let udp_hdr = UdpHeader { src_port, dst_port };
-    udp_hdr.write(
+    udp_hdr.encode(
         &mut bytes[eth_len + ip_len..eth_len + ip_len + udp_len + payload.len()],
         payload,
         src_ip,

@@ -43,6 +43,9 @@ impl exports::scheduler::net::packet::Guest for SchedulerComponent {
     }
 }
 
+// Note: the `scheduler:net/socket-api` interface is intended to be implemented by a dedicated
+// guestnet component and imported by the scheduler via component linking (wac).
+
 fn run_scenario_impl(scenario_yaml: &str) -> Result<String> {
     let mut pipeline = SchedulerPipeline::load_from_yaml_str(scenario_yaml)
         .map_err(|e| anyhow::anyhow!("Failed to load scenario: {e}"))?;

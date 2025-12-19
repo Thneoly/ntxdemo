@@ -108,8 +108,16 @@ impl PacketHandler for UdpEchoHandler {
 /// Parsed packet view: extracted typed layers + payload slice.
 #[derive(Debug)]
 pub struct ParsedPacket<'a> {
-    layers: Vec<LayerInstance>,
-    payload: &'a [u8],
+    /// Extracted typed layers.
+    ///
+    /// Kept public for back-compat with older call sites that constructed this
+    /// view directly from `(layers, payload)` produced by the parser.
+    pub layers: Vec<LayerInstance>,
+
+    /// Remaining payload bytes after the last decoded layer.
+    ///
+    /// Kept public for back-compat; prefer using [`ParsedPacket::payload()`].
+    pub payload: &'a [u8],
 }
 
 impl<'a> ParsedPacket<'a> {

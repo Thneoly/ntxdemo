@@ -42,4 +42,5 @@ interface packet {
 
 world scheduler-net {
     export packet;
+    export socket-api;
 }

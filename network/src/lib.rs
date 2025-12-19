@@ -8,6 +8,15 @@ pub mod resources;
 pub mod stack;
 pub mod traffic;
 
+/// Back-compat module exports.
+///
+/// Historically call sites imported ARP helpers/types from `ntx::network::arp::*`.
+/// The implementation now lives under `packet::headers`, but we keep this module
+/// to avoid breaking older integration tests.
+pub mod arp {
+    pub use crate::packet::headers::*;
+}
+
 // Unit tests moved to integration tests under `network/tests/`.
 
 // Back-compat: keep old top-level paths by re-exporting from `packet::headers`.

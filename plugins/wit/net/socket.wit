@@ -1,0 +1,149 @@
+package scheduler:net@0.1.0;
+
+/// Guest ↔ Guest socket-style API (library abstraction) for component composition.
+///
+/// This interface intentionally does NOT model full POSIX sockets.
+///
+/// Hard constraints (enforced by design):
+/// - No blocking calls: backpressure is explicit via `would-block`.
+/// - No packet parsing at the socket API boundary.
+/// - No shared-memory ring access at the socket API boundary.
+/// - Host must not know sockets exist; host provides only packet+event+shared-mem primitives.
+interface socket-api {
+    /// Opaque socket identifier allocated by the guestnet implementation.
+    type socket-id = u64;
+
+    /// Transport protocol.
+    enum transport-proto {
+        udp,
+        tcp,
+        /// Raw IPv4 packet IO (L3). Payload is the IPv4 packet bytes (starting at IPv4 header).
+        raw,
+
+        /// Raw Ethernet frame IO (L2). Payload is the full Ethernet frame bytes.
+        eth,
+    }
+
+    /// MAC address.
+    record mac-addr {
+        a: u8,
+        b: u8,
+        c: u8,
+        d: u8,
+        e: u8,
+        f: u8,
+    }
+
+    /// Ethernet endpoint (dst MAC + ethertype).
+    ///
+    /// This is intentionally minimal; higher-level protocols should be built above.
+    record eth-endpoint {
+        dst: mac-addr,
+        ethertype: u16,
+    }
+
+    /// IPv4 address (v1 only).
+    record ipv4-addr {
+        a: u8,
+        b: u8,
+        c: u8,
+        d: u8,
+    }
+
+    /// Endpoint for bind/connect.
+    record endpoint {
+        ip: ipv4-addr,
+        port: u16,
+    }
+
+    /// Socket kind.
+    enum socket-kind {
+        datagram,
+        stream-sock,
+    }
+
+    /// Non-blocking socket errors.
+    variant socket-error {
+        /// No data available / cannot send without exceeding backpressure.
+        would-block,
+
+        /// Operation not valid for current state.
+        invalid-state,
+
+        /// Address in use or not available.
+        addr-in-use,
+
+        /// Connection refused / peer unreachable (best-effort).
+        connection-refused,
+
+        /// Invalid arguments.
+        invalid-argument,
+
+        /// Generic internal error string (diagnostics only).
+        other(string),
+    }
+
+    /// Create a socket.
+    socket: func(kind: socket-kind, proto: transport-proto) -> result<socket-id, socket-error>;
+
+    /// Bind a socket to a local address.
+    bind: func(id: socket-id, local: endpoint) -> result<_, socket-error>;
+
+    /// Bind an `eth` socket to a local MAC (best-effort).
+    ///
+    /// For now this is advisory metadata; host integration may choose to filter at RX.
+    bind-mac: func(id: socket-id, local: mac-addr) -> result<_, socket-error>;
+
+    /// Connect a socket to a remote address.
+    ///
+    /// Non-blocking semantics:
+    /// - may return ok(()) immediately for UDP
+    /// - for TCP may return would-block while handshake progresses
+    connect: func(id: socket-id, remote: endpoint) -> result<_, socket-error>;
+
+    /// Connect an `eth` socket to a remote L2 endpoint.
+    connect-eth: func(id: socket-id, remote: eth-endpoint) -> result<_, socket-error>;
+
+    /// For `raw` sockets: get local IPv4 (if bound).
+    local-ip: func(id: socket-id) -> result<ipv4-addr, socket-error>;
+
+    /// For `eth` sockets: get local MAC (if bound).
+    local-mac: func(id: socket-id) -> result<mac-addr, socket-error>;
+
+    /// Start listening (TCP only).
+    listen: func(id: socket-id, backlog: u32) -> result<_, socket-error>;
+
+    /// Accept one incoming connection.
+    ///
+    /// Returns would-block if no pending connection is ready.
+    accept: func(id: socket-id) -> result<socket-id, socket-error>;
+
+    /// Receive up to `max_len` bytes.
+    ///
+    /// Returns:
+    /// - ok(payload): some bytes
+    /// - err(would-block): no data available
+    recv: func(id: socket-id, max-len: u32) -> result<list<u8>, socket-error>;
+
+    /// Send bytes.
+    ///
+    /// Returns:
+    /// - ok(n): bytes accepted into send buffer (may be < len)
+    /// - err(would-block): backpressure, caller should retry after socket_event
+    send: func(id: socket-id, data: list<u8>) -> result<u32, socket-error>;
+
+    /// Close the socket.
+    close: func(id: socket-id) -> result<_, socket-error>;
+
+    /// Poll readiness in a non-blocking way.
+    ///
+    /// This is an optional helper to reduce retries; it does not replace `socket_event`.
+    poll: func(id: socket-id) -> result<socket-readiness, socket-error>;
+
+    /// Readiness flags.
+    record socket-readiness {
+        readable: bool,
+        writable: bool,
+        has-error: bool,
+    }
+}

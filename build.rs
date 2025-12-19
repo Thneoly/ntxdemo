@@ -9,6 +9,14 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
+    // By default, keep `cargo build`/`cargo test` for the root crate working even when
+    // optional plugin toolchains (wasm32-wasip2, wac, etc.) are not installed.
+    //
+    // Enable plugin builds by setting `NTX_ENABLE_PLUGIN_BUILDS=1`.
+    let enable_plugin_builds = env::var("NTX_ENABLE_PLUGIN_BUILDS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
     // Plugins to watch: map logical name -> relative path
     let plugins = [
         ("core", "plugins/core"),
@@ -36,7 +44,7 @@ fn main() {
     let state_file = out_dir.join("plugin_build_state");
     let old_state = read_state(&state_file).unwrap_or_default();
 
-    // Environment switch to disable plugin builds when set (e.g., in CI)
+    // Legacy escape hatch (kept for CI scripts).
     let disable_plugin_builds = env::var("DISABLE_PLUGIN_BUILDS")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
@@ -70,9 +78,9 @@ fn main() {
 
     // If changed, run appropriate commands
     for (name, rel) in &changed {
-        if disable_plugin_builds {
+        if disable_plugin_builds || !enable_plugin_builds {
             println!(
-                "build.rs: DISABLE_PLUGIN_BUILDS set, skipping plugin build for {}",
+                "build.rs: plugin builds disabled, skipping plugin build for {}",
                 name
             );
             continue;

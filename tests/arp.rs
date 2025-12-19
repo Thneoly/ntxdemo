@@ -17,9 +17,9 @@ fn arp_packet_write_parse_roundtrip_request() {
     };
 
     let mut buf = [0u8; ArpPacket::LEN];
-    pkt.write(&mut buf).unwrap();
+    pkt.encode(&mut buf).unwrap();
 
-    let parsed = ArpPacket::parse(&buf).unwrap();
+    let parsed = ArpPacket::decode(&buf).unwrap();
     assert_eq!(parsed, pkt);
 }
 
@@ -31,12 +31,12 @@ fn build_arp_request_frame_has_expected_ethernet_header() {
 
     let frame = build_arp_request_frame(src_mac, src_ip, target_ip).unwrap();
 
-    let (eth, payload) = EthernetHeader::parse(&frame).unwrap();
+    let (eth, payload) = EthernetHeader::decode(&frame).unwrap();
     assert_eq!(eth.ethertype, ETH_TYPE_ARP);
     assert_eq!(eth.src, src_mac);
     assert_eq!(eth.dst, MAC_BROADCAST);
 
-    let arp = ArpPacket::parse(payload).unwrap();
+    let arp = ArpPacket::decode(payload).unwrap();
     assert_eq!(arp.oper, ARP_OP_REQUEST);
     assert_eq!(arp.sha, src_mac);
     assert_eq!(arp.spa, src_ip);
@@ -65,8 +65,8 @@ fn parse_arp_reply_extracts_sender() {
     };
 
     let mut frame = vec![0u8; EthernetHeader::LEN + ArpPacket::LEN];
-    eth.write(&mut frame[..EthernetHeader::LEN]).unwrap();
-    arp.write(&mut frame[EthernetHeader::LEN..]).unwrap();
+    eth.encode(&mut frame[..EthernetHeader::LEN]).unwrap();
+    arp.encode(&mut frame[EthernetHeader::LEN..]).unwrap();
 
     let got = parse_arp_reply(&frame).unwrap();
     assert_eq!(got, Some((sender_ip, sender_mac)));
