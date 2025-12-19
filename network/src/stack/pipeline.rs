@@ -198,6 +198,122 @@ pub fn build_udp_reply(pkt: &ParsedPacket<'_>, iface_mac: MacAddr) -> anyhow::Re
     Ok(ReplyFrame { bytes })
 }
 
+/// A reusable, socket-like template for replying to a specific UDP flow.
+///
+/// Intended usage:
+/// - Build once from a received packet (`UdpReplyTemplate::from_parsed_packet`).
+/// - Reuse for subsequent replies that should go back along the same L2/L3/L4 route,
+///   only changing the payload.
+///
+/// This is the network-level “固化能力” for the server-side ergonomics problem.
+#[derive(Debug, Clone, Copy)]
+pub struct UdpReplyTemplate {
+    pub eth: EthernetHeader,
+    pub ip: Ipv4Header,
+    pub udp: UdpHeader,
+}
+
+impl UdpReplyTemplate {
+    /// Create a reply template by swapping src/dst of Ether/IPv4/UDP.
+    ///
+    /// `src_mac` is the MAC to use for the reply's Ethernet source.
+    /// For multi-identity servers, this should be the chosen identity's MAC.
+    pub fn from_layers(eth: &Ether, ip: &Ipv4, udp: &Udp, src_mac: MacAddr) -> Self {
+        Self {
+            eth: EthernetHeader {
+                dst: eth.src,
+                src: src_mac,
+                ethertype: ETH_TYPE_IPV4,
+            },
+            ip: Ipv4Header {
+                src: ip.dst,
+                dst: ip.src,
+                protocol: 17,
+                ttl: ip.ttl,
+                identification: ip.identification,
+                flags_fragment: ip.flags_fragment,
+            },
+            udp: UdpHeader {
+                src_port: udp.dst_port,
+                dst_port: udp.src_port,
+            },
+        }
+    }
+
+    /// Create a reply template from a parsed packet.
+    ///
+    /// Errors if the packet does not contain Ether + Ipv4 + Udp.
+    pub fn from_parsed_packet(pkt: &ParsedPacket<'_>, src_mac: MacAddr) -> anyhow::Result<Self> {
+        let eth = pkt
+            .get::<Ether>()
+            .ok_or_else(|| anyhow::anyhow!("missing ether"))?;
+        let ip = pkt
+            .get::<Ipv4>()
+            .ok_or_else(|| anyhow::anyhow!("missing ipv4"))?;
+        let udp = pkt
+            .get::<Udp>()
+            .ok_or_else(|| anyhow::anyhow!("missing udp"))?;
+        Ok(Self::from_layers(eth, ip, udp, src_mac))
+    }
+
+    /// Build a reply frame for `payload`.
+    ///
+    /// This always computes IPv4 header checksum and UDP checksum.
+    pub fn build(self, payload: &[u8]) -> anyhow::Result<ReplyFrame> {
+        let eth_len = EthernetHeader::LEN;
+        let ip_len = Ipv4Header::MIN_LEN;
+        let udp_len = UdpHeader::LEN;
+
+        let mut bytes = vec![0u8; eth_len + ip_len + udp_len + payload.len()];
+
+        self.eth.encode(&mut bytes[..eth_len])?;
+        self.ip.encode(
+            &mut bytes[eth_len..eth_len + ip_len],
+            udp_len + payload.len(),
+            0,
+        )?;
+
+        let udp_off = eth_len + ip_len;
+        self.udp.encode(
+            &mut bytes[udp_off..udp_off + udp_len + payload.len()],
+            payload,
+            self.ip.src,
+            self.ip.dst,
+        )?;
+
+        Ok(ReplyFrame { bytes })
+    }
+}
+
+/// A key that identifies a UDP flow (sufficient for echo-style servers).
+///
+/// This is purposely small and hashable so servers can keep a map of active flows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UdpFlowKey {
+    pub peer_ip: crate::Ipv4Addr,
+    pub peer_port: u16,
+    pub local_ip: crate::Ipv4Addr,
+    pub local_port: u16,
+}
+
+impl UdpFlowKey {
+    pub fn from_parsed_packet(pkt: &ParsedPacket<'_>) -> anyhow::Result<Self> {
+        let ip = pkt
+            .get::<Ipv4>()
+            .ok_or_else(|| anyhow::anyhow!("missing ipv4"))?;
+        let udp = pkt
+            .get::<Udp>()
+            .ok_or_else(|| anyhow::anyhow!("missing udp"))?;
+
+        Ok(Self {
+            peer_ip: ip.src,
+            peer_port: udp.src_port,
+            local_ip: ip.dst,
+            local_port: udp.dst_port,
+        })
+    }
+}
+
 /// A small orchestrator that decodes a frame and runs a set of handlers.
 ///
 /// The first handler returning `Action::Reply` wins.

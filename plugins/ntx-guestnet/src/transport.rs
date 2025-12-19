@@ -4,9 +4,15 @@
 //! Nothing above Transport may parse bytes.
 
 use std::collections::{HashMap, VecDeque};
+use std::time::Duration;
 
 use crate::flow::{FlowKey, FlowManager, SocketId, TransportProto};
 use crate::host_if::PacketView;
+
+use ntx_network::socket::{ConnTable, ConnTableConfig};
+use ntx_network::stack::{
+    LayerId, PacketContext, ParsedPacket, default_registry, parse_packet_with_ctx,
+};
 
 /// Transport-layer errors.
 #[derive(Debug, thiserror::Error)]
@@ -108,6 +114,12 @@ pub struct UdpTransport {
 
     /// Per-socket queue capacity to force WouldBlock semantics.
     max_queue_len: usize,
+
+    /// Cache for per-flow header templates.
+    ///
+    /// NOTE: It remains in UdpTransport mainly for lower-level tests and future reuse.
+    /// The Socket API layer may also maintain its own connection cache for 'connect' semantics.
+    conns: ConnTable,
 }
 
 /// RAW (L3 IPv4) transport.
@@ -256,6 +268,10 @@ impl UdpTransport {
             rxq: HashMap::new(),
             txq: HashMap::new(),
             max_queue_len,
+            conns: ConnTable::new(ConnTableConfig {
+                max_entries: 4096,
+                ttl: Some(Duration::from_secs(60)),
+            }),
         }
     }
 
@@ -265,6 +281,11 @@ impl UdpTransport {
 
     fn txq_for(&mut self, s: SocketId) -> &mut VecDeque<RecvDatagram> {
         self.txq.entry(s).or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn conns_mut(&mut self) -> &mut ConnTable {
+        &mut self.conns
     }
 
     /// Poll one buffered outgoing UDP datagram for a socket.
@@ -279,58 +300,39 @@ impl UdpTransport {
     ///
     /// This keeps packet generation strictly inside Transport.
     ///
-    /// Current policy (explicitly MVP/skeleton): we use fixed placeholder MAC addresses.
-    /// Real integration must source L2 addressing from a neighbor/ARP module or a host-provided
-    /// helper, but that is outside this strict guestnet skeleton.
-    pub fn poll_tx_frame(&mut self, socket: SocketId) -> Result<Vec<u8>, TransportError> {
+    /// `peer_mac/local_mac` are provided by the caller (socket layer / neighbor module).
+    pub fn poll_tx_frame_with_l2(
+        &mut self,
+        socket: SocketId,
+        peer_mac: ntx_network::packet::headers::MacAddr,
+        local_mac: ntx_network::packet::headers::MacAddr,
+    ) -> Result<Vec<u8>, TransportError> {
         let dg = self.poll_tx(socket)?;
 
-        let payload_len = dg.payload.len();
-        let frame_len = ntx_network::packet::headers::EthernetHeader::LEN
-            + ntx_network::packet::headers::Ipv4Header::MIN_LEN
-            + ntx_network::packet::headers::UdpHeader::LEN
-            + payload_len;
-        let mut out = vec![0u8; frame_len];
-
-        // Placeholder L2 addresses.
-        let eth = ntx_network::packet::headers::EthernetHeader {
-            dst: ntx_network::packet::headers::MacAddr([6, 7, 8, 9, 10, 11]),
-            src: ntx_network::packet::headers::MacAddr([0, 1, 2, 3, 4, 5]),
-            ethertype: ntx_network::packet::headers::ETH_TYPE_IPV4,
-        };
-        eth.encode(&mut out[..ntx_network::packet::headers::EthernetHeader::LEN])
-            .map_err(|_| TransportError::MalformedPacket(MalformedPacketReason::Ethernet))?;
-
-        let ip = ntx_network::packet::headers::Ipv4Header {
-            src: ntx_network::packet::headers::Ipv4Addr(dg.src.0),
-            dst: ntx_network::packet::headers::Ipv4Addr(dg.dst.0),
-            protocol: 17,
-            ttl: 64,
-            identification: 0,
-            flags_fragment: 0,
-        };
-        let ip_off = ntx_network::packet::headers::EthernetHeader::LEN;
-        ip.encode(
-            &mut out[ip_off..ip_off + ntx_network::packet::headers::Ipv4Header::MIN_LEN],
-            ntx_network::packet::headers::UdpHeader::LEN + payload_len,
-            0,
-        )
-        .map_err(|_| TransportError::MalformedPacket(MalformedPacketReason::Ipv4))?;
-
-        let udp = ntx_network::packet::headers::UdpHeader {
-            src_port: dg.src.1,
-            dst_port: dg.dst.1,
-        };
-        let udp_off = ip_off + ntx_network::packet::headers::Ipv4Header::MIN_LEN;
-        udp.encode(
-            &mut out[udp_off..udp_off + ntx_network::packet::headers::UdpHeader::LEN + payload_len],
-            &dg.payload,
-            ntx_network::packet::headers::Ipv4Addr(dg.src.0),
+        // Use the shared network socket layer to cache per-flow templates.
+        let conn = self.conns.connect(
             ntx_network::packet::headers::Ipv4Addr(dg.dst.0),
-        )
-        .map_err(|_| TransportError::MalformedPacket(MalformedPacketReason::Udp))?;
+            dg.dst.1,
+            ntx_network::packet::headers::Ipv4Addr(dg.src.0),
+            dg.src.1,
+            peer_mac,
+            local_mac,
+            64,
+        );
+        let frame = conn
+            .build_reply(&dg.payload)
+            .map_err(|_| TransportError::MalformedPacket(MalformedPacketReason::Udp))?;
 
-        Ok(out)
+        Ok(frame.bytes)
+    }
+
+    /// Back-compat shim used by older tests/callers.
+    ///
+    /// TODO: remove once socket layer/driver always passes real L2 addressing.
+    pub fn poll_tx_frame(&mut self, socket: SocketId) -> Result<Vec<u8>, TransportError> {
+        let peer_mac = ntx_network::packet::headers::MacAddr([6, 7, 8, 9, 10, 11]);
+        let local_mac = ntx_network::packet::headers::MacAddr([0, 1, 2, 3, 4, 5]);
+        self.poll_tx_frame_with_l2(socket, peer_mac, local_mac)
     }
 }
 
@@ -340,30 +342,49 @@ impl Transport for UdpTransport {
         flows: &mut FlowManager,
         pkt: PacketView<'_>,
     ) -> Result<(), TransportError> {
-        // We intentionally use the existing network crate's header codecs for correctness.
-        // This is still compliant: parsing remains inside Transport.
+        // Parse via the shared network parsing pipeline, so guestnet RX stays aligned with
+        // the core `ntx-network` stack.
         let bytes = pkt.as_bytes();
 
-        // Ethernet
-        let (_eth, l3) = ntx_network::packet::headers::EthernetHeader::decode(bytes)
+        // TODO: in future, thread a shared registry through the host/driver so we don't
+        // rebuild it per packet. This is acceptable for MVP.
+        let registry = default_registry();
+        let ctx = PacketContext::default();
+        let (layers, payload) = parse_packet_with_ctx(bytes, LayerId::Ether, &registry, &ctx)
             .map_err(|_| TransportError::MalformedPacket(MalformedPacketReason::Ethernet))?;
 
-        // IPv4
-        let (ip, l4) = ntx_network::packet::headers::Ipv4Header::decode(l3)
-            .map_err(|_| TransportError::MalformedPacket(MalformedPacketReason::Ipv4))?;
+        let parsed = ParsedPacket { layers, payload };
 
-        if ip.protocol != 17 {
+        let Some(ip) = parsed.get::<ntx_network::stack::layers::Ipv4>() else {
+            return Err(TransportError::MalformedPacket(MalformedPacketReason::Ipv4));
+        };
+        if ip.proto != 17 {
             return Err(TransportError::Unsupported);
         }
+        let Some(udp) = parsed.get::<ntx_network::stack::layers::Udp>() else {
+            return Err(TransportError::MalformedPacket(MalformedPacketReason::Udp));
+        };
 
-        // UDP
-        let (udp, payload) = ntx_network::packet::headers::UdpHeader::decode(l4)
+        // Refresh reverse-path template cache (server-style “reply along the way it came in”).
+        //
+        // For RX we *do* have the L2 addresses from the Ethernet header, so use them directly.
+        let Some(eth) = parsed.get::<ntx_network::stack::layers::Ether>() else {
+            return Err(TransportError::MalformedPacket(
+                MalformedPacketReason::Ethernet,
+            ));
+        };
+        let my_mac = eth.dst;
+        let my_ip = ntx_network::packet::headers::Ipv4Addr(ip.dst.0);
+        let my_port = udp.dst_port;
+        let _ = self
+            .conns
+            .get_or_insert_from_rx(&parsed, my_ip, my_port, my_mac)
             .map_err(|_| TransportError::MalformedPacket(MalformedPacketReason::Udp))?;
 
         let key = FlowKey {
             proto: TransportProto::Udp,
-            src_ip: ip.src.octets(),
-            dst_ip: ip.dst.octets(),
+            src_ip: ip.src.0,
+            dst_ip: ip.dst.0,
             src_port: udp.src_port,
             dst_port: udp.dst_port,
         };
@@ -385,7 +406,7 @@ impl Transport for UdpTransport {
         q.push_back(RecvDatagram {
             src: (key.src_ip, key.src_port),
             dst: (key.dst_ip, key.dst_port),
-            payload: payload.to_vec(),
+            payload: parsed.payload().to_vec(),
         });
         Ok(())
     }

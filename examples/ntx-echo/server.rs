@@ -4,8 +4,9 @@ use ntx::network::packet::headers::{Ipv4Addr, MacAddr};
 use ntx::network::prelude::*;
 use ntx::network::resources::ResourcePoolsConfig;
 use ntx::network::stack::{
-    LayerId, LayerRegistry, PacketContext, Raw, default_registry, layers, parse_packet_with_ctx,
+    LayerId, LayerRegistry, PacketContext, default_registry, layers, parse_packet_with_ctx,
 };
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct TargetsYaml {
@@ -179,6 +180,11 @@ fn main() -> Result<()> {
     let mut tx_udp: u64 = 0;
     let mut last_stats = std::time::Instant::now();
 
+    // Socket-like reverse-path cache (per UDP flow).
+    // Keyed by 4-tuple (peer_ip, peer_port, local_ip, local_port).
+    let mut udp_reply_cache: HashMap<ntx::network::UdpFlowKey, ntx::network::UdpReplyTemplate> =
+        HashMap::new();
+
     let mut buf = vec![0u8; 2048];
 
     // Reusable per-packet context (updated each loop iteration).
@@ -326,32 +332,24 @@ fn main() -> Result<()> {
             continue;
         };
 
-        // Echo reply: swap L2/L3/L4 src/dst and copy payload.
-        let reply = layers::Ether {
-            dst: eth.src,
-            src: my_mac,
-            ethertype: ntx::network::ETH_TYPE_IPV4,
-        }
-        .pkt()
-        .ipv4(layers::Ipv4 {
-            src: my_ip,
-            dst: ip.src,
-            proto: 17,
-            ttl: 64,
-            identification: 0,
-            flags_fragment: 0,
-            ihl_bytes: 20,
-        })
-        .udp(layers::Udp {
-            src_port: port,
-            dst_port: udp.src_port,
-            src_ip: None,
-            dst_ip: None,
-        })
-        .raw(Raw::new(payload))
-        .build(&reg)
-        .map_err(anyhow::Error::msg)
-        .context("build udp reply")?;
+        // Echo reply (socket-like): cache the reverse-path headers for the flow and only
+        // inject payload on each send.
+        let key = ntx::network::UdpFlowKey {
+            peer_ip: ip.src,
+            peer_port: udp.src_port,
+            local_ip: my_ip,
+            local_port: port,
+        };
+
+        let tpl = udp_reply_cache.entry(key).or_insert_with(|| {
+            // Swap src/dst using the currently chosen identity's MAC.
+            ntx::network::UdpReplyTemplate::from_layers(eth, ip, udp, my_mac)
+        });
+
+        let reply = tpl
+            .build(payload)
+            .context("build udp reply (template)")?
+            .bytes;
 
         let _ = nic.send(&reply);
         tx_udp += 1;

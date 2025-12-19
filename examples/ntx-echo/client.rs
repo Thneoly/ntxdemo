@@ -4,8 +4,9 @@ use ntx::network::packet::headers::{Ipv4Addr, MacAddr};
 use ntx::network::prelude::*;
 use ntx::network::resources::ResourcePoolsConfig;
 use ntx::network::stack::{
-    LayerId, LayerRegistry, PacketContext, Raw, default_registry, layers, li, parse_packet_with_ctx,
+    LayerId, LayerRegistry, PacketContext, default_registry, layers, li, parse_packet_with_ctx,
 };
+use ntx::network::{ArpCache, ConnTable, ConnTableConfig, UdpFlowKey};
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct TargetsConfig {
@@ -77,6 +78,15 @@ fn main() -> Result<()> {
     );
 
     let reg: LayerRegistry = default_registry();
+
+    // Client-side connection table + ARP cache.
+    // - ArpCache learns (peer_ip -> peer_mac) from ARP replies.
+    // - ConnTable remembers per-flow peer/local tuples and holds a reusable tx template.
+    let mut arp_cache = ArpCache::new(std::time::Duration::from_secs(60));
+    let mut udp_sockets = ConnTable::new(ConnTableConfig {
+        max_entries: 4096,
+        ttl: Some(std::time::Duration::from_secs(60)),
+    });
 
     // --- Resource pools: allocate 10 identities (ip, mac, udp-port) ---
     let mut pools = if let Some(path) = resources_yaml {
@@ -286,6 +296,9 @@ fn main() -> Result<()> {
             })?
         };
 
+        // Learn into ARP cache so connect() can be purely cache-backed.
+        arp_cache.insert(t_ip, dst_mac);
+
         resolved_targets.push((t_ip, dst_mac, t_port));
         eprintln!(
             "target: {} is {} udp_port={}",
@@ -328,32 +341,34 @@ fn main() -> Result<()> {
         {
             let app_payload = format!("hello-echo-c{:02}-t{:02}", cidx, tidx);
 
-            let frame = layers::Ether {
-                dst: dst_mac,
-                src: src_mac,
-                ethertype: ntx::network::ETH_TYPE_IPV4,
-            }
-            .pkt()
-            .ipv4(layers::Ipv4 {
-                src: client_ip,
-                dst: server_ip,
-                proto: 17,
-                ttl: 64,
-                identification: ((cidx as u16) << 8) | (tidx as u16),
-                flags_fragment: 0,
-                ihl_bytes: 20,
-            })
-            .udp(layers::Udp {
-                src_port: udp_src_port,
-                dst_port: server_port,
-                src_ip: None,
-                dst_ip: None,
-            })
-            .raw(Raw::new(app_payload.as_bytes()))
-            .build(&reg)
-            .map_err(anyhow::Error::msg)
-            .with_context(|| format!("build echo request c={cidx} t={tidx}"))?;
+            // Ensure we have a connected socket for this (peer, local) tuple.
+            // This uses ARP cache to resolve peer MAC and stores a reusable tx template.
+            let sock = udp_sockets
+                .connect_via_arp_cache(
+                    &mut arp_cache,
+                    server_ip,
+                    server_port,
+                    client_ip,
+                    udp_src_port,
+                    src_mac,
+                    64,
+                )
+                .with_context(|| {
+                    format!(
+                        "connect via arp cache: peer={} local={} src_port={udp_src_port}",
+                        ntx::network::fmt_ipv4!(server_ip),
+                        ntx::network::fmt_ipv4!(client_ip)
+                    )
+                })?;
 
+            // Use the socket template to build the bytes. (Despite the name `reply`,
+            // the template encode path is the same and includes checksums.)
+            let frame = sock
+                .build_reply(app_payload.as_bytes())
+                .with_context(|| format!("build echo request (socket) c={cidx} t={tidx}"))?
+                .bytes;
+
+            // Best-effort send.
             nic.send(&frame)
                 .with_context(|| format!("send udp echo request c={cidx} t={tidx}"))?;
             eprintln!(
@@ -454,35 +469,45 @@ fn main() -> Result<()> {
             continue;
         };
 
-        // Identify which reply this is for by matching:
-        // - reply dst_ip + dst_port (our identity)
-        // - reply src_ip (which server identity responded)
+        // Correlate using the unified socket-table key instead of ad-hoc tuple matching.
+        // Incoming reply should match an existing connected socket:
+        // - peer_ip == reply src
+        // - local_ip == reply dst
+        // - peer_port == reply src_port
+        // - local_port == reply dst_port
+        let flow_key = UdpFlowKey {
+            peer_ip: ip.src,
+            peer_port: udp.src_port,
+            local_ip: ip.dst,
+            local_port: udp.dst_port,
+        };
+        if udp_sockets.get(&flow_key).is_none() {
+            if debug {
+                eprintln!(
+                    "[dbg][rx] drop: no matching udp socket: peer={} local={} ports {}->{}",
+                    ntx::network::fmt_ipv4!(ip.src),
+                    ntx::network::fmt_ipv4!(ip.dst),
+                    udp.src_port,
+                    udp.dst_port
+                );
+            }
+            continue;
+        }
+
+        // Keep old reporting shape (cidx,tidx) by mapping using identities + resolved targets.
+        // This preserves the existing success criteria (10 x N replies).
         let Some(cidx) = identities
             .iter()
             .position(|(client_ip, _mac, udp_src_port)| {
                 *client_ip == ip.dst && *udp_src_port == udp.dst_port
             })
         else {
-            if debug {
-                eprintln!(
-                    "[dbg][rx] drop: no matching client identity: dst_ip={} dst_port={}",
-                    ntx::network::fmt_ipv4!(ip.dst),
-                    udp.dst_port
-                );
-            }
             continue;
         };
-
         let Some(tidx) = resolved_targets
             .iter()
             .position(|(server_ip, _mac, _port)| *server_ip == ip.src)
         else {
-            if debug {
-                eprintln!(
-                    "[dbg][rx] drop: src_ip not in targets: src_ip={}",
-                    ntx::network::fmt_ipv4!(ip.src)
-                );
-            }
             continue;
         };
 

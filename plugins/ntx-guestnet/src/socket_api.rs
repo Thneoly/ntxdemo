@@ -9,6 +9,7 @@
 //! WIT (`scheduler:net/socket-api`) by a dedicated component.
 
 use std::collections::{HashMap, VecDeque};
+use std::time::Duration;
 
 use crate::driver::TxSubmit;
 use crate::flow::{EndpointV4, FlowManager, SocketBindKey, SocketId, TransportProto};
@@ -16,6 +17,8 @@ use crate::transport::{
     MalformedPacketReason, RawTransport, RecvDatagram, SendDatagram, SendRawIpv4, Transport,
     TransportError, UdpTransport,
 };
+
+use ntx_network::socket::{ConnTable, ConnTableConfig};
 
 /// Socket kinds (subset).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +118,19 @@ pub struct Socket {
 
     /// Max queued datagrams to enforce backpressure.
     rx_max: usize,
+
+    /// For UDP connected sockets, store current placeholder link-layer endpoint info.
+    ///
+    /// This keeps guestnet's socket/connect semantics aligned with the network-layer ConnTable.
+    /// A future neighbor/ARP module can replace this with resolved next-hop L2 data.
+    udp_l2: Option<UdpL2Info>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UdpL2Info {
+    peer_mac: ntx_network::packet::headers::MacAddr,
+    local_mac: ntx_network::packet::headers::MacAddr,
+    ttl: u8,
 }
 
 impl Socket {
@@ -131,6 +147,7 @@ impl Socket {
             bind_key_connected: None,
             rx: VecDeque::new(),
             rx_max: 128,
+            udp_l2: None,
         }
     }
 
@@ -153,6 +170,9 @@ pub struct SocketTable {
 
     udp: UdpTransport,
     raw: RawTransport,
+
+    /// Network-layer connection cache (UDP for now) keyed by 4-tuples.
+    conns: ConnTable,
 }
 
 impl SocketTable {
@@ -163,6 +183,11 @@ impl SocketTable {
             // Keep the transport queue small-ish; socket rx buffer is what apps see.
             udp: UdpTransport::new(64),
             raw: RawTransport::new(64),
+
+            conns: ConnTable::new(ConnTableConfig {
+                max_entries: 4096,
+                ttl: Some(Duration::from_secs(60)),
+            }),
         }
     }
 
@@ -302,6 +327,30 @@ impl SocketTable {
             // Require explicit bind for now (keeps policy decisions out of this skeleton).
             return Err(SocketError::InvalidState);
         };
+
+        // --- Populate network-layer conn table for UDP connect semantics. ---
+        // Today guestnet still uses placeholder MAC addresses. This keeps behavior consistent
+        // with `UdpTransport::poll_tx_frame` and makes it easy to swap in real neighbor/ARP later.
+        if sock.proto == TransportProto::Udp {
+            let peer_mac = ntx_network::packet::headers::MacAddr([6, 7, 8, 9, 10, 11]);
+            let local_mac = ntx_network::packet::headers::MacAddr([0, 1, 2, 3, 4, 5]);
+            let ttl = 64;
+
+            let _ = self.conns.connect(
+                ntx_network::packet::headers::Ipv4Addr(remote.ip),
+                remote.port,
+                ntx_network::packet::headers::Ipv4Addr(local.ip),
+                local.port,
+                peer_mac,
+                local_mac,
+                ttl,
+            );
+            sock.udp_l2 = Some(UdpL2Info {
+                peer_mac,
+                local_mac,
+                ttl,
+            });
+        }
 
         let connected_key = SocketBindKey {
             proto: sock.proto,
@@ -494,11 +543,18 @@ impl SocketTable {
         }
 
         match sock.proto {
-            TransportProto::Udp => self
-                .udp
-                .poll_tx_frame(id)
-                .map(TxSubmit::L2Frame)
-                .map_err(SocketError::from),
+            TransportProto::Udp => {
+                let l2 = match sock.udp_l2 {
+                    Some(l2) => l2,
+                    None => return Err(SocketError::InvalidState),
+                };
+
+                let frame = self
+                    .udp
+                    .poll_tx_frame_with_l2(id, l2.peer_mac, l2.local_mac)
+                    .map_err(SocketError::from)?;
+                Ok(TxSubmit::L2Frame(frame))
+            }
             TransportProto::Tcp => Err(SocketError::Unsupported),
             TransportProto::Raw => self
                 .raw

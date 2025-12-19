@@ -5,6 +5,7 @@ mod nic;
 pub mod packet;
 pub mod prelude;
 pub mod resources;
+pub mod socket;
 pub mod stack;
 pub mod traffic;
 
@@ -50,6 +51,8 @@ pub use stack::{
     Pipeline,
     ReplyFrame,
     UdpEchoHandler,
+    UdpFlowKey,
+    UdpReplyTemplate,
     // Parser / graph
     build_packet,
     build_udp_reply,
@@ -58,6 +61,13 @@ pub use stack::{
     parse_packet,
     parse_packet_graph,
     parse_packet_with_spans,
+};
+
+// Socket tables (UDP + generic core + skeletons)
+pub use socket::{
+    Conn, ConnEntry, ConnKey, ConnTable, ConnTableConfig, ConnTableCore, ConnTableStats, EthConn,
+    EthConnTable, EthKey, RawIpConn, RawIpConnTable, RawIpKey, TcpConn, TcpConnTable, TcpFlowKey,
+    UdpConnTable, UdpSocket,
 };
 
 // Note: don't glob re-export `packet::*` to avoid ambiguous re-exports with `stack::*`.
