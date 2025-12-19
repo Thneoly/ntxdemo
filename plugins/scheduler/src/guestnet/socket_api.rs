@@ -13,7 +13,8 @@ use std::collections::{HashMap, VecDeque};
 use crate::guestnet::driver::TxSubmit;
 use crate::guestnet::flow::{EndpointV4, FlowManager, SocketBindKey, SocketId, TransportProto};
 use crate::guestnet::transport::{
-    MalformedPacketReason, RecvDatagram, SendDatagram, Transport, TransportError, UdpTransport,
+    MalformedPacketReason, RawTransport, RecvDatagram, SendDatagram, SendRawIpv4, Transport,
+    TransportError, UdpTransport,
 };
 
 /// Socket kinds (subset).
@@ -94,6 +95,11 @@ pub struct Socket {
     pub local: Option<EndpointV4>,
     pub remote: Option<EndpointV4>,
 
+    /// Protocol number for RAW IPv4 sockets (e.g. 1=ICMP, 6=TCP, 17=UDP).
+    ///
+    /// Policy: must be explicitly configured before `send()` is allowed.
+    pub raw_proto: Option<u8>,
+
     /// Optional local-only bind key (proto+local).
     ///
     /// For UDP, this corresponds to a "wildcard remote" binding.
@@ -120,6 +126,7 @@ impl Socket {
             state: SocketState::Init,
             local: None,
             remote: None,
+            raw_proto: None,
             bind_key_local_only: None,
             bind_key_connected: None,
             rx: VecDeque::new(),
@@ -145,6 +152,7 @@ pub struct SocketTable {
     sockets: HashMap<SocketId, Socket>,
 
     udp: UdpTransport,
+    raw: RawTransport,
 }
 
 impl SocketTable {
@@ -154,6 +162,7 @@ impl SocketTable {
             sockets: HashMap::new(),
             // Keep the transport queue small-ish; socket rx buffer is what apps see.
             udp: UdpTransport::new(64),
+            raw: RawTransport::new(64),
         }
     }
 
@@ -200,6 +209,24 @@ impl SocketTable {
         Ok(())
     }
 
+    /// Configure the protocol number for a RAW IPv4 socket.
+    ///
+    /// This is required before a RAW socket can `send()`.
+    pub fn set_raw_protocol(&mut self, id: SocketId, proto: u8) -> Result<(), SocketError> {
+        let Some(sock) = self.sockets.get_mut(&id) else {
+            return Err(SocketError::InvalidArgument);
+        };
+        if sock.state == SocketState::Closed {
+            return Err(SocketError::InvalidState);
+        }
+        if sock.kind != SocketKind::Datagram || sock.proto != TransportProto::Raw {
+            return Err(SocketError::Unsupported);
+        }
+
+        sock.raw_proto = Some(proto);
+        Ok(())
+    }
+
     pub fn bind(
         &mut self,
         flows: &mut FlowManager,
@@ -212,8 +239,19 @@ impl SocketTable {
         if sock.state == SocketState::Closed {
             return Err(SocketError::InvalidState);
         }
-        if sock.kind != SocketKind::Datagram || sock.proto != TransportProto::Udp {
+        if sock.kind != SocketKind::Datagram {
             return Err(SocketError::Unsupported);
+        }
+
+        match sock.proto {
+            TransportProto::Udp => {}
+            TransportProto::Raw => {
+                // Convention for RAW: `port` must be 0.
+                if local.port != 0 {
+                    return Err(SocketError::InvalidArgument);
+                }
+            }
+            _ => return Err(SocketError::Unsupported),
         }
 
         let key = SocketBindKey {
@@ -246,8 +284,18 @@ impl SocketTable {
         if sock.state == SocketState::Closed {
             return Err(SocketError::InvalidState);
         }
-        if sock.kind != SocketKind::Datagram || sock.proto != TransportProto::Udp {
+        if sock.kind != SocketKind::Datagram {
             return Err(SocketError::Unsupported);
+        }
+
+        match sock.proto {
+            TransportProto::Udp => {}
+            TransportProto::Raw => {
+                if remote.port != 0 {
+                    return Err(SocketError::InvalidArgument);
+                }
+            }
+            _ => return Err(SocketError::Unsupported),
         }
 
         let Some(local) = sock.local else {
@@ -392,21 +440,45 @@ impl SocketTable {
         if sock.state == SocketState::Closed {
             return Err(SocketError::InvalidState);
         }
-        if sock.proto != TransportProto::Udp {
-            return Err(SocketError::Unsupported);
+
+        match sock.proto {
+            TransportProto::Udp => {
+                let (local, remote) = match (sock.local, sock.remote) {
+                    (Some(l), Some(r)) => (l, r),
+                    _ => return Err(SocketError::InvalidState),
+                };
+
+                let req = SendDatagram {
+                    src: (local.ip, local.port),
+                    dst: (remote.ip, remote.port),
+                    payload: data,
+                };
+                self.udp.send(id, req).map_err(SocketError::from)
+            }
+            TransportProto::Raw => {
+                // For RAW sockets, `data` is an IPv4 payload; Transport will build the IPv4 header.
+                let (local, remote) = match (sock.local, sock.remote) {
+                    (Some(l), Some(r)) => (l, r),
+                    _ => return Err(SocketError::InvalidState),
+                };
+                if local.port != 0 || remote.port != 0 {
+                    return Err(SocketError::InvalidArgument);
+                }
+
+                let Some(proto) = sock.raw_proto else {
+                    return Err(SocketError::InvalidState);
+                };
+
+                let req = SendRawIpv4 {
+                    src_ip: local.ip,
+                    dst_ip: remote.ip,
+                    proto,
+                    payload: data,
+                };
+                self.raw.send_raw_ipv4(id, req).map_err(SocketError::from)
+            }
+            _ => Err(SocketError::Unsupported),
         }
-
-        let (local, remote) = match (sock.local, sock.remote) {
-            (Some(l), Some(r)) => (l, r),
-            _ => return Err(SocketError::InvalidState),
-        };
-
-        let req = SendDatagram {
-            src: (local.ip, local.port),
-            dst: (remote.ip, remote.port),
-            payload: data,
-        };
-        self.udp.send(id, req).map_err(SocketError::from)
     }
 
     /// Poll one outgoing L2 frame produced by transports for a given socket.
@@ -428,10 +500,11 @@ impl SocketTable {
                 .map(TxSubmit::L2Frame)
                 .map_err(SocketError::from),
             TransportProto::Tcp => Err(SocketError::Unsupported),
-            TransportProto::Raw => {
-                // TODO: implement raw TX as L3 IPv4 packet bytes.
-                Err(SocketError::Unsupported)
-            }
+            TransportProto::Raw => self
+                .raw
+                .poll_tx_ipv4(id)
+                .map(TxSubmit::L3Ipv4)
+                .map_err(SocketError::from),
             TransportProto::Eth => Err(SocketError::Unsupported),
         }
     }

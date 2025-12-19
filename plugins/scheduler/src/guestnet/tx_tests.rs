@@ -19,6 +19,7 @@ impl SharedMem for TestShm {
 #[derive(Default)]
 struct FakeHost {
     tx: Vec<Vec<u8>>,
+    tx_l3_ipv4: Vec<Vec<u8>>,
 }
 
 impl HostIf for FakeHost {
@@ -36,7 +37,8 @@ impl HostIf for FakeHost {
     }
 
     fn tx_submit_l3_ipv4(&mut self, _packet: &[u8]) -> Result<(), TxError> {
-        Err(TxError::Unsupported)
+        self.tx_l3_ipv4.push(_packet.to_vec());
+        Ok(())
     }
 }
 
@@ -111,4 +113,71 @@ fn tx_path_socket_send_transport_encode_driver_submit() {
         socks.poll_tx_frame(s),
         Err(crate::guestnet::socket_api::SocketError::WouldBlock)
     ));
+}
+
+#[test]
+fn tx_path_raw_socket_send_driver_submits_l3_ipv4() {
+    let shm = TestShm { backing: vec![] };
+    let host = FakeHost::default();
+    let mut pio = PacketIo::with_host(&shm, host);
+
+    let mut flows = FlowManager::new();
+    flows.set_now_tick(1);
+
+    let mut socks = SocketTable::new();
+    let s = socks
+        .socket(SocketKind::Datagram, TransportProto::Raw)
+        .unwrap();
+
+    // Convention for RAW sockets in this skeleton: use EndpointV4 with port=0.
+    socks
+        .bind(
+            &mut flows,
+            s,
+            EndpointV4 {
+                ip: [10, 1, 0, 2],
+                port: 0,
+            },
+        )
+        .unwrap();
+    socks
+        .connect(
+            &mut flows,
+            s,
+            EndpointV4 {
+                ip: [10, 1, 0, 1],
+                port: 0,
+            },
+        )
+        .unwrap();
+
+    socks.set_raw_protocol(s, 253).unwrap();
+
+    let payload = b"raw-payload";
+    socks.send(s, payload).unwrap();
+
+    let mut saw_stats = None;
+    drive_tx_once(&mut pio, &mut flows, &mut socks, |r| {
+        if let DriveReport::Stats(s) = r {
+            saw_stats = Some(s);
+        }
+    })
+    .unwrap();
+
+    let stats = saw_stats.expect("expected Stats");
+    assert_eq!(stats.tx_frames_sent, 1);
+    assert_eq!(stats.tx_would_block, 0);
+
+    let host = pio.host_mut();
+    assert_eq!(host.tx.len(), 0, "raw should not use L2 tx_submit");
+    assert_eq!(host.tx_l3_ipv4.len(), 1);
+
+    let submitted = &host.tx_l3_ipv4[0];
+    let (ip, rest) =
+        ntx_network::packet::headers::Ipv4Header::decode(submitted).expect("ipv4 decode");
+
+    assert_eq!(ip.src.octets(), [10, 1, 0, 2]);
+    assert_eq!(ip.dst.octets(), [10, 1, 0, 1]);
+    assert_eq!(ip.protocol, 253);
+    assert_eq!(rest, payload);
 }

@@ -59,6 +59,18 @@ pub struct SendDatagram<'a> {
     pub payload: &'a [u8],
 }
 
+/// RAW IPv4 send request.
+///
+/// This is intentionally separate from `SendDatagram` so RAW semantics don't overload
+/// UDP/TCP address fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendRawIpv4<'a> {
+    pub src_ip: [u8; 4],
+    pub dst_ip: [u8; 4],
+    pub proto: u8,
+    pub payload: &'a [u8],
+}
+
 /// Transport trait (exact layering boundary).
 ///
 /// Contract:
@@ -98,12 +110,77 @@ pub struct UdpTransport {
     max_queue_len: usize,
 }
 
-/// Placeholder RAW (L3 IPv4) transport.
+/// RAW (L3 IPv4) transport.
 ///
-/// This will eventually support delivering/parsing raw IPv4 packets to sockets without
-/// exposing parsing in Socket API. For now it is a stub to keep the type surface coherent.
+/// TX contract: `send()` accepts an IPv4 payload provided as bytes plus metadata:
+/// - `req.src.0` is the local IPv4 address
+/// - `req.dst.0` is the remote IPv4 address
+/// - `req.src.1` carries the IPv4 `protocol` number (0-255)
+///
+/// Transport encodes the IPv4 header and enqueues a complete IPv4 packet which the driver submits
+/// via host L3 primitive (`tx_submit_l3_ipv4`).
+///
+/// RX is intentionally left unimplemented for now; once enabled it will parse IPv4 and deliver
+/// raw packets to bound sockets without exposing parsing above Transport.
 #[derive(Debug, Default)]
-pub struct RawTransport;
+pub struct RawTransport {
+    txq: HashMap<SocketId, VecDeque<Vec<u8>>>,
+    max_queue_len: usize,
+}
+
+impl RawTransport {
+    pub fn new(max_queue_len: usize) -> Self {
+        Self {
+            txq: HashMap::new(),
+            max_queue_len,
+        }
+    }
+
+    fn txq_for(&mut self, s: SocketId) -> &mut VecDeque<Vec<u8>> {
+        self.txq.entry(s).or_default()
+    }
+
+    pub fn poll_tx_ipv4(&mut self, socket: SocketId) -> Result<Vec<u8>, TransportError> {
+        let q = self.txq_for(socket);
+        q.pop_front().ok_or(TransportError::WouldBlock)
+    }
+
+    pub fn send_raw_ipv4(
+        &mut self,
+        socket: SocketId,
+        req: SendRawIpv4<'_>,
+    ) -> Result<usize, TransportError> {
+        let max = self.max_queue_len;
+        let q = self.txq_for(socket);
+        if q.len() >= max {
+            return Err(TransportError::WouldBlock);
+        }
+
+        let payload = req.payload;
+        let pkt_len = ntx_network::packet::headers::Ipv4Header::MIN_LEN + payload.len();
+        let mut out = vec![0u8; pkt_len];
+
+        let ip = ntx_network::packet::headers::Ipv4Header {
+            src: ntx_network::packet::headers::Ipv4Addr(req.src_ip),
+            dst: ntx_network::packet::headers::Ipv4Addr(req.dst_ip),
+            protocol: req.proto,
+            ttl: 64,
+            identification: 0,
+            flags_fragment: 0,
+        };
+
+        ip.encode(
+            &mut out[..ntx_network::packet::headers::Ipv4Header::MIN_LEN],
+            payload.len(),
+            0,
+        )
+        .map_err(|_| TransportError::MalformedPacket(MalformedPacketReason::Ipv4))?;
+
+        out[ntx_network::packet::headers::Ipv4Header::MIN_LEN..].copy_from_slice(payload);
+        q.push_back(out);
+        Ok(payload.len())
+    }
+}
 
 impl Transport for RawTransport {
     fn on_packet(
@@ -118,8 +195,20 @@ impl Transport for RawTransport {
         Err(TransportError::Unsupported)
     }
 
-    fn send(&mut self, _socket: SocketId, _req: SendDatagram<'_>) -> Result<usize, TransportError> {
-        Err(TransportError::Unsupported)
+    fn send(&mut self, socket: SocketId, req: SendDatagram<'_>) -> Result<usize, TransportError> {
+        let proto_u16 = req.src.1;
+        let proto: u8 = u8::try_from(proto_u16)
+            .map_err(|_| TransportError::MalformedPacket(MalformedPacketReason::Ipv4))?;
+
+        self.send_raw_ipv4(
+            socket,
+            SendRawIpv4 {
+                src_ip: req.src.0,
+                dst_ip: req.dst.0,
+                proto,
+                payload: req.payload,
+            },
+        )
     }
 
     fn poll_timer(
