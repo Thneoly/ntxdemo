@@ -22,24 +22,20 @@ wit_bindgen::generate!({
 struct SchedulerComponent;
 
 impl Guest for SchedulerComponent {
-    fn run_scenario(scenario_yaml: String) -> Result<String, String> {
+    fn run(dir: String) -> Result<(), String> {
+        // Here, you would load the scenario from the specified directory
+        // For simplicity, let's assume there's a file named "scenario.yaml" in that directory
+        let scenario_path = format!("{}/scenario.yaml", dir);
+        let scenario_yaml = std::fs::read_to_string(&scenario_path)
+            .map_err(|e| format!("Failed to read scenario file: {e}"))?;
+
         match run_scenario_impl(&scenario_yaml) {
-            Ok(summary) => Ok(summary),
+            Ok(summary) => {
+                println!("Scenario executed successfully:\n{}", summary);
+                Ok(())
+            }
             Err(e) => Err(format!("Scenario execution failed: {:#}", e)),
         }
-    }
-}
-
-impl exports::scheduler::net::packet::Guest for SchedulerComponent {
-    fn on_udp(
-        _meta: exports::scheduler::net::packet::UdpMeta,
-        payload: Vec<u8>,
-    ) -> Result<Option<exports::scheduler::net::packet::UdpResponse>, String> {
-        // MVP-0 behavior: echo payload back.
-        // Host is responsible for swapping tuple and building L2/L3/L4 headers.
-        Ok(Some(exports::scheduler::net::packet::UdpResponse {
-            payload,
-        }))
     }
 }
 
