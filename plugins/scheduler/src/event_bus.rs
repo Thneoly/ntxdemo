@@ -8,7 +8,7 @@ use crate::core::dsl::ActionDef;
 use crate::core::error::SchedulerError;
 use crate::core::wbs::{WbsEdge, WbsTask, WbsTaskKind};
 use crate::executor::SchedulerEvent;
-use crate::http_bridge::from_wit_action_def;
+use crate::wit_bridge::from_wit_action_def;
 
 pub(crate) fn drain_scheduler_events(limit: u32) -> Result<Vec<SchedulerEvent>, SchedulerError> {
     if limit == 0 {

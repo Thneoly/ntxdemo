@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 
 use crate::component::scheduler::actions_executor::action_component;
 use crate::core::dsl::ActionDef;
-use crate::http_bridge::{from_wit_outcome, to_wit_action_def};
+use crate::wit_bridge::{from_wit_outcome, to_wit_action_def};
 use crate::{ActionComponent, ActionContext, ActionOutcome};
 
 /// 基于 actions-executor WIT 接口的 ActionComponent 实现

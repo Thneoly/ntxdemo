@@ -10,6 +10,11 @@ use crate::core::dsl::{ActionDef, ExportDef};
 use crate::{ActionOutcome, ActionStatus};
 use indexmap::IndexMap;
 
+/// Helpers for converting between scheduler Rust types and WIT component types.
+///
+/// Despite some call sites being HTTP-based today, this module is intentionally transport-agnostic:
+/// it only deals with (de)serializing the data shapes that cross the component boundary.
+
 pub fn to_wit_action_def(action: &ActionDef) -> Result<WitActionDef> {
     let with_params = json::to_string(&action.with)
         .context("failed to encode action.with as JSON when calling actions-executor")?;

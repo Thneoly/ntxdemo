@@ -10,7 +10,7 @@ pub mod core;
 mod event_bus;
 pub use ntx_guestnet as guestnet;
 mod host_executor;
-mod http_bridge;
+mod wit_bridge;
 
 pub use core::error::SchedulerError;
 pub use engine::SchedulerPipeline;
