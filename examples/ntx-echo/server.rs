@@ -142,12 +142,36 @@ fn main() -> Result<()> {
 
     let reg: LayerRegistry = default_registry();
 
-    // NOTE: ABR is a process-global view. The server and client examples run as separate
-    // processes, so publishing ABR here is normally fine.
+    // Publish the server's receive bindings (owned IPv4s + UDP port 7) into ABR.
+    // This keeps the `accept()` fast-path working end-to-end for Ether/IPv4/UDP.
     //
-    // However, to keep the echo demo robust in mixed runner setups, we avoid relying on
-    // the global ABR view on the server side and instead use the (deprecated) local_ipv4
-    // ctx fallback plus explicit checks after parsing.
+    // Note: ABR is process-local; server and client run as different processes so they
+    // don't interfere.
+    {
+        let mut store = ntx::network::abr::BindingStore::default();
+        let owner = ntx::network::abr::BindingOwner::Process {
+            pid: std::process::id(),
+        };
+
+        for (ip, _) in server_identities.iter().copied() {
+            store.add(ntx::network::abr::Binding::ipv4_be(
+                u32::from_be_bytes(ip.octets()),
+                owner,
+            ));
+        }
+
+        // Bind UDP echo port for all owned IPs.
+        // (We could also wildcard-ip bind; either works for the server side.)
+        for (ip, _) in server_identities.iter().copied() {
+            store.add(ntx::network::abr::Binding::udp_port_be(
+                u32::from_be_bytes(ip.octets()),
+                port,
+                owner,
+            ));
+        }
+
+        ntx::network::abr::store_view(store.snapshot());
+    }
 
     let mut rx_arp: u64 = 0;
     let mut tx_arp: u64 = 0;
@@ -158,12 +182,11 @@ fn main() -> Result<()> {
     let mut buf = vec![0u8; 2048];
 
     // Reusable per-packet context (updated each loop iteration).
-    let ctx = PacketContext {
-        // Ether::accept uses iface_mac; to receive frames for multiple local MACs we set None here.
-        // We'll filter on L2/L3/L4 manually after parsing.
+    let mut ctx = PacketContext {
+        // Receive frames for multiple local MACs.
         iface_mac: None,
         abr: None,
-        local_ipv4: server_identities.iter().map(|(ip, _)| *ip).collect(),
+        local_ipv4: Vec::new(),
     };
 
     loop {
@@ -175,6 +198,9 @@ fn main() -> Result<()> {
             }
         };
         let frame = &buf[..n];
+
+        // Refresh ABR snapshot: UDP accept() relies on it for (dst_ip, dst_port) filtering.
+        ctx.abr = Some(ntx::network::abr::load_view());
 
         // Try decode chain using the new runtime layers + accept()-based filtering.
         let (layers, payload) = match parse_packet_with_ctx(frame, LayerId::Ether, &reg, &ctx) {
