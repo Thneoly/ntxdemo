@@ -1,0 +1,19 @@
+[package]
+name = "ntx-guestnet"
+version = "0.1.0"
+edition = "2024"
+
+doctest = false
+
+[lib]
+crate-type = ["rlib"]
+
+test = true
+
+[dependencies]
+thiserror = "2.0.17"
+ntx-network = { path = "../../network" }
+
+[dev-dependencies]
+# kept minimal; tests currently use only std + ntx-network
+

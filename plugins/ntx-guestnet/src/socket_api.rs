@@ -10,9 +10,9 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use crate::guestnet::driver::TxSubmit;
-use crate::guestnet::flow::{EndpointV4, FlowManager, SocketBindKey, SocketId, TransportProto};
-use crate::guestnet::transport::{
+use crate::driver::TxSubmit;
+use crate::flow::{EndpointV4, FlowManager, SocketBindKey, SocketId, TransportProto};
+use crate::transport::{
     MalformedPacketReason, RawTransport, RecvDatagram, SendDatagram, SendRawIpv4, Transport,
     TransportError, UdpTransport,
 };
@@ -412,7 +412,7 @@ impl SocketTable {
     pub fn on_packet(
         &mut self,
         flows: &mut FlowManager,
-        pkt: crate::guestnet::host_if::PacketView<'_>,
+        pkt: crate::host_if::PacketView<'_>,
     ) -> Result<(), SocketError> {
         self.udp.on_packet(flows, pkt).map_err(SocketError::from)
     }

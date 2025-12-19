@@ -10,9 +10,7 @@
 //! - Must NOT implement socket semantics.
 //! - Must NOT access shared rings except through `host_if` primitives.
 
-use crate::guestnet::host_if::{
-    self, Event, EventKind, PacketDesc, PacketView, SharedMem, TxError,
-};
+use crate::host_if::{self, Event, EventKind, PacketDesc, PacketView, SharedMem, TxError};
 
 /// Host interface required by Packet I/O.
 ///

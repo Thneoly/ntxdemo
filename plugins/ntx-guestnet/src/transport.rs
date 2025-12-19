@@ -5,8 +5,8 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use crate::guestnet::flow::{FlowKey, FlowManager, SocketId, TransportProto};
-use crate::guestnet::host_if::PacketView;
+use crate::flow::{FlowKey, FlowManager, SocketId, TransportProto};
+use crate::host_if::PacketView;
 
 /// Transport-layer errors.
 #[derive(Debug, thiserror::Error)]

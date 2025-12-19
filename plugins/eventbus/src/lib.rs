@@ -3,8 +3,8 @@ use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -230,11 +230,11 @@ wit_bindgen::generate!({
     debug: true,
 });
 
-use exports::scheduler::event_bus::event_bus::{
+use crate::exports::scheduler::event_bus::event_bus::{
     self as wit_event_bus, Guest as EventBusGuest, SchedulerEvent as WitSchedulerEvent,
     SchedulerEventKind as WitSchedulerEventKind, WbsEdge as WitWbsEdge, WbsTask as WitWbsTask,
 };
-use scheduler::core_libs::types::{ActionDef as WitActionDef, ExportDef as WitExportDef};
+use crate::scheduler::core_libs::types::{ActionDef as WitActionDef, ExportDef as WitExportDef};
 
 struct EventBusComponent;
 

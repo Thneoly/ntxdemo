@@ -1,4 +1,4 @@
-use crate::guestnet::flow::{
+use crate::flow::{
     EndpointV4, FlowKey, FlowManager, SocketBindKey, SocketId, TransportProto, flow_key_hash,
 };
 

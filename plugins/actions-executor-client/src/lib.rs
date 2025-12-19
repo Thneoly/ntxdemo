@@ -43,6 +43,7 @@ export!(Client);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exports::scheduler::actions_executor::client::Guest;
 
     #[test]
     fn test_generate() {

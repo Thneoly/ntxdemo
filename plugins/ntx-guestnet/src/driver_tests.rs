@@ -1,8 +1,8 @@
-use crate::guestnet::driver::{DriveReport, drive_once};
-use crate::guestnet::flow::{EndpointV4, FlowManager, TransportProto};
-use crate::guestnet::host_if::{PacketDesc, SharedMem, packet_view_from_desc};
-use crate::guestnet::packet_io::PacketIo;
-use crate::guestnet::socket_api::{SocketKind, SocketTable};
+use crate::driver::{DriveReport, drive_once};
+use crate::flow::{EndpointV4, FlowManager, TransportProto};
+use crate::host_if::{PacketDesc, SharedMem, packet_view_from_desc};
+use crate::packet_io::PacketIo;
+use crate::socket_api::{SocketKind, SocketTable};
 
 struct TestShm {
     backing: Vec<u8>,
@@ -146,8 +146,8 @@ fn drive_once_reports_on_packet_error_reason() {
 
     // Now, feed the same malformed bytes through drive_once using the injected HostIf.
     // We only care that the error reason is surfaced via the reporting hook.
-    use crate::guestnet::host_if::{Event, EventKind};
-    use crate::guestnet::packet_io::HostIf;
+    use crate::host_if::{Event, EventKind};
+    use crate::packet_io::HostIf;
 
     #[derive(Default)]
     struct OnePacketHostIf {
@@ -163,21 +163,18 @@ fn drive_once_reports_on_packet_error_reason() {
             Vec::new()
         }
 
-        fn tx_submit(&mut self, _frame: &[u8]) -> Result<(), crate::guestnet::host_if::TxError> {
-            Err(crate::guestnet::host_if::TxError::Unsupported)
+        fn tx_submit(&mut self, _frame: &[u8]) -> Result<(), crate::host_if::TxError> {
+            Err(crate::host_if::TxError::Unsupported)
         }
 
-        fn tx_submit_l3_ipv4(
-            &mut self,
-            _packet: &[u8],
-        ) -> Result<(), crate::guestnet::host_if::TxError> {
-            Err(crate::guestnet::host_if::TxError::Unsupported)
+        fn tx_submit_l3_ipv4(&mut self, _packet: &[u8]) -> Result<(), crate::host_if::TxError> {
+            Err(crate::host_if::TxError::Unsupported)
         }
     }
 
     let mut pio = PacketIo::with_host(&shm, OnePacketHostIf { p: Some(desc) });
 
-    use crate::guestnet::driver::DriveReport;
+    use crate::driver::DriveReport;
 
     let mut saw_on_packet_err = None;
     let mut saw_stats = None;

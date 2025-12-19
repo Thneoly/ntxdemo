@@ -7,10 +7,10 @@
 //! - no packet parsing (parsing stays in Transport)
 //! - no direct host ring access (only through `PacketIo` / `host_if`)
 
-use crate::guestnet::flow::FlowManager;
-use crate::guestnet::host_if::TxError;
-use crate::guestnet::packet_io::{GuestNetError, PacketIo};
-use crate::guestnet::socket_api::{PumpReport, SocketError, SocketTable};
+use crate::flow::FlowManager;
+use crate::host_if::TxError;
+use crate::packet_io::{GuestNetError, PacketIo};
+use crate::socket_api::{PumpReport, SocketError, SocketTable};
 
 /// What to submit to the host TX primitives.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,14 +65,14 @@ pub fn drive_tx_once<'a, H, R>(
     mut report: R,
 ) -> Result<(), SocketError>
 where
-    H: crate::guestnet::packet_io::HostIf,
+    H: crate::packet_io::HostIf,
     R: for<'e> FnMut(DriveReport<'e>),
 {
     let mut stats = DriveStats::default();
 
     // MVP policy: scan socket IDs and drain their TX frames.
     // This is O(n) but keeps layering explicit; can be optimized later with readiness/eventing.
-    let ids: Vec<crate::guestnet::flow::SocketId> = sockets
+    let ids: Vec<crate::flow::SocketId> = sockets
         .debug_socket_ids_for_testing_and_pump()
         .into_iter()
         .collect();
@@ -126,7 +126,7 @@ pub fn drive_once<'a, H, R>(
     mut report: R,
 ) -> Result<(), SocketError>
 where
-    H: crate::guestnet::packet_io::HostIf,
+    H: crate::packet_io::HostIf,
     R: for<'e> FnMut(DriveReport<'e>),
 {
     let mut stats = DriveStats::default();

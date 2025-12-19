@@ -24,6 +24,7 @@ export!(Server);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exports::scheduler::actions_executor::server::Guest;
 
     #[test]
     fn test_echo() {

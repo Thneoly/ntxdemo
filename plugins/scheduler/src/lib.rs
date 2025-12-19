@@ -8,7 +8,7 @@ pub mod utils;
 pub mod component;
 pub mod core;
 mod event_bus;
-pub mod guestnet;
+pub use ntx_guestnet as guestnet;
 mod host_executor;
 mod http_bridge;
 

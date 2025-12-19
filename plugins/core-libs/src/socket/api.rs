@@ -333,6 +333,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        ignore = "requires WASI socket imports (component runtime)"
+    )]
     fn test_tcp_socket_creation() {
         let sock = Socket::tcp_v4();
         assert!(sock.is_ok());
@@ -342,6 +346,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        ignore = "requires WASI socket imports (component runtime)"
+    )]
     fn test_udp_socket_creation() {
         let sock = Socket::udp_v4();
         assert!(sock.is_ok());
@@ -350,6 +358,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        ignore = "requires WASI socket imports (component runtime)"
+    )]
     fn test_socket_bind() {
         let mut sock = Socket::tcp_v4().unwrap();
         let addr = SocketAddress::new("127.0.0.1", 8080);
@@ -359,6 +371,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        ignore = "requires WASI socket imports (component runtime)"
+    )]
     fn test_socket_bind_to_ip() {
         let mut sock = Socket::tcp_v4().unwrap();
         let ip = "127.0.0.1".parse().unwrap();
@@ -369,6 +385,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        ignore = "requires WASI socket imports (component runtime)"
+    )]
     fn test_socket_lifecycle() {
         let mut sock = Socket::tcp_v4().unwrap();
         assert!(!sock.is_bound());

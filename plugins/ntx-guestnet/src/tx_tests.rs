@@ -1,8 +1,8 @@
-use crate::guestnet::driver::{DriveReport, drive_tx_once};
-use crate::guestnet::flow::{EndpointV4, FlowManager, TransportProto};
-use crate::guestnet::host_if::{Event, EventKind, PacketDesc, SharedMem, TxError};
-use crate::guestnet::packet_io::{HostIf, PacketIo};
-use crate::guestnet::socket_api::{SocketKind, SocketTable};
+use crate::driver::{DriveReport, drive_tx_once};
+use crate::flow::{EndpointV4, FlowManager, TransportProto};
+use crate::host_if::{Event, EventKind, PacketDesc, SharedMem, TxError};
+use crate::packet_io::{HostIf, PacketIo};
+use crate::socket_api::{SocketKind, SocketTable};
 
 struct TestShm {
     backing: Vec<u8>,
@@ -111,7 +111,7 @@ fn tx_path_socket_send_transport_encode_driver_submit() {
     // TX queue should now be empty.
     assert!(matches!(
         socks.poll_tx_frame(s),
-        Err(crate::guestnet::socket_api::SocketError::WouldBlock)
+        Err(crate::socket_api::SocketError::WouldBlock)
     ));
 }
 

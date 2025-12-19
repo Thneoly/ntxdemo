@@ -1,8 +1,7 @@
-use crate::guestnet::driver::{DriveReport, drive_once};
-use crate::guestnet::flow::{EndpointV4, FlowManager, TransportProto};
-use crate::guestnet::host_if::{Event, EventKind, PacketDesc, SharedMem};
-use crate::guestnet::packet_io::{HostIf, PacketIo};
-use crate::guestnet::socket_api::{SocketKind, SocketTable};
+use crate::flow::TransportProto;
+use crate::flow::{EndpointV4, FlowManager};
+use crate::host_if::{PacketDesc, SharedMem, packet_view_from_desc};
+use crate::socket_api::{SocketError, SocketKind, SocketTable};
 
 struct TestShm {
     backing: Vec<u8>,
@@ -16,38 +15,6 @@ impl SharedMem for TestShm {
     }
 }
 
-#[derive(Default)]
-struct FakeHostIf {
-    packets: std::collections::VecDeque<PacketDesc>,
-}
-
-impl FakeHostIf {
-    fn push(&mut self, d: PacketDesc) {
-        self.packets.push_back(d);
-    }
-}
-
-impl HostIf for FakeHostIf {
-    fn poll_packet(&mut self) -> Option<PacketDesc> {
-        self.packets.pop_front()
-    }
-
-    fn poll_oneoff(&mut self, _interests: &[EventKind]) -> Vec<Event> {
-        Vec::new()
-    }
-
-    fn tx_submit(&mut self, _frame: &[u8]) -> Result<(), crate::guestnet::host_if::TxError> {
-        Err(crate::guestnet::host_if::TxError::Unsupported)
-    }
-
-    fn tx_submit_l3_ipv4(
-        &mut self,
-        _packet: &[u8],
-    ) -> Result<(), crate::guestnet::host_if::TxError> {
-        Err(crate::guestnet::host_if::TxError::Unsupported)
-    }
-}
-
 fn build_udp_frame(
     src_ip: [u8; 4],
     dst_ip: [u8; 4],
@@ -55,6 +22,7 @@ fn build_udp_frame(
     dst_port: u16,
     payload: &[u8],
 ) -> Vec<u8> {
+    // Ethernet
     let mut out = vec![
         0u8;
         ntx_network::packet::headers::EthernetHeader::LEN
@@ -102,21 +70,7 @@ fn build_udp_frame(
 }
 
 #[test]
-fn injected_hostif_allows_full_chain_packetio_to_socket_recv() {
-    let frame = build_udp_frame([10, 0, 0, 1], [10, 0, 0, 2], 1111, 2222, b"ping");
-    let shm = TestShm { backing: frame };
-
-    let mut host = FakeHostIf::default();
-    host.push(PacketDesc {
-        buf_offset: 0,
-        len: shm.backing.len() as u32,
-        l3_proto: 4,
-        l4_proto: 17,
-        flow_hash: 1,
-    });
-
-    let mut pio = PacketIo::with_host(&shm, host);
-
+fn udp_socket_bind_receives_datagram() {
     let mut flows = FlowManager::new();
     flows.set_now_tick(1);
 
@@ -135,18 +89,103 @@ fn injected_hostif_allows_full_chain_packetio_to_socket_recv() {
         )
         .unwrap();
 
-    let mut stats = None;
-    drive_once(&mut pio, &mut flows, &mut socks, |r| {
-        if let DriveReport::Stats(s) = r {
-            stats = Some(s);
-        }
-    })
-    .unwrap();
-    let stats = stats.unwrap();
+    // Inbound packet to 10.0.0.2:2222
+    let frame = build_udp_frame([10, 0, 0, 1], [10, 0, 0, 2], 1111, 2222, b"ping");
+    let shm = TestShm { backing: frame };
+    let desc = PacketDesc {
+        buf_offset: 0,
+        len: shm.backing.len() as u32,
+        l3_proto: 4,
+        l4_proto: 17,
+        flow_hash: 1,
+    };
+    let view = packet_view_from_desc(&shm, desc).unwrap();
 
-    assert_eq!(stats.packets_rx, 1);
-    assert_eq!(stats.packets_bad_desc, 0);
+    socks.on_packet(&mut flows, view).unwrap();
+    socks
+        .pump_transport_to_sockets_with_report(&mut flows)
+        .unwrap();
 
     let msg = socks.recv(s, 64).unwrap();
     assert_eq!(msg, b"ping");
+}
+
+#[test]
+fn udp_socket_recv_would_block_when_empty() {
+    let mut flows = FlowManager::new();
+    flows.set_now_tick(1);
+
+    let mut socks = SocketTable::new();
+    let s = socks
+        .socket(SocketKind::Datagram, TransportProto::Udp)
+        .unwrap();
+
+    assert!(matches!(socks.recv(s, 64), Err(SocketError::WouldBlock)));
+}
+
+#[test]
+fn udp_socket_send_requires_connect() {
+    let mut flows = FlowManager::new();
+    flows.set_now_tick(1);
+
+    let mut socks = SocketTable::new();
+    let s = socks
+        .socket(SocketKind::Datagram, TransportProto::Udp)
+        .unwrap();
+
+    socks
+        .bind(
+            &mut flows,
+            s,
+            EndpointV4 {
+                ip: [10, 0, 0, 2],
+                port: 2222,
+            },
+        )
+        .unwrap();
+
+    // Not connected yet.
+    assert!(matches!(
+        socks.send(s, b"hello"),
+        Err(SocketError::InvalidState)
+    ));
+
+    socks
+        .connect(
+            &mut flows,
+            s,
+            EndpointV4 {
+                ip: [10, 0, 0, 1],
+                port: 1111,
+            },
+        )
+        .unwrap();
+
+    // Now send is accepted into transport tx queue.
+    let n = socks.send(s, b"hello").unwrap();
+    assert_eq!(n, 5);
+}
+
+#[test]
+fn udp_socket_on_packet_malformed_is_structured() {
+    let mut flows = FlowManager::new();
+    flows.set_now_tick(1);
+
+    let mut socks = SocketTable::new();
+
+    let shm = TestShm {
+        backing: vec![0u8; 8],
+    };
+    let desc = PacketDesc {
+        buf_offset: 0,
+        len: shm.backing.len() as u32,
+        l3_proto: 4,
+        l4_proto: 17,
+        flow_hash: 1,
+    };
+    let view = packet_view_from_desc(&shm, desc).unwrap();
+
+    let e = socks.on_packet(&mut flows, view).unwrap_err();
+    let s = e.to_string();
+    assert!(s.contains("malformed packet"), "unexpected error: {s}");
 }

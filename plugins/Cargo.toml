@@ -5,6 +5,7 @@ members = [
 	"actions-executor-server",
 	"actions-executor-client",
 	"scheduler", 
+	"ntx-guestnet",
 	"http-server",
 	"eventbus",
 ]
