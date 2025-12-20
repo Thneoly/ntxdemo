@@ -184,7 +184,7 @@ fn main() -> Result<()> {
     // Keyed by 4-tuple (peer_ip, peer_port, local_ip, local_port).
     let mut udp_reply_cache: HashMap<
         ntx::network::socket::udp::Key,
-        ntx::network::UdpReplyTemplate,
+        ntx::network::traffic::udp_echo::UdpReplyTemplate,
     > = HashMap::new();
 
     let mut buf = vec![0u8; 2048];
@@ -344,7 +344,7 @@ fn main() -> Result<()> {
 
         let tpl = udp_reply_cache.entry(key).or_insert_with(|| {
             // Swap src/dst using the currently chosen identity's MAC.
-            ntx::network::UdpReplyTemplate::from_layers(eth, ip, udp, my_mac)
+            ntx::network::traffic::udp_echo::UdpReplyTemplate::from_layers(eth, ip, udp, my_mac)
         });
 
         let reply = tpl

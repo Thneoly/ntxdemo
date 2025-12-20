@@ -49,8 +49,8 @@ pub use parser::{
 // Registry helpers
 pub use pipeline::default_registry;
 
-// Echo reply template is used by socket/transport layers.
-pub use crate::traffic::udp_echo::{UdpReplyTemplate, build_udp_reply};
+// Intentionally do NOT re-export echo/reply helpers from `stack`.
+// Use `crate::traffic::udp_echo` instead.
 
 // DSL remains part of the public surface (used by prelude).
 pub use dsl::{Chain, LayerPkt, PacketBuilder, Raw};

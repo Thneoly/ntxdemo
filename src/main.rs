@@ -8,7 +8,8 @@ mod guest_packet_val;
 mod network;
 use component_utils::{find_iface_parent, find_top_level_func, get_func_from_iface};
 use echo::{run_echo_client_local, run_echo_server_local};
-use network::stack::{PacketContext, build_udp_reply};
+use network::stack::PacketContext;
+use network::traffic::udp_echo::build_udp_reply;
 use network::{MacAddr, Nic};
 
 use wasmtime::{

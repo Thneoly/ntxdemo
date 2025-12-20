@@ -1,14 +1,13 @@
 use anyhow::{Context, Result};
 
-use ntx::network::packet::headers::{Ipv4Addr, MacAddr};
-use ntx::network::prelude::*;
-use ntx::network::resources::ResourcePoolsConfig;
-use ntx::network::socket::udp::Key;
-use ntx::network::socket::udp::Table;
-use ntx::network::stack::{
+use ntx_network::packet::headers::{Ipv4Addr, MacAddr};
+use ntx_network::prelude::*;
+use ntx_network::resources::ResourcePoolsConfig;
+use ntx_network::socket::udp::{Key, Table};
+use ntx_network::stack::{
     LayerId, LayerRegistry, PacketContext, default_registry, layers, li, parse_packet_with_ctx,
 };
-use ntx::network::{ArpCache, ConnTableConfig};
+use ntx_network::{ArpCache, ConnTableConfig};
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct TargetsConfig {

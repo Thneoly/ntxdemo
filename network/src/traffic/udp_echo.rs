@@ -1,6 +1,7 @@
 use crate::{ETH_TYPE_IPV4, EthernetHeader, Ipv4Header, MacAddr, UdpHeader};
 
-use crate::stack::layers::{Ether, Ipv4, Udp};
+use crate::packet::layers::{Ether, Ipv4, Udp};
+use crate::socket::PacketView;
 use crate::stack::{Action, PacketHandler, ParsedPacket, ReplyFrame};
 
 /// A minimal UDP echo handler.
@@ -77,7 +78,7 @@ impl PacketHandler for UdpEchoHandler {
 /// Build an IPv4/UDP echo reply, swapping MAC/IP/port.
 ///
 /// Requires the parsed packet to contain Ether + Ipv4 + Udp.
-pub fn build_udp_reply(pkt: &ParsedPacket<'_>, iface_mac: MacAddr) -> anyhow::Result<ReplyFrame> {
+pub fn build_udp_reply(pkt: &impl PacketView, iface_mac: MacAddr) -> anyhow::Result<ReplyFrame> {
     let eth = pkt
         .get::<Ether>()
         .ok_or_else(|| anyhow::anyhow!("missing ether"))?;
@@ -88,7 +89,9 @@ pub fn build_udp_reply(pkt: &ParsedPacket<'_>, iface_mac: MacAddr) -> anyhow::Re
         .get::<Udp>()
         .ok_or_else(|| anyhow::anyhow!("missing udp"))?;
 
-    let payload = pkt.payload();
+    let payload = pkt
+        .payload()
+        .ok_or_else(|| anyhow::anyhow!("missing payload"))?;
 
     let reply_eth = EthernetHeader {
         dst: eth.src,
@@ -176,7 +179,7 @@ impl UdpReplyTemplate {
     /// Create a reply template from a parsed packet.
     ///
     /// Errors if the packet does not contain Ether + Ipv4 + Udp.
-    pub fn from_parsed_packet(pkt: &ParsedPacket<'_>, src_mac: MacAddr) -> anyhow::Result<Self> {
+    pub fn from_parsed_packet(pkt: &impl PacketView, src_mac: MacAddr) -> anyhow::Result<Self> {
         let eth = pkt
             .get::<Ether>()
             .ok_or_else(|| anyhow::anyhow!("missing ether"))?;

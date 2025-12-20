@@ -355,6 +355,10 @@ impl Transport for UdpTransport {
 
         let parsed = ParsedPacket { layers, payload };
 
+        // Keep timing consistent across protocol demux (UDP/TCP/...) and avoid
+        // scattered `Instant::now()` calls.
+        let now = std::time::Instant::now();
+
         let Some(ip) = parsed.get::<ntx_network::stack::layers::Ipv4>() else {
             return Err(TransportError::MalformedPacket(MalformedPacketReason::Ipv4));
         };
@@ -375,10 +379,14 @@ impl Transport for UdpTransport {
         };
         let my_mac = eth.dst;
         let my_ip = ntx_network::packet::headers::Ipv4Addr(ip.dst.0);
-        let my_port = udp.dst_port;
+
+        // Build minimal reusable contexts once per packet.
+        let time = ntx_network::socket::TimeContext::with_now(now);
+        let local = ntx_network::socket::LocalIdentity::new(my_mac, my_ip);
+        let udp_rxctx = ntx_network::socket::UdpRxContext::new(time, local, udp.dst_port);
         let _ = self
             .conns
-            .get_or_insert_from_rx(&parsed, my_ip, my_port, my_mac)
+            .on_rx(&parsed, &udp_rxctx)
             .map_err(|_| TransportError::MalformedPacket(MalformedPacketReason::Udp))?;
 
         let key = FlowKey {

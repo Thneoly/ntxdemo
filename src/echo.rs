@@ -6,7 +6,8 @@ use wasmtime::component::{Func, Val};
 
 use crate::component_utils::{find_iface_parent, get_func_from_iface};
 use crate::network::stack::layers::{Ether, Ipv4, Udp, register_all};
-use crate::network::stack::{LayerId, LayerRegistry, ParsedPacket, build_udp_reply, parse_packet};
+use crate::network::stack::{LayerId, LayerRegistry, ParsedPacket, parse_packet};
+use crate::network::traffic::udp_echo::build_udp_reply;
 use crate::network::{self, EthernetHeader, Ipv4Addr, Ipv4Header, MacAddr, Nic, UdpHeader};
 use crate::{Backend, Opt, State};
 

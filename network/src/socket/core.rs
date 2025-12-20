@@ -3,13 +3,14 @@ use std::time::{Duration, Instant};
 
 /// A protocol-agnostic connection key.
 ///
-/// This trait exists to let the socket layer grow beyond UDP (TCP/RAW/ETH) without
-/// baking a single protocol's 4-tuple into the generic API surface.
+/// `socket::core` 是纯容器层：这里只关心“可哈希、可比较、可复制”的 key。
+///
+/// 注意：这里故意不要求 `proto_name()` 之类的语义信息，避免 core 被协议语义污染。
 #[allow(dead_code)]
-pub trait ConnKey: Copy + Eq + std::hash::Hash {
-    /// Human-readable protocol tag, mainly for debugging/metrics.
-    fn proto_name(&self) -> &'static str;
-}
+pub trait ConnKey: Copy + Eq + std::hash::Hash {}
+
+// Blanket impl: 满足 Copy+Eq+Hash 的类型自动成为 ConnKey。
+impl<T> ConnKey for T where T: Copy + Eq + std::hash::Hash {}
 
 /// A protocol-agnostic connection entry.
 ///
@@ -86,6 +87,11 @@ impl<C: ConnEntry> ConnTableCore<C> {
         }
     }
 
+    /// 只读访问配置。
+    pub fn config(&self) -> ConnTableConfig {
+        self.cfg
+    }
+
     pub fn stats(&self) -> ConnTableStats {
         self.stats
     }
@@ -94,11 +100,21 @@ impl<C: ConnEntry> ConnTableCore<C> {
         self.map.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// 查询（计入 stats）。
     pub fn get(&mut self, key: &C::Key) -> Option<&C> {
         self.stats.lookups += 1;
         if self.map.contains_key(key) {
             self.stats.hits += 1;
         }
+        self.map.get(key)
+    }
+
+    /// 只读 peek（不计入 stats）——用于调试/打印等不想污染指标的场景。
+    pub fn peek(&self, key: &C::Key) -> Option<&C> {
         self.map.get(key)
     }
 
@@ -121,8 +137,61 @@ impl<C: ConnEntry> ConnTableCore<C> {
         prev
     }
 
+    /// 获取现有条目（若存在）或使用 `create` 创建并插入。
+    ///
+    /// 语义：
+    /// - 命中：返回可变引用，并由调用者决定是否 refresh last_seen
+    /// - 未命中：执行 eviction（TTL+cap），插入新值后返回可变引用
+    pub fn get_or_insert_with(&mut self, key: C::Key, create: impl FnOnce() -> C) -> &mut C {
+        self.stats.lookups += 1;
+        if self.map.contains_key(&key) {
+            self.stats.hits += 1;
+            return self.map.get_mut(&key).expect("exists");
+        }
+
+        self.evict_if_needed();
+        self.map.insert(key, create());
+        self.stats.inserts += 1;
+        self.map.get_mut(&key).expect("inserted")
+    }
+
+    /// 与 [`ConnTableCore::get_or_insert_with`] 类似，但会额外返回是否发生了插入。
+    ///
+    /// 语义：
+    /// - 命中：`inserted=false`
+    /// - 未命中：执行 eviction（TTL+cap），插入新值，`inserted=true`
+    pub fn upsert_with(&mut self, key: C::Key, create: impl FnOnce() -> C) -> (&mut C, bool) {
+        self.stats.lookups += 1;
+        if self.map.contains_key(&key) {
+            self.stats.hits += 1;
+            return (self.map.get_mut(&key).expect("exists"), false);
+        }
+
+        self.evict_if_needed();
+        self.map.insert(key, create());
+        self.stats.inserts += 1;
+        (self.map.get_mut(&key).expect("inserted"), true)
+    }
+
+    /// 获取现有条目或插入新值，但返回不可变引用（避免上层 `peek()+expect()` 的样板）。
+    ///
+    /// 注意：如果你需要在命中/插入后修改条目（例如刷新 last_seen），请优先使用
+    /// [`ConnTableCore::get_or_insert_with`] 或 [`ConnTableCore::upsert_with`]。
+    pub fn get_or_insert_with_ref(&mut self, key: C::Key, create: impl FnOnce() -> C) -> &C {
+        let _ = self.get_or_insert_with(key, create);
+        self.peek(&key).expect("exists")
+    }
+
     pub fn contains_key(&self, key: &C::Key) -> bool {
         self.map.contains_key(key)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&C::Key, &C)> {
+        self.map.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&C::Key, &mut C)> {
+        self.map.iter_mut()
     }
 
     pub(crate) fn evict_if_needed(&mut self) {

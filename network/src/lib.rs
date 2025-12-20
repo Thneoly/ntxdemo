@@ -49,19 +49,13 @@ pub use stack::{
     ParsedPacket,
     Pipeline,
     ReplyFrame,
-    UdpReplyTemplate,
     // Builders / parser
     build_packet,
-    build_udp_reply,
     default_registry,
 
     parse_packet,
     parse_packet_with_spans,
 };
-
-// Echo handler is intentionally in `traffic` (not `stack`) to keep the stack
-// focused on parse/dispatch.
-pub use traffic::udp_echo::UdpEchoHandler;
 
 // Socket tables (UDP + generic core + skeletons)
 pub use socket::{ConnEntry, ConnKey, ConnTableConfig, ConnTableCore, ConnTableStats};
