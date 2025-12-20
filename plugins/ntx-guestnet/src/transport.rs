@@ -9,7 +9,8 @@ use std::time::Duration;
 use crate::flow::{FlowKey, FlowManager, SocketId, TransportProto};
 use crate::host_if::PacketView;
 
-use ntx_network::socket::{ConnTable, ConnTableConfig};
+use ntx_network::socket::ConnTableConfig;
+use ntx_network::socket::udp::Table as ConnTable;
 use ntx_network::stack::{
     LayerId, PacketContext, ParsedPacket, default_registry, parse_packet_with_ctx,
 };

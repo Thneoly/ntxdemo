@@ -18,31 +18,16 @@
 //! The initial implementation focuses on UDP because echo workloads need it most.
 //! TCP/RAW/ETH tables are provided as compile-safe skeletons so the API can converge.
 
-mod table;
+mod core;
+pub mod ethernet;
+pub mod ip;
+pub mod tcp;
+pub mod udp;
 
-pub use table::{
-    Conn, ConnEntry, ConnKey, ConnTable, ConnTableConfig, ConnTableCore, ConnTableStats, EthConn,
-    EthConnTable, EthKey, RawIpConn, RawIpConnTable, RawIpKey, TcpConn, TcpConnTable, TcpFlowKey,
-    UdpConnTable, UdpSocket,
-};
+// Core surface.
+pub use core::{ConnEntry, ConnKey, ConnTableConfig, ConnTableCore, ConnTableStats};
 
-// Future: TCP
-pub mod tcp {
-    //! TCP socket table (skeleton).
-    #[derive(Debug, Default, Clone, Copy)]
-    pub struct TcpSocketTable;
-}
-
-// Future: Raw IP
-pub mod raw {
-    //! Raw IP socket table (skeleton).
-    #[derive(Debug, Default, Clone, Copy)]
-    pub struct RawSocketTable;
-}
-
-// Future: Ethernet / L2
-pub mod eth {
-    //! Ethernet socket table (skeleton).
-    #[derive(Debug, Default, Clone, Copy)]
-    pub struct EthSocketTable;
-}
+// Intentionally no protocol-specific re-exports here.
+//
+// Use `socket::<proto>::{Key, Conn, Table}` (e.g. `socket::udp::Table`) for a
+// uniform surface across protocols.

@@ -25,11 +25,11 @@ use arc_swap::ArcSwap;
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResourceKind {
-    Ipv4Addr = 1,
-    Ipv6Addr = 2,
-    TcpPort = 3,
-    UdpPort = 4,
-    Vni = 5,
+    Ipv4Addr,
+    Ipv6Addr,
+    TcpPort,
+    UdpPort,
+    Vni,
 }
 
 /// Query key for a binding.

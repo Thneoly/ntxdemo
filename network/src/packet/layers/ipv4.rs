@@ -78,16 +78,8 @@ impl<'a> Layer<'a> for Ipv4 {
             return AcceptResult::Poison;
         }
 
-        // Back-compat fallback: if caller didn't configure local IPv4 ownership, accept all.
-        if ctx.local_ipv4.is_empty() {
-            return AcceptResult::Accept;
-        }
-
-        if ctx.local_ipv4.iter().any(|ip| *ip == self.dst) {
-            AcceptResult::Accept
-        } else {
-            AcceptResult::Poison
-        }
+        // No ABR configured => permissive behavior (accept-all).
+        AcceptResult::Accept
     }
 
     fn next_layer(&self) -> Option<LayerId> {

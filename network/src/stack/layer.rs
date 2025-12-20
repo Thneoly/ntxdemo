@@ -1,7 +1,7 @@
 use std::any::Any;
 
+use crate::MacAddr;
 use crate::abr;
-use crate::{Ipv4Addr, MacAddr};
 
 /// A stable identifier for a protocol layer.
 ///
@@ -49,12 +49,6 @@ pub struct PacketContext {
     ///
     /// If `None`, layers should fall back to permissive behavior (accept-all).
     pub abr: Option<std::sync::Arc<abr::ResourceView>>,
-
-    /// Deprecated: previously used as a "local/bound IPv4 set".
-    ///
-    /// Kept temporarily to reduce churn in callers/tests. Prefer `abr.ipv4`.
-    #[allow(dead_code)]
-    pub local_ipv4: Vec<Ipv4Addr>,
 }
 
 /// Protocol layer with self-description: it knows how to decode itself, and decide next.
@@ -174,7 +168,6 @@ impl PacketContext {
         Self {
             iface_mac: None,
             abr: Some(view),
-            local_ipv4: Vec::new(),
         }
     }
 }

@@ -8,7 +8,8 @@
 // Layering / builder DSL
 pub use crate::stack::{Chain, LayerPkt, PacketBuilder, Raw, layers};
 
-// NIC trait is frequently used in examples.
+// NIC trait is frequently used in host-side examples.
+#[cfg(feature = "host")]
 pub use crate::Nic;
 
 // Resource pools (config-driven).

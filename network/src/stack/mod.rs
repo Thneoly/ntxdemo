@@ -23,9 +23,39 @@ mod tests;
 #[cfg(test)]
 mod dsl_tests;
 
-pub use dsl::*;
-pub use graph::*;
-pub use layer::*;
-pub use parser::*;
-pub use pipeline::*;
-pub use registry::*;
+// Curated public surface (avoid `pub use ...::*` to prevent accidental API leaks).
+//
+// If you need something that's not exported here, prefer importing it from its
+// defining submodule (e.g. `stack::pipeline::ParsedPacket`).
+
+// Core types
+pub use layer::{AcceptResult, Layer, LayerId, LayerInstance, PacketContext};
+pub use pipeline::{Action, PacketHandler, ParsedPacket, Pipeline, ReplyFrame};
+pub use registry::LayerRegistry;
+
+// Registry binding keys (used by layer registration glue).
+pub use registry::BindKey;
+
+// Graph plumbing (used by parse graph + docs).
+pub use graph::{EdgeKind, PacketGraph};
+
+// Parsing helpers
+pub use parser::{
+    build_packet, build_packet_no_payload, build_packet_no_payload_with_glue,
+    build_packet_with_glue, parse_packet, parse_packet_graph, parse_packet_with_ctx,
+    parse_packet_with_spans,
+};
+
+// Registry helpers
+pub use pipeline::default_registry;
+
+// Echo reply template is used by socket/transport layers.
+pub use crate::traffic::udp_echo::{UdpReplyTemplate, build_udp_reply};
+
+// DSL remains part of the public surface (used by prelude).
+pub use dsl::{Chain, LayerPkt, PacketBuilder, Raw};
+
+// Also expose the `li` helper module path used by DSL internals.
+pub use layer::li;
+
+// DSL/graph are now intentionally not part of the default public surface.

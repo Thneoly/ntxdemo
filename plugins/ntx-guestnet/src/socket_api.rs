@@ -18,7 +18,8 @@ use crate::transport::{
     TransportError, UdpTransport,
 };
 
-use ntx_network::socket::{ConnTable, ConnTableConfig};
+use ntx_network::socket::ConnTableConfig;
+use ntx_network::socket::udp::Table as ConnTable;
 
 /// Socket kinds (subset).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

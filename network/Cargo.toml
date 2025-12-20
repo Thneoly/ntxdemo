@@ -7,10 +7,22 @@ edition = "2024"
 name = "ntx_network"
 path = "src/lib.rs"
 
+[features]
+# Keep `ntx-network` backward compatible by default: include host NIC support +
+# guestnet-friendly wrappers.
+default = ["host", "guestnet"]
+
+# Low-level host-side integration (direct NIC access / AF_PACKET).
+host = ["dep:libc"]
+
+# High-level, WIT-friendly surface used by `plugins/ntx-guestnet`.
+# This intentionally does not require `host`.
+guestnet = []
+
 [dependencies]
 anyhow = "1.0.100"
 arc-swap = "1.7.1"
 bitflags = "2.9.4"
-libc = "0.2"
+libc = { version = "0.2", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9.34-deprecated"

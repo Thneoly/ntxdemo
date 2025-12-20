@@ -239,7 +239,7 @@ fn udp_on_packet_primes_conntable_and_can_build_reply() {
 
     // Now the transport should have learned a reverse-path reply template.
     // Build a reply: server -> client
-    let key = ntx_network::stack::UdpFlowKey {
+    let key = ntx_network::socket::udp::Key {
         peer_ip: ntx_network::packet::headers::Ipv4Addr([10, 0, 0, 1]),
         peer_port: 1111,
         local_ip: ntx_network::packet::headers::Ipv4Addr([10, 0, 0, 2]),

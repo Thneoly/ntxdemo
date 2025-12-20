@@ -1,6 +1,7 @@
 //! Standalone userspace networking crate.
 pub mod abr;
 mod fmt;
+#[cfg(feature = "host")]
 mod nic;
 pub mod packet;
 pub mod prelude;
@@ -8,6 +9,12 @@ pub mod resources;
 pub mod socket;
 pub mod stack;
 pub mod traffic;
+
+/// Guestnet-facing, WIT-friendly high-level wrappers.
+///
+/// Enabled by default via the `guestnet` feature.
+#[cfg(feature = "guestnet")]
+pub mod guestnet;
 
 /// Back-compat module exports.
 ///
@@ -32,42 +39,31 @@ pub use packet::headers::{ipv4_header_checksum, tcp_checksum, udp_checksum};
 
 // Convenient re-exports (preserve the old API surface used by the main binary).
 #[allow(unused_imports)]
+#[cfg(feature = "host")]
 pub use nic::{AfPacketDgramNic, AfPacketNic, Nic, TpacketV3Nic};
 #[allow(unused_imports)]
 pub use stack::{
     // Pipeline surface
     Action,
-    // Core registry + layer types
-    BindKey,
-    EdgeKind,
-
-    Layer,
-    LayerId,
-    LayerInstance,
-    LayerRegistry,
-    PacketGraph,
     PacketHandler,
     ParsedPacket,
     Pipeline,
     ReplyFrame,
-    UdpEchoHandler,
-    UdpFlowKey,
     UdpReplyTemplate,
-    // Parser / graph
+    // Builders / parser
     build_packet,
     build_udp_reply,
     default_registry,
 
     parse_packet,
-    parse_packet_graph,
     parse_packet_with_spans,
 };
 
+// Echo handler is intentionally in `traffic` (not `stack`) to keep the stack
+// focused on parse/dispatch.
+pub use traffic::udp_echo::UdpEchoHandler;
+
 // Socket tables (UDP + generic core + skeletons)
-pub use socket::{
-    Conn, ConnEntry, ConnKey, ConnTable, ConnTableConfig, ConnTableCore, ConnTableStats, EthConn,
-    EthConnTable, EthKey, RawIpConn, RawIpConnTable, RawIpKey, TcpConn, TcpConnTable, TcpFlowKey,
-    UdpConnTable, UdpSocket,
-};
+pub use socket::{ConnEntry, ConnKey, ConnTableConfig, ConnTableCore, ConnTableStats};
 
 // Note: don't glob re-export `packet::*` to avoid ambiguous re-exports with `stack::*`.

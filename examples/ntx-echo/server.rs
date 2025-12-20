@@ -182,8 +182,10 @@ fn main() -> Result<()> {
 
     // Socket-like reverse-path cache (per UDP flow).
     // Keyed by 4-tuple (peer_ip, peer_port, local_ip, local_port).
-    let mut udp_reply_cache: HashMap<ntx::network::UdpFlowKey, ntx::network::UdpReplyTemplate> =
-        HashMap::new();
+    let mut udp_reply_cache: HashMap<
+        ntx::network::socket::udp::Key,
+        ntx::network::UdpReplyTemplate,
+    > = HashMap::new();
 
     let mut buf = vec![0u8; 2048];
 
@@ -192,7 +194,6 @@ fn main() -> Result<()> {
         // Receive frames for multiple local MACs.
         iface_mac: None,
         abr: None,
-        local_ipv4: Vec::new(),
     };
 
     loop {
@@ -334,7 +335,7 @@ fn main() -> Result<()> {
 
         // Echo reply (socket-like): cache the reverse-path headers for the flow and only
         // inject payload on each send.
-        let key = ntx::network::UdpFlowKey {
+        let key = ntx::network::socket::udp::Key {
             peer_ip: ip.src,
             peer_port: udp.src_port,
             local_ip: my_ip,

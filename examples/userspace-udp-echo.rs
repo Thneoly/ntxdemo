@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use ntx::network::stack::{Action, Pipeline, UdpEchoHandler};
+use ntx::network::stack::{Action, Pipeline};
+use ntx::network::traffic::udp_echo::UdpEchoHandler;
 use ntx::network::{MacAddr, Nic};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

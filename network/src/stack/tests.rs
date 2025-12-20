@@ -257,7 +257,6 @@ fn accept_ipv4_not_owned_poison_stops_before_udp() {
     let ctx = PacketContext {
         iface_mac: None,
         abr: Some(std::sync::Arc::new(view)),
-        local_ipv4: vec![],
     };
 
     let (decoded, payload) = parse_packet_with_ctx(&frame, LayerId::Ether, &reg, &ctx).unwrap();
@@ -284,7 +283,6 @@ fn accept_ether_not_to_us_drop_errors() {
     let ctx = PacketContext {
         iface_mac: Some(crate::MacAddr([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff])),
         abr: None,
-        local_ipv4: vec![],
     };
 
     let err = parse_packet_with_ctx(&frame, LayerId::Ether, &reg, &ctx).unwrap_err();
@@ -327,7 +325,6 @@ fn accept_arp_tpa_not_owned_poison_stops_at_arp() {
     let ctx = PacketContext {
         iface_mac: None,
         abr: Some(std::sync::Arc::new(store.snapshot())),
-        local_ipv4: vec![],
     };
 
     let (layers, _payload) = parse_packet_with_ctx(&frame, LayerId::Ether, &reg, &ctx).unwrap();
@@ -385,7 +382,6 @@ fn accept_udp_port_not_bound_poison_stops_before_udp() {
     let ctx = PacketContext {
         iface_mac: None,
         abr: Some(std::sync::Arc::new(store.snapshot())),
-        local_ipv4: vec![],
     };
 
     let (decoded, payload) = parse_packet_with_ctx(&frame, LayerId::Ether, &reg, &ctx).unwrap();
@@ -473,7 +469,6 @@ fn accept_vxlan_vni_not_bound_poison_stops_at_vxlan() {
     let ctx = PacketContext {
         iface_mac: None,
         abr: Some(std::sync::Arc::new(store.snapshot())),
-        local_ipv4: vec![],
     };
 
     let (decoded, _payload) = parse_packet_with_ctx(&frame, LayerId::Ether, &reg, &ctx).unwrap();

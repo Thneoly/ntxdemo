@@ -3,10 +3,12 @@ use anyhow::{Context, Result};
 use ntx::network::packet::headers::{Ipv4Addr, MacAddr};
 use ntx::network::prelude::*;
 use ntx::network::resources::ResourcePoolsConfig;
+use ntx::network::socket::udp::Key;
+use ntx::network::socket::udp::Table;
 use ntx::network::stack::{
     LayerId, LayerRegistry, PacketContext, default_registry, layers, li, parse_packet_with_ctx,
 };
-use ntx::network::{ArpCache, ConnTable, ConnTableConfig, UdpFlowKey};
+use ntx::network::{ArpCache, ConnTableConfig};
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct TargetsConfig {
@@ -81,9 +83,9 @@ fn main() -> Result<()> {
 
     // Client-side connection table + ARP cache.
     // - ArpCache learns (peer_ip -> peer_mac) from ARP replies.
-    // - ConnTable remembers per-flow peer/local tuples and holds a reusable tx template.
+    // - Table remembers per-flow peer/local tuples and holds a reusable tx template.
     let mut arp_cache = ArpCache::new(std::time::Duration::from_secs(60));
-    let mut udp_sockets = ConnTable::new(ConnTableConfig {
+    let mut udp_sockets = Table::new(ConnTableConfig {
         max_entries: 4096,
         ttl: Some(std::time::Duration::from_secs(60)),
     });
@@ -166,7 +168,6 @@ fn main() -> Result<()> {
         // reply matching logic below) to keep only relevant packets.
         iface_mac: None,
         abr: None,
-        local_ipv4: Vec::new(),
     };
 
     // Relaxed context for debug-only “what did we actually receive?” decoding.
@@ -175,7 +176,6 @@ fn main() -> Result<()> {
     let mut debug_ctx = PacketContext {
         iface_mac: None,
         abr: None,
-        local_ipv4: Vec::new(),
     };
 
     // --- 1) Targets (server identities) + ARP resolve (if MAC unspecified) ---
@@ -475,7 +475,7 @@ fn main() -> Result<()> {
         // - local_ip == reply dst
         // - peer_port == reply src_port
         // - local_port == reply dst_port
-        let flow_key = UdpFlowKey {
+        let flow_key = Key {
             peer_ip: ip.src,
             peer_port: udp.src_port,
             local_ip: ip.dst,
