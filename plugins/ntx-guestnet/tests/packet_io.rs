@@ -1,5 +1,5 @@
-use super::host_if::{PacketDesc, SharedMem};
-use super::packet_io::{GuestNetError, PacketIo};
+use ntx_guestnet::host_if::{PacketDesc, SharedMem};
+use ntx_guestnet::packet_io::{GuestNetError, PacketIo};
 
 struct TestShm {
     backing: Vec<u8>,
@@ -45,6 +45,6 @@ fn packetdesc_to_view_is_no_copy_borrow() {
         flow_hash: 123,
     };
 
-    let view = super::host_if::packet_view_from_desc(&shm, desc).expect("view");
+    let view = ntx_guestnet::host_if::packet_view_from_desc(&shm, desc).expect("view");
     assert_eq!(view.as_bytes(), &[10, 11, 12, 13]);
 }

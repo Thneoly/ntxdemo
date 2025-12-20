@@ -283,8 +283,7 @@ impl UdpTransport {
         self.txq.entry(s).or_default()
     }
 
-    #[cfg(test)]
-    pub(crate) fn conns_mut(&mut self) -> &mut ConnTable {
+    pub fn conns_mut(&mut self) -> &mut ConnTable {
         &mut self.conns
     }
 

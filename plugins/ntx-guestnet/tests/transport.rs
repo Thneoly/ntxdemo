@@ -1,6 +1,6 @@
-use crate::flow::{EndpointV4, FlowManager, SocketBindKey, SocketId, TransportProto};
-use crate::host_if::{PacketDesc, SharedMem, packet_view_from_desc};
-use crate::transport::{Transport, TransportError, UdpTransport};
+use ntx_guestnet::flow::{EndpointV4, FlowManager, SocketBindKey, SocketId, TransportProto};
+use ntx_guestnet::host_if::{PacketDesc, SharedMem, packet_view_from_desc};
+use ntx_guestnet::transport::{Transport, TransportError, UdpTransport};
 
 struct TestShm {
     backing: Vec<u8>,

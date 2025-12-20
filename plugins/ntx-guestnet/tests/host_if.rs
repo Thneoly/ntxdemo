@@ -1,4 +1,4 @@
-use super::*;
+use ntx_guestnet::host_if::{PacketDesc, SharedMem, packet_view_from_desc};
 
 struct TestShm {
     backing: Vec<u8>,

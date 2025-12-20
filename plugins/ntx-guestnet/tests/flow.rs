@@ -1,4 +1,4 @@
-use crate::flow::{
+use ntx_guestnet::flow::{
     EndpointV4, FlowKey, FlowManager, SocketBindKey, SocketId, TransportProto, flow_key_hash,
 };
 
@@ -38,7 +38,7 @@ fn bind_socket_and_lookup_socket() {
     fm.set_now_tick(1);
 
     let key = FlowKey {
-        proto: TransportProto::Tcp,
+        proto: TransportProto::Udp,
         src_ip: [192, 168, 0, 10],
         dst_ip: [192, 168, 0, 20],
         src_port: 1111,
@@ -50,7 +50,7 @@ fn bind_socket_and_lookup_socket() {
     // Bind local-only.
     fm.bind_socket(
         SocketBindKey {
-            proto: TransportProto::Tcp,
+            proto: TransportProto::Udp,
             local: EndpointV4 {
                 ip: [192, 168, 0, 20],
                 port: 2222,

@@ -145,6 +145,3 @@ pub fn packet_view_from_desc<'a>(
     let bytes = shm.get_range(start..end)?;
     Some(PacketView { desc, bytes })
 }
-
-#[cfg(test)]
-mod tests;

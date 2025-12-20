@@ -12,7 +12,10 @@ test = true
 
 [dependencies]
 thiserror = "2.0.17"
-ntx-network = { path = "../../network" }
+# IMPORTANT: guestnet is a `wasm32-wasip2` component. Keep this dependency
+# wasm-safe by disabling default features (which include `host`) and enabling
+# only the `guestnet` feature (no libc / AF_PACKET).
+ntx-network = { path = "../../network", default-features = false, features = ["guestnet"] }
 
 [dev-dependencies]
 # kept minimal; tests currently use only std + ntx-network

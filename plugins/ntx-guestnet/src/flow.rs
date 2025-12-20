@@ -83,8 +83,7 @@ impl FlowKey {
 ///
 /// Socket semantics live above FlowManager and below Application.
 /// FlowManager only tracks which flow is associated with which socket.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SocketId(pub u32);
+pub use ntx_network::guestnet::SocketId;
 
 /// Per-flow entry managed by FlowManager.
 #[derive(Debug, Clone)]
