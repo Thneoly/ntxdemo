@@ -1,5 +1,6 @@
 use chrono::Local;
 use std::io;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::{
     self, fmt::time::FormatTime, layer::SubscriberExt, util::SubscriberInitExt,
@@ -46,9 +47,18 @@ pub fn logger_init() {
         Err(_) => None,
     };
 
+    // Target-based filtering:
+    // - default: info
+    // - our crate (`ntx`): debug (so `ntx::scheduler` DEBUG logs show up)
+    // - noisy deps: warn (avoid huge wasmtime/cranelift TRACE output)
+    //
+    // If `RUST_LOG` is set, honor it so ad-hoc debugging stays easy.
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,ntx=debug,wasmtime=warn,cranelift=warn"));
+
     let registry = tracing_subscriber::registry()
         .with(stdout_layer)
-        .with(tracing_subscriber::filter::LevelFilter::INFO);
+        .with(filter);
 
     if let Some(file_layer) = writer_layer {
         registry.with(file_layer).init();
