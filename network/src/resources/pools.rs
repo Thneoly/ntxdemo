@@ -320,4 +320,30 @@ impl ResourcePools {
             ResourceKind::Socket => None,
         }
     }
+
+    /// Reverse lookup: find the `ResourceId` for a non-socket value owned by `owner`.
+    ///
+    /// This is the counterpart to [`Self::resolve_non_socket`].
+    ///
+    /// Notes:
+    /// - For port pools, an owner can have multiple pinned ports; we return the matching port.
+    /// - Returns `None` if the value isn't currently pinned for that owner.
+    pub fn rid_for_non_socket_value(
+        &self,
+        owner: &OwnerId,
+        value: &NonSocketResourceValue,
+    ) -> Option<ResourceId> {
+        let candidates = self.registry.resources_of_owner(owner);
+        for rid in candidates {
+            let kind = self.registry.kind_of(&rid)?;
+            if kind == ResourceKind::Socket {
+                continue;
+            }
+            let resolved = self.resolve_non_socket(kind, &rid)?;
+            if &resolved == value {
+                return Some(rid);
+            }
+        }
+        None
+    }
 }

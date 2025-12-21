@@ -22,9 +22,9 @@ interface udp-socket-control {
     /// - `peer-*` are value-based.
     /// - `ttl` is optional; if not provided, host default is used.
     record udp-bind {
-        local-ipv4: resource-id,
-        local-mac: resource-id,
-        local-udp-port: resource-id,
+        local-ipv4: ipv4-addr,
+        local-mac: mac-addr,
+        local-udp-port: u16,
 
         peer-ipv4: ipv4-addr,
         peer-port: u16,

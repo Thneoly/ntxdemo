@@ -22,7 +22,7 @@ mod packet_engine_bindings {
 }
 use packet_engine_bindings::ntx::hostnet::resources::{Host as ResourceHost, ResourceError};
 use packet_engine_bindings::ntx::hostnet::types::Host as TypesHost;
-use packet_engine_bindings::ntx::hostnet::types::{Ipv4Addr, MacAddr};
+// (types imported via WIT bindings in signatures; concrete conversions use ntx_network types)
 use packet_engine_bindings::ntx::hostnet::udp_socket_control::{
     FrameHandle, Host as UdpHost, SocketError, UdpBind, UdpSocket,
 };
@@ -100,13 +100,10 @@ impl ResourceHost for State {
         &mut self,
         pool: String,
         owner: String,
-    ) -> wasmtime::Result<String, ResourceError> {
-        kernel::hostnet_acquire_ipv4(&pool, &owner)
-            .map_err(|e| ResourceError::Other(e.to_string()))?;
-        kernel::hostnet_acquire_mac(&pool, &owner)
-            .map_err(|e| ResourceError::Other(e.to_string()))?;
+    ) -> wasmtime::Result<(), ResourceError> {
         kernel::hostnet_acquire_udp_port(&pool, &owner)
-            .map_err(|e| ResourceError::Other(e.to_string()))
+            .map_err(|e| ResourceError::Other(e.to_string()))?;
+        Ok(())
     }
 
     fn resolve_udp_port(&mut self, rid: String) -> wasmtime::Result<u16, ResourceError> {
@@ -131,9 +128,21 @@ impl UdpHost for State {
     fn bind(&mut self, sock: u64, b: UdpBind) -> wasmtime::Result<(), SocketError> {
         kernel::hostnet_udp_bind_all(
             sock,
-            &b.local_ipv4,
-            &b.local_mac,
-            &b.local_udp_port,
+            ntx_network::Ipv4Addr([
+                b.local_ipv4.a,
+                b.local_ipv4.b,
+                b.local_ipv4.c,
+                b.local_ipv4.d,
+            ]),
+            ntx_network::MacAddr([
+                b.local_mac.a,
+                b.local_mac.b,
+                b.local_mac.c,
+                b.local_mac.d,
+                b.local_mac.e,
+                b.local_mac.f,
+            ]),
+            b.local_udp_port,
             ntx_network::Ipv4Addr([b.peer_ipv4.a, b.peer_ipv4.b, b.peer_ipv4.c, b.peer_ipv4.d]),
             b.peer_port,
             ntx_network::MacAddr([

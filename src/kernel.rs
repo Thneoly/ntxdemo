@@ -72,64 +72,24 @@ pub fn hostnet_create_socket_owner(name: &str) -> Result<String, HostnetError> {
     Ok(fmt_uuid(&owner))
 }
 
-/// Allocate+pin an IPv4 for this owner from pool (hostnet WIT adapter).
-pub fn hostnet_acquire_ipv4(pool: &str, owner: &str) -> Result<String, HostnetError> {
+/// Allocate+pin a UDP port for this owner from pool (hostnet WIT adapter).
+pub fn hostnet_acquire_udp_port(pool: &str, owner: &str) -> Result<(), HostnetError> {
     let owner = parse_uuid_str(owner)?;
     let mut pools = KERNEL.pools.lock();
-    let (rid, v) = pools.acquire_and_pin_non_socket(resources::ResourceKind::Ipv4, pool, owner)?;
+    let (_, v) = pools.acquire_and_pin_non_socket(resources::ResourceKind::Ipv4, pool, owner)?;
     let NonSocketResourceValue::Ipv4(_ip) = v else {
         unreachable!("resource kind/value mismatch")
     };
-    Ok(fmt_uuid(&rid))
-}
-
-/// Allocate+pin a MAC for this owner from pool (hostnet WIT adapter).
-pub fn hostnet_acquire_mac(pool: &str, owner: &str) -> Result<String, HostnetError> {
-    let owner = parse_uuid_str(owner)?;
-    let mut pools = KERNEL.pools.lock();
-    let (rid, v) = pools.acquire_and_pin_non_socket(resources::ResourceKind::Mac, pool, owner)?;
+    let (_, v) = pools.acquire_and_pin_non_socket(resources::ResourceKind::Mac, pool, owner)?;
     let NonSocketResourceValue::Mac(_mac) = v else {
         unreachable!("resource kind/value mismatch")
     };
-    Ok(fmt_uuid(&rid))
-}
-
-/// Allocate+pin a UDP port for this owner from pool (hostnet WIT adapter).
-pub fn hostnet_acquire_udp_port(pool: &str, owner: &str) -> Result<String, HostnetError> {
-    let owner = parse_uuid_str(owner)?;
-    let mut pools = KERNEL.pools.lock();
-    let (rid, v) =
-        pools.acquire_and_pin_non_socket(resources::ResourceKind::UdpPort, pool, owner)?;
+    let (_, v) = pools.acquire_and_pin_non_socket(resources::ResourceKind::UdpPort, pool, owner)?;
     let NonSocketResourceValue::UdpPort(_port) = v else {
         unreachable!("resource kind/value mismatch")
     };
-    Ok(fmt_uuid(&rid))
+    Ok(())
 }
-
-pub fn hostnet_resolve_ipv4(rid: &str) -> Result<std::net::Ipv4Addr, HostnetError> {
-    let rid = parse_uuid_str(rid)?;
-    let pools = KERNEL.pools.lock();
-    pools
-        .resolve_non_socket(resources::ResourceKind::Ipv4, &rid)
-        .and_then(|v| match v {
-            NonSocketResourceValue::Ipv4(ip) => Some(ip),
-            _ => None,
-        })
-        .ok_or(HostnetError::NotFound)
-}
-
-pub fn hostnet_resolve_mac(rid: &str) -> Result<ntx_network::MacAddr, HostnetError> {
-    let rid = parse_uuid_str(rid)?;
-    let pools = KERNEL.pools.lock();
-    pools
-        .resolve_non_socket(resources::ResourceKind::Mac, &rid)
-        .and_then(|v| match v {
-            NonSocketResourceValue::Mac(mac) => Some(mac),
-            _ => None,
-        })
-        .ok_or(HostnetError::NotFound)
-}
-
 pub fn hostnet_resolve_udp_port(rid: &str) -> Result<u16, HostnetError> {
     let rid = parse_uuid_str(rid)?;
     let pools = KERNEL.pools.lock();
@@ -156,37 +116,6 @@ pub fn hostnet_udp_create(name: &str) -> Result<HostnetUdpSocket, HostnetError> 
         sock_id,
     })
 }
-
-fn hostnet_udp_bind_local_ipv4(sock: u64, local_ipv4_rid: &str) -> Result<(), HostnetError> {
-    let rid = parse_uuid_str(local_ipv4_rid)?;
-    KERNEL
-        .hostnet_udp_binder
-        .lock()
-        .bind_local_ipv4_rid(sock, rid);
-    Ok(())
-}
-
-fn hostnet_udp_bind_local_mac(sock: u64, local_mac_rid: &str) -> Result<(), HostnetError> {
-    let rid = parse_uuid_str(local_mac_rid)?;
-    KERNEL
-        .hostnet_udp_binder
-        .lock()
-        .bind_local_mac_rid(sock, rid);
-    Ok(())
-}
-
-fn hostnet_udp_bind_local_udp_port(
-    sock: u64,
-    local_udp_port_rid: &str,
-) -> Result<(), HostnetError> {
-    let rid = parse_uuid_str(local_udp_port_rid)?;
-    KERNEL
-        .hostnet_udp_binder
-        .lock()
-        .bind_local_udp_port_rid(sock, rid);
-    Ok(())
-}
-
 fn hostnet_udp_bind_peer(
     sock: u64,
     peer_ipv4: ntx_network::Ipv4Addr,
@@ -208,19 +137,60 @@ fn hostnet_udp_bind_ttl(sock: u64, ttl: u8) -> Result<(), HostnetError> {
 /// Bind all required parameters in a single call.
 ///
 /// This mirrors the WIT `udp-socket-control.bind` convenience API.
+/// acquire: provides "identity" (who I am: local ip/mac/port, and owned by me)
+/// bind: provides "routing entry" (which packets sent to me are mine; who I want to send to)
 pub fn hostnet_udp_bind_all(
     sock: u64,
-    local_ipv4_rid: &str,
-    local_mac_rid: &str,
-    local_udp_port_rid: &str,
+    local_ipv4: ntx_network::Ipv4Addr,
+    local_mac: ntx_network::MacAddr,
+    local_udp_port: u16,
     peer_ipv4: ntx_network::Ipv4Addr,
     peer_port: u16,
     peer_mac: ntx_network::MacAddr,
     ttl: Option<u8>,
 ) -> Result<(), HostnetError> {
-    hostnet_udp_bind_local_ipv4(sock, local_ipv4_rid)?;
-    hostnet_udp_bind_local_mac(sock, local_mac_rid)?;
-    hostnet_udp_bind_local_udp_port(sock, local_udp_port_rid)?;
+    let pools = KERNEL.pools.lock();
+    // Resolve the socket owner from sock_id, then use (owner + value) -> rid.
+    let owner = pools
+        .registry()
+        .socket_id_for_sock_id(sock)
+        .ok_or(HostnetError::NotFound)?;
+
+    // Defensive: this API is value-based, so we must ensure the local resources we resolve
+    // are owned by *this* socket owner (to prevent cross-socket hijacking).
+    let ensure_owned_by_sock =
+        |value: NonSocketResourceValue| -> Result<resources::ResourceId, HostnetError> {
+            let rid = pools
+                .rid_for_non_socket_value(&owner, &value)
+                .ok_or(HostnetError::NotFound)?;
+            match pools.registry().owner_of(&rid) {
+                Some(o) if o == owner => Ok(rid),
+                Some(_) => Err(HostnetError::InvalidArgument(
+                    "local resource is not owned by this socket".to_string(),
+                )),
+                None => Err(HostnetError::NotFound),
+            }
+        };
+
+    let local_ipv4_rid = ensure_owned_by_sock(NonSocketResourceValue::Ipv4(
+        std::net::Ipv4Addr::from(local_ipv4.0),
+    ))?;
+    let local_mac_rid = ensure_owned_by_sock(NonSocketResourceValue::Mac(local_mac))?;
+    let local_udp_port_rid = ensure_owned_by_sock(NonSocketResourceValue::UdpPort(local_udp_port))?;
+    drop(pools);
+
+    KERNEL
+        .hostnet_udp_binder
+        .lock()
+        .bind_local_ipv4_rid(sock, local_ipv4_rid);
+    KERNEL
+        .hostnet_udp_binder
+        .lock()
+        .bind_local_mac_rid(sock, local_mac_rid);
+    KERNEL
+        .hostnet_udp_binder
+        .lock()
+        .bind_local_udp_port_rid(sock, local_udp_port_rid);
     hostnet_udp_bind_peer(sock, peer_ipv4, peer_port, peer_mac)?;
     if let Some(ttl) = ttl {
         hostnet_udp_bind_ttl(sock, ttl)?;

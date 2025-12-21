@@ -139,6 +139,14 @@ impl ResourceRegistry {
         }
     }
 
+    /// Reverse lookup: resolve a flow `sock_id` back to the owning socket `ResourceId`.
+    pub fn socket_id_for_sock_id(&self, sock_id: SockId) -> Option<ResourceId> {
+        self.by_id.iter().find_map(|(rid, rec)| match rec {
+            ResourceRecord::Socket { info } if info.sock_id == Some(sock_id) => Some(*rid),
+            _ => None,
+        })
+    }
+
     pub fn kind_of(&self, id: &ResourceId) -> Option<ResourceKind> {
         match self.by_id.get(id) {
             Some(ResourceRecord::Socket { .. }) => Some(ResourceKind::Socket),
