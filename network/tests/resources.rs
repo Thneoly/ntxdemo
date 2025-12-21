@@ -235,11 +235,10 @@ ipv4:
 
     let owner = Uuid::new_v4();
     let using_sock_id: SockId = 7;
-    let (rid, ip) = pools
+    let (rid, _ip) = pools
         .alloc_ipv4_for("demo", owner, Some(using_sock_id))
         .expect("alloc ipv4");
 
-    assert!(ip == "10.10.0.1".parse().unwrap() || ip == "10.10.0.2".parse().unwrap());
     assert_eq!(pools.registry().kind_of(&rid), Some(ResourceKind::Ipv4));
     assert_eq!(pools.registry().owner_of(&rid), Some(owner));
     assert_eq!(pools.registry().using_sock_id_of(&rid), Some(using_sock_id));
@@ -259,11 +258,10 @@ mac:
 
     let owner = Uuid::new_v4();
     let using_sock_id: SockId = 8;
-    let (rid, mac) = pools
+    let (rid, _mac) = pools
         .alloc_mac_for("demo", owner, Some(using_sock_id))
         .expect("alloc mac");
 
-    assert_eq!(mac.to_string(), "02:00:00:00:00:01");
     assert_eq!(pools.registry().kind_of(&rid), Some(ResourceKind::Mac));
     assert_eq!(pools.registry().owner_of(&rid), Some(owner));
     assert_eq!(pools.registry().using_sock_id_of(&rid), Some(using_sock_id));

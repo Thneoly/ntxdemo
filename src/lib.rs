@@ -5,6 +5,7 @@ pub mod kernel;
 pub mod logger;
 pub mod scheduler;
 pub mod time;
+pub mod wasm_engine;
 
 /// Network stack crate re-export.
 ///

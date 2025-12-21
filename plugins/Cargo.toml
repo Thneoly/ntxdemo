@@ -8,6 +8,7 @@ members = [
 	"ntx-guestnet",
 	"http-server",
 	"eventbus",
+	"packet-engine",
 ]
 exclude = ["examples"]
 resolver = "2"

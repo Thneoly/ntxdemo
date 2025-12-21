@@ -1,0 +1,26 @@
+package ntx:packet;
+
+/// Packet engine component that consumes RX packets via shared memories.
+///
+/// Note: WIT does not currently support exporting raw linear memories.
+/// This world defines functions that expose two independent byte buffers
+/// (`desc` and `payload`) which the host can treat as "memories".
+///
+/// When we need true multi-memory (core wasm `memory0/memory1`), we can switch
+/// away from component model or add a custom adapter.
+world packet-engine {
+    /// Returns the current contents of the descriptor buffer.
+    export desc-get: func() -> list<u8>;
+    /// Overwrite a slice of the descriptor buffer at `off`.
+    export desc-put: func(off: u32, data: list<u8>);
+
+    /// Returns the current contents of the payload buffer.
+    export payload-get: func() -> list<u8>;
+    /// Overwrite a slice of the payload buffer at `off`.
+    export payload-put: func(off: u32, data: list<u8>);
+
+    /// Notify guest that new RX descriptors are available.
+    ///
+    /// Returns number of packets consumed in this call.
+    export notify-rx: func() -> u32;
+}

@@ -1,7 +1,8 @@
 use crate::error::SchedulerError;
 use crate::event_bus::{Bytes, EventBus, SimpleEventBus, build_event};
-use crate::kernel::non_blocking_recv;
+use crate::kernel::non_blocking_recv_with_sock;
 use crate::time::{PollTimeManager, TimeManager, TimerToken};
+use crate::wasm_engine::{EngineConfig, EngineHandle, EngineManager};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -80,6 +81,7 @@ pub enum NetworkIoTask {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WasmTask {
     pub function: String,
+    pub input: Bytes,
 }
 
 /// Eventized timer action specification.
@@ -131,6 +133,22 @@ impl Task {
             priority: PRIORITY_WASM,
             kind: TaskKind::WasmCall(WasmTask {
                 function: function.into(),
+                input: Bytes::new(),
+            }),
+        }
+    }
+
+    pub fn wasm_call_input(
+        task_id: impl Into<String>,
+        function: impl Into<String>,
+        input: Bytes,
+    ) -> Self {
+        Self {
+            id: task_id.into(),
+            priority: PRIORITY_WASM,
+            kind: TaskKind::WasmCall(WasmTask {
+                function: function.into(),
+                input,
             }),
         }
     }
@@ -266,6 +284,21 @@ impl Scheduler {
         // Default time manager for now (can be replaced later with hybrid manager).
         let tm = PollTimeManager::new();
         let bus = SimpleEventBus::new();
+
+        // Best-effort: auto-load demo component if env var is present.
+        // This keeps the core crate runnable without requiring wasm artifacts.
+        if let Ok(path) = std::env::var("NTX_COMPONENT") {
+            let cfg = EngineConfig {
+                component_path: path.into(),
+                entry_candidates: vec!["handle-packet".into(), "run-scenario".into()],
+            };
+            let mut mgr = EngineManager::global()
+                .lock()
+                .expect("engine manager poisoned");
+            if !mgr.has_default() {
+                let _ = mgr.load_and_register_demo(EngineHandle("default".into()), cfg);
+            }
+        }
         Self {
             shared: Arc::new((Mutex::new(SharedState::default()), Condvar::new())),
             shutdown,
@@ -437,14 +470,46 @@ impl Scheduler {
     /// This is shared by both resident ticks and regular queue execution.
     fn run_kind_once(&self, kind: &TaskKind) -> bool {
         match kind {
-            TaskKind::NetworkIo(NetworkIoTask::NicRx) => non_blocking_recv().is_some(),
+            TaskKind::NetworkIo(NetworkIoTask::NicRx) => {
+                // Policy #2: NicRx only receives and enqueues a WasmCall; the WasmCall will
+                // drive the guest handler.
+                let Some((sock, payload)) = non_blocking_recv_with_sock() else {
+                    return false;
+                };
+
+                // Enqueue into the guest shared buffers. The WasmCall will run `notify-rx`.
+                // If no engine is configured we still enqueue nothing and report no work.
+                let mut mgr = EngineManager::global()
+                    .lock()
+                    .expect("engine manager poisoned");
+                let _ = mgr.enqueue_rx(sock.map(|s| s as u64), &payload);
+                self.submit(Task::wasm_call("wasm-rx", "notify-rx"));
+                true
+            }
             TaskKind::NetworkIo(NetworkIoTask::NicTx) => {
                 // Placeholder: real Tx path will drain a queue and flush to NIC.
                 false
             }
-            TaskKind::WasmCall(_wasm) => {
-                // Placeholder: wasm engine integration.
-                true
+            TaskKind::WasmCall(wasm) => {
+                // Drive guest processing.
+                let mut mgr = EngineManager::global()
+                    .lock()
+                    .expect("engine manager poisoned");
+
+                match wasm.function.as_str() {
+                    "notify-rx" => match mgr.notify_rx() {
+                        Ok(n) => n > 0,
+                        Err(_e) => false,
+                    },
+                    // Backwards-compat for earlier demo tasks.
+                    _ => {
+                        let input = std::str::from_utf8(&wasm.input).unwrap_or("");
+                        match mgr.tick_demo(input) {
+                            Ok(result) => result.did_work,
+                            Err(_e) => false,
+                        }
+                    }
+                }
             }
             // Timer is handled in `execute()` because it consumes action and publishes.
             TaskKind::Timer(_) => false,

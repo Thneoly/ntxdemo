@@ -7,6 +7,7 @@ edition = "2024"
 members = [
 	".",
 	"network",
+	"plugins/packet-engine",
 ]
 
 [lib]
@@ -51,3 +52,7 @@ path = "examples/ntx-echo/client.rs"
 [[example]]
 name = "ntx-echo-server"
 path = "examples/ntx-echo/server.rs"
+
+[[example]]
+name = "wasm-engine-demo"
+path = "examples/wasm_engine_demo.rs"
