@@ -120,9 +120,6 @@ pub fn hostnet_resolve_udp_port(rid: &str) -> Result<u16, HostnetError> {
 
 // ---- UDP socket control wrappers (binder + table live in kernel) ----
 
-static HOSTNET_UDP_BINDER: Lazy<Mutex<UdpSocketBinder>> =
-    Lazy::new(|| Mutex::new(UdpSocketBinder::new()));
-
 /// Create a UDP socket (owner + sock_id) using the kernel's conn table.
 ///
 /// Note: this mirrors the WIT `udp-socket-control.create` semantics.
@@ -138,13 +135,19 @@ pub fn hostnet_udp_create(name: &str) -> Result<HostnetUdpSocket, HostnetError> 
 
 pub fn hostnet_udp_bind_local_ipv4(sock: u64, local_ipv4_rid: &str) -> Result<(), HostnetError> {
     let rid = parse_uuid_str(local_ipv4_rid)?;
-    HOSTNET_UDP_BINDER.lock().bind_local_ipv4_rid(sock, rid);
+    KERNEL
+        .hostnet_udp_binder
+        .lock()
+        .bind_local_ipv4_rid(sock, rid);
     Ok(())
 }
 
 pub fn hostnet_udp_bind_local_mac(sock: u64, local_mac_rid: &str) -> Result<(), HostnetError> {
     let rid = parse_uuid_str(local_mac_rid)?;
-    HOSTNET_UDP_BINDER.lock().bind_local_mac_rid(sock, rid);
+    KERNEL
+        .hostnet_udp_binder
+        .lock()
+        .bind_local_mac_rid(sock, rid);
     Ok(())
 }
 
@@ -153,7 +156,10 @@ pub fn hostnet_udp_bind_local_udp_port(
     local_udp_port_rid: &str,
 ) -> Result<(), HostnetError> {
     let rid = parse_uuid_str(local_udp_port_rid)?;
-    HOSTNET_UDP_BINDER.lock().bind_local_udp_port_rid(sock, rid);
+    KERNEL
+        .hostnet_udp_binder
+        .lock()
+        .bind_local_udp_port_rid(sock, rid);
     Ok(())
 }
 
@@ -163,30 +169,28 @@ pub fn hostnet_udp_bind_peer(
     peer_port: u16,
     peer_mac: ntx_network::MacAddr,
 ) -> Result<(), HostnetError> {
-    HOSTNET_UDP_BINDER
+    KERNEL
+        .hostnet_udp_binder
         .lock()
         .bind_peer(sock, peer_ipv4, peer_port, peer_mac);
     Ok(())
 }
 
 pub fn hostnet_udp_bind_ttl(sock: u64, ttl: u8) -> Result<(), HostnetError> {
-    HOSTNET_UDP_BINDER.lock().bind_ttl(sock, ttl);
+    KERNEL.hostnet_udp_binder.lock().bind_ttl(sock, ttl);
     Ok(())
 }
 
 pub fn hostnet_udp_finalize(sock: u64) -> Result<(), HostnetError> {
     let pools = KERNEL.pools.lock();
     let mut table = KERNEL.udp_sockets.lock();
-    HOSTNET_UDP_BINDER
+    KERNEL
+        .hostnet_udp_binder
         .lock()
         .finalize_into_table(&pools, &mut table, sock)
         .map_err(anyhow::Error::from)?;
     Ok(())
 }
-
-// 1 MiB MVP arena for build-reply outputs.
-static HOSTNET_TX_ARENA: Lazy<Mutex<Vec<u8>>> = Lazy::new(|| Mutex::new(vec![0u8; 1024 * 1024]));
-static HOSTNET_TX_HEAD: Lazy<Mutex<usize>> = Lazy::new(|| Mutex::new(0usize));
 
 pub fn hostnet_udp_build_reply(
     sock: u64,
@@ -197,8 +201,8 @@ pub fn hostnet_udp_build_reply(
         .build_reply_for_sock_id(sock, payload)
         .map_err(anyhow::Error::from)?;
 
-    let mut arena = HOSTNET_TX_ARENA.lock();
-    let mut head = HOSTNET_TX_HEAD.lock();
+    let mut arena = KERNEL.hostnet_tx_arena.lock();
+    let mut head = KERNEL.hostnet_tx_head.lock();
 
     if frame.bytes.len() > arena.len() {
         return Err(HostnetError::NoSpace);
@@ -302,6 +306,14 @@ struct Kernel {
     udp_sockets: Mutex<Table>,
     nic: Mutex<Box<dyn Nic + Send + Sync>>,
 
+    // ---- hostnet (WIT adapter) control-plane state ----
+    /// Binder state for WIT `udp-socket-control.*` calls.
+    hostnet_udp_binder: Mutex<UdpSocketBinder>,
+    /// 1 MiB MVP arena for build-reply outputs.
+    hostnet_tx_arena: Mutex<Vec<u8>>,
+    /// Current write head into `hostnet_tx_arena`.
+    hostnet_tx_head: Mutex<usize>,
+
     abr_view: RwLock<Arc<abr::ResourceView>>,
 }
 
@@ -340,6 +352,10 @@ impl Kernel {
         let pools = Mutex::new(resource_pools_config.build()?);
         let abr_store = Mutex::new(abr::BindingStore::default());
 
+        let hostnet_udp_binder = Mutex::new(UdpSocketBinder::new());
+        let hostnet_tx_arena = Mutex::new(vec![0u8; 1024 * 1024]);
+        let hostnet_tx_head = Mutex::new(0usize);
+
         // Load an initial ABR snapshot.
         let abr_view = abr::load_view();
 
@@ -351,6 +367,10 @@ impl Kernel {
             arp_cache,
             udp_sockets: Mutex::new(udp_sockets),
             nic,
+
+            hostnet_udp_binder,
+            hostnet_tx_arena,
+            hostnet_tx_head,
             abr_view: RwLock::new(abr_view),
         })
     }
