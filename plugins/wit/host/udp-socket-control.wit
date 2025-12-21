@@ -62,4 +62,16 @@ interface udp-socket-control {
     ///
     /// Returns a handle to the written frame bytes.
     build-reply: func(sock: sock-id, payload: list<u8>) -> result<frame-handle, socket-error>;
+
+    /// Transmit a previously built frame.
+    ///
+    /// The `frame-handle` must refer to a valid region/offset/len produced by
+    /// `build-reply` (or another hostnet API that writes frames into shared memory).
+    ///
+    /// Returns:
+    /// - ok(n): number of bytes accepted for transmit
+    /// - err(invalid-argument): invalid handle
+    /// - err(invalid-state): NIC not available / not initialized
+    /// - err(other): internal error
+    tx: func(frame: frame-handle) -> result<u32, socket-error>;
 }

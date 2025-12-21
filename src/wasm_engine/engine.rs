@@ -173,6 +173,20 @@ impl UdpHost for State {
             len: handle.len,
         })
     }
+
+    fn tx(&mut self, frame: FrameHandle) -> wasmtime::Result<u32, SocketError> {
+        kernel::hostnet_tx(kernel::HostnetFrameHandle {
+            region: frame.region,
+            offset: frame.offset,
+            len: frame.len,
+        })
+        .map_err(|e| match e {
+            kernel::HostnetError::InvalidArgument(_) => SocketError::InvalidArgument,
+            kernel::HostnetError::NotFound => SocketError::NotFound,
+            kernel::HostnetError::NoSpace => SocketError::NoSpace,
+            other => SocketError::Other(other.to_string()),
+        })
+    }
 }
 
 pub struct ComponentEngine {

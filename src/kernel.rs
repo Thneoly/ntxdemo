@@ -240,6 +240,35 @@ pub fn hostnet_udp_build_reply(
     })
 }
 
+/// Transmit a frame previously written into the hostnet TX arena.
+///
+/// Currently `hostnet_udp_build_reply` writes into (region=2) backed by
+/// `KERNEL.hostnet_tx_arena`.
+pub fn hostnet_tx(frame: HostnetFrameHandle) -> Result<u32, HostnetError> {
+    // Validate handle.
+    if frame.region != 2 {
+        return Err(HostnetError::InvalidArgument(
+            "unsupported frame region".to_string(),
+        ));
+    }
+
+    let arena = KERNEL.hostnet_tx_arena.lock();
+    let off = frame.offset as usize;
+    let len = frame.len as usize;
+    let end = off.saturating_add(len);
+    if end > arena.len() {
+        return Err(HostnetError::InvalidArgument(
+            "frame range out of bounds".to_string(),
+        ));
+    }
+
+    let bytes = &arena[off..end];
+    let nic = KERNEL.nic();
+    nic.send(bytes)
+        .map_err(|e| HostnetError::Other(anyhow::Error::from(e)))?;
+    Ok(frame.len)
+}
+
 /// Resource request options.
 ///
 /// Kernel doesn't currently distinguish client/server; this interface is intended as a

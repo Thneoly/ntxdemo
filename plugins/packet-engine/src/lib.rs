@@ -26,6 +26,139 @@ fn write_le_u32(dst: &mut [u8], v: u32) {
 
 struct Component;
 
+/// Try to extract UDP application payload from an Ethernet/IPv4/UDP frame.
+///
+/// Current host RX path enqueues full frames (L2+) into the shared payload buffer.
+/// If parsing fails, returns `None` and the caller may drop the packet.
+fn udp_app_payload(frame: &[u8]) -> Option<&[u8]> {
+    // Ethernet header: 14 bytes
+    if frame.len() < 14 {
+        return None;
+    }
+    let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
+    // IPv4 ethertype
+    if ethertype != 0x0800 {
+        return None;
+    }
+
+    let ip_off = 14;
+    if frame.len() < ip_off + 20 {
+        return None;
+    }
+    let ver_ihl = frame[ip_off];
+    let version = ver_ihl >> 4;
+    if version != 4 {
+        return None;
+    }
+    let ihl_words = (ver_ihl & 0x0f) as usize;
+    let ihl = ihl_words * 4;
+    if ihl < 20 {
+        return None;
+    }
+    if frame.len() < ip_off + ihl {
+        return None;
+    }
+
+    let total_len = u16::from_be_bytes([frame[ip_off + 2], frame[ip_off + 3]]) as usize;
+    if total_len < ihl {
+        return None;
+    }
+    // Constrain to what we actually have.
+    let ip_end = (ip_off + total_len).min(frame.len());
+
+    let proto = frame[ip_off + 9];
+    // UDP protocol
+    if proto != 17 {
+        return None;
+    }
+
+    let udp_off = ip_off + ihl;
+    if ip_end < udp_off + 8 {
+        return None;
+    }
+    let udp_len = u16::from_be_bytes([frame[udp_off + 4], frame[udp_off + 5]]) as usize;
+    if udp_len < 8 {
+        return None;
+    }
+    let payload_off = udp_off + 8;
+    let payload_end = (udp_off + udp_len).min(ip_end);
+    if payload_end < payload_off {
+        return None;
+    }
+    Some(&frame[payload_off..payload_end])
+}
+
+fn handle_udp_datagram(sock_id: u64, payload: &[u8]) {
+    // Demo behavior: echo only application-layer payload back via hostnet.
+    // Best-effort parsing: if we can't parse UDP, drop.
+    let Some(app) = udp_app_payload(payload) else {
+        return;
+    };
+
+    // Errors are best-effort; on failure we just drop.
+    if let Ok(frame) = ntx::hostnet::udp_socket_control::build_reply(sock_id, app) {
+        let _ = ntx::hostnet::udp_socket_control::tx(frame);
+    }
+}
+
+/// Drain host-provided RX descriptors and dispatch them to `handle_udp_datagram`.
+///
+/// Returns (new_head, consumed).
+fn drain_rx_ring(desc_mem: &mut [u8], payload_mem: &[u8]) -> (usize, u32) {
+    if desc_mem.len() < CONTROL_LEN {
+        return (0, 0);
+    }
+
+    // Parse control block at 0.
+    let magic = le_u32(&desc_mem[0..4]);
+    let version = le_u16(&desc_mem[4..6]);
+    if magic != NTX_MAGIC || version != NTX_VERSION {
+        return (0, 0);
+    }
+
+    let desc_capacity = le_u32(&desc_mem[8..12]) as usize;
+    let mut head = le_u32(&desc_mem[12..16]) as usize;
+    let tail = le_u32(&desc_mem[16..20]) as usize;
+
+    // Ring starts at offset 0x1000 in desc memory (keep consistent with host v1).
+    let descs_off: usize = 0x1000;
+
+    if desc_capacity == 0 {
+        return (head, 0);
+    }
+
+    let mut consumed: u32 = 0;
+    // Host enqueues by advancing `desc_tail`; guest consumes by advancing `desc_head`.
+    while head != tail {
+        let idx = head % desc_capacity;
+        let base = descs_off + idx * DESC_LEN;
+        if base + DESC_LEN > desc_mem.len() {
+            break;
+        }
+
+        let desc = &desc_mem[base..base + DESC_LEN];
+        let sock_id = le_u64(&desc[0..8]);
+        let payload_off = le_u32(&desc[8..12]) as usize;
+        let payload_len = le_u32(&desc[12..16]) as usize;
+        let _meta = le_u32(&desc[16..20]);
+
+        if payload_off + payload_len <= payload_mem.len() {
+            let payload = &payload_mem[payload_off..payload_off + payload_len];
+            handle_udp_datagram(sock_id, payload);
+        }
+
+        head = head.wrapping_add(1);
+        consumed += 1;
+
+        // Bound per notify call to avoid pathological loops.
+        if consumed >= 64 {
+            break;
+        }
+    }
+
+    (head, consumed)
+}
+
 impl Guest for Component {
     fn desc_get() -> Vec<u8> {
         DESC.with(|b| b.borrow().clone())
@@ -63,63 +196,12 @@ impl Guest for Component {
         let mut dmem = DESC.with(|b| b.borrow().clone());
         let pmem = PAYLOAD.with(|b| b.borrow().clone());
 
-        if dmem.len() < CONTROL_LEN {
-            return 0;
+        let (new_head, consumed) = drain_rx_ring(&mut dmem, &pmem);
+
+        if dmem.len() >= 16 {
+            // Write back head. Tail is host-owned.
+            write_le_u32(&mut dmem[12..16], new_head as u32);
         }
-
-        // Parse control block at 0.
-        let magic = le_u32(&dmem[0..4]);
-        let version = le_u16(&dmem[4..6]);
-        if magic != NTX_MAGIC || version != NTX_VERSION {
-            return 0;
-        }
-
-        let desc_capacity = le_u32(&dmem[8..12]) as usize;
-        let mut head = le_u32(&dmem[12..16]) as usize;
-        let tail = le_u32(&dmem[16..20]) as usize;
-
-        // Ring starts at offset 0x1000 in desc memory (keep consistent with host v1).
-        let descs_off: usize = 0x1000;
-
-        if desc_capacity == 0 {
-            return 0;
-        }
-
-        let mut consumed: u32 = 0;
-        // Host enqueues by advancing `desc_tail`; guest consumes by advancing `desc_head`.
-        while head != tail {
-            let idx = head % desc_capacity;
-            let base = descs_off + idx * DESC_LEN;
-            if base + DESC_LEN > dmem.len() {
-                break;
-            }
-
-            let desc = &dmem[base..base + DESC_LEN];
-            let sock_id = le_u64(&desc[0..8]);
-            let payload_off = le_u32(&desc[8..12]) as usize;
-            let payload_len = le_u32(&desc[12..16]) as usize;
-            let _meta = le_u32(&desc[16..20]);
-
-            if payload_off + payload_len > pmem.len() {
-                // malformed packet, drop.
-            } else {
-                let _payload = &pmem[payload_off..payload_off + payload_len];
-                // Demo behavior: just "touch" payload + sock_id so optimizer doesn't delete.
-                core::hint::black_box(sock_id);
-                core::hint::black_box(_payload.len());
-            }
-
-            head = head.wrapping_add(1);
-            consumed += 1;
-
-            // Bound per notify call to avoid pathological loops.
-            if consumed >= 64 {
-                break;
-            }
-        }
-
-        // Write back head. Tail is host-owned.
-        write_le_u32(&mut dmem[12..16], head as u32);
 
         // Persist back desc buffer.
         DESC.with(|b| *b.borrow_mut() = dmem);
@@ -132,6 +214,55 @@ use core::cell::RefCell;
 thread_local! {
     static DESC: RefCell<Vec<u8>> = RefCell::new(vec![0u8; 0x1000 + 32 * 128]);
     static PAYLOAD: RefCell<Vec<u8>> = RefCell::new(vec![0u8; 0x20000]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn udp_app_payload_returns_udp_body() {
+        // Build a minimal Ethernet + IPv4 + UDP packet.
+        let app = b"hello";
+
+        let mut frame = Vec::new();
+        // Ethernet
+        frame.extend_from_slice(&[0u8; 6]); // dst
+        frame.extend_from_slice(&[0u8; 6]); // src
+        frame.extend_from_slice(&0x0800u16.to_be_bytes()); // ethertype ipv4
+
+        // IPv4 header (20 bytes)
+        let ver_ihl = (4u8 << 4) | 5u8; // v4, IHL=5
+        frame.push(ver_ihl);
+        frame.push(0); // dscp/ecn
+        let total_len = (20 + 8 + app.len()) as u16;
+        frame.extend_from_slice(&total_len.to_be_bytes());
+        frame.extend_from_slice(&0u16.to_be_bytes()); // identification
+        frame.extend_from_slice(&0u16.to_be_bytes()); // flags/fragment
+        frame.push(64); // ttl
+        frame.push(17); // proto udp
+        frame.extend_from_slice(&0u16.to_be_bytes()); // checksum (ignored)
+        frame.extend_from_slice(&[10, 0, 0, 1]); // src
+        frame.extend_from_slice(&[10, 0, 0, 2]); // dst
+
+        // UDP header
+        frame.extend_from_slice(&1234u16.to_be_bytes());
+        frame.extend_from_slice(&5678u16.to_be_bytes());
+        let udp_len = (8 + app.len()) as u16;
+        frame.extend_from_slice(&udp_len.to_be_bytes());
+        frame.extend_from_slice(&0u16.to_be_bytes()); // checksum
+
+        // payload
+        frame.extend_from_slice(app);
+
+        let got = udp_app_payload(&frame).unwrap();
+        assert_eq!(got, app);
+    }
+
+    #[test]
+    fn udp_app_payload_short_is_none() {
+        assert!(udp_app_payload(&[0u8; 10]).is_none());
+    }
 }
 
 export!(Component);
