@@ -99,58 +99,82 @@ fn main() -> Result<()> {
         panic!("missing client resource pools YAML file argument");
     };
 
-    let mut identities: Vec<(Ipv4Addr, MacAddr, u16)> = Vec::with_capacity(10);
-    for i in 0..1 {
-        let ip = {
-            let pool = if let Some(p) = pools.ipv4("client") {
-                p
-            } else if let Some(p) = pools.ipv4("demo") {
-                p
-            } else {
-                pools
-                    .ipv4("default")
-                    .context("missing ipv4 pool named client/demo/default")?
-            };
-            pool.acquire()
-                .ok_or_else(|| anyhow::anyhow!("ipv4 pool exhausted"))
-                .with_context(|| format!("allocate ipv4 identity #{i}"))?
-        };
+    // Control-plane realistic shape:
+    // each identity is a socket-owner (OwnerId) with pinned ipv4/mac/udp_port.
+    // Keep both ResourceIds (rids) and concrete values:
+    // - rids are useful for “control-plane realism” + debugging/inspection
+    // - values are used directly by the dataplane send/receive path
+    let mut identities: Vec<(
+        ntx_network::resources::OwnerId,
+        ntx_network::resources::ResourceId,
+        ntx_network::resources::ResourceId,
+        ntx_network::resources::ResourceId,
+        Ipv4Addr,
+        MacAddr,
+        u16,
+    )> = Vec::with_capacity(10);
 
-        let mac = {
-            let pool = if let Some(p) = pools.mac("client") {
-                p
-            } else if let Some(p) = pools.mac("demo") {
-                p
-            } else {
-                pools
-                    .mac("default")
-                    .context("missing mac pool named client/demo/default")?
-            };
-            pool.acquire()
-                .ok_or_else(|| anyhow::anyhow!("mac pool exhausted"))
-                .with_context(|| format!("allocate mac identity #{i}"))?
-        };
+    // Select pool names once to avoid borrow-checker conflicts (and to keep behavior stable).
+    let ipv4_pool_name: &str = if pools.ipv4("client").is_some() {
+        "client"
+    } else if pools.ipv4("demo").is_some() {
+        "demo"
+    } else {
+        "default"
+    };
 
-        let udp_port = {
-            let pool = if let Some(p) = pools.udp_port("client") {
-                p
-            } else if let Some(p) = pools.udp_port("demo") {
-                p
-            } else {
-                pools
-                    .udp_port("default")
-                    .context("missing udp_port pool named client/demo/default")?
-            };
-            pool.acquire()
-                .ok_or_else(|| anyhow::anyhow!("udp port pool exhausted"))
-                .with_context(|| format!("allocate udp port identity #{i}"))?
-        };
+    let mac_pool_name: &str = if pools.mac("client").is_some() {
+        "client"
+    } else if pools.mac("demo").is_some() {
+        "demo"
+    } else {
+        "default"
+    };
 
-        identities.push((ip, mac, udp_port));
+    let udp_pool_name: &str = if pools.udp_port("client").is_some() {
+        "client"
+    } else if pools.udp_port("demo").is_some() {
+        "demo"
+    } else {
+        "default"
+    };
+    for i in 0..10 {
+        let owner = pools.alloc_socket_owner(format!("ntx-echo-client-id#{i}"));
+
+        let (ipv4_rid, ip) = pools
+            .alloc_ipv4_for_socket(ipv4_pool_name, owner)
+            .with_context(|| format!("allocate+pin ipv4 identity #{i}"))?;
+
+        let (mac_rid, mac) = pools
+            .alloc_mac_for_socket(mac_pool_name, owner)
+            .with_context(|| format!("allocate+pin mac identity #{i}"))?;
+
+        let (udp_rid, udp_port) = pools
+            .alloc_udp_port_for_socket(udp_pool_name, owner)
+            .with_context(|| format!("allocate+pin udp port identity #{i}"))?;
+
+        if debug {
+            eprintln!(
+                "[dbg][pools] owner={} ipv4_rid={} mac_rid={} udp_rid={}",
+                owner, ipv4_rid, mac_rid, udp_rid
+            );
+        }
+
+        identities.push((
+            owner,
+            ipv4_rid,
+            mac_rid,
+            udp_rid,
+            Ipv4Addr(ip.octets()),
+            mac,
+            udp_port,
+        ));
     }
 
     eprintln!("allocated {} identities:", identities.len());
-    for (idx, (ip, mac, udp_port)) in identities.iter().enumerate() {
+    for (idx, (_owner, _ipv4_rid, _mac_rid, _udp_rid, ip, mac, udp_port)) in
+        identities.iter().enumerate()
+    {
         eprintln!(
             "  #{idx}: ip={} mac={} udp_src_port={udp_port}",
             ntx::network::fmt_ipv4!(*ip),
@@ -165,14 +189,16 @@ fn main() -> Result<()> {
     let local_map: std::collections::HashMap<(Ipv4Addr, u16), LocalIdentity> = identities
         .iter()
         .copied()
-        .map(|(ip, mac, port)| ((ip, port), LocalIdentity::new(mac, ip)))
+        .map(|(_owner, _ipv4_rid, _mac_rid, _udp_rid, ip, mac, port)| {
+            ((ip, port), LocalIdentity::new(mac, ip))
+        })
         .collect();
 
     // For logging/stats only: map inbound (dst_ip,dst_port) back to identity index.
     let cidx_map: std::collections::HashMap<(Ipv4Addr, u16), usize> = identities
         .iter()
         .enumerate()
-        .map(|(idx, (ip, _mac, port))| ((*ip, *port), idx))
+        .map(|(idx, (_owner, _ipv4_rid, _mac_rid, _udp_rid, ip, _mac, port))| ((*ip, *port), idx))
         .collect();
 
     // Reusable per-packet context (updated in polling loops).
@@ -209,7 +235,9 @@ fn main() -> Result<()> {
     };
 
     let mac_broadcast = MacAddr([0xff; 6]);
-    let Some((arp_spa, _, _)) = identities.first().copied() else {
+    let Some((_owner0, _ipv4_rid0, _mac_rid0, _udp_rid0, arp_spa, _mac0, _port0)) =
+        identities.first().copied()
+    else {
         anyhow::bail!("no client identities allocated");
     };
 
@@ -341,7 +369,7 @@ fn main() -> Result<()> {
     // - wildcard-IP UDP port bindings (0.0.0.0, udp_src_port) so Udp::accept accepts replies
     //   regardless of which local IP the reply is destined to.
     let mut abr_store = ntx::network::abr::BindingStore::default();
-    for (ip, _mac, udp_port) in &identities {
+    for (_owner, _ipv4_rid, _mac_rid, _udp_rid, ip, _mac, udp_port) in &identities {
         let ip_be = u32::from_be_bytes(ip.octets());
         abr_store.add(ntx::network::abr::Binding::ipv4_be(
             ip_be,
@@ -359,7 +387,9 @@ fn main() -> Result<()> {
     // --- 3) Create+bind one UDP socket per (client identity, target) pair ---
     // This avoids creating a fresh `sock_id` for every send and keeps the socket table bounded.
     let mut sock_ids: Vec<Vec<u64>> = vec![vec![0u64; resolved_targets.len()]; identities.len()];
-    for (cidx, (client_ip, src_mac, udp_src_port)) in identities.iter().copied().enumerate() {
+    for (cidx, (_owner, _ipv4_rid, _mac_rid, _udp_rid, client_ip, src_mac, udp_src_port)) in
+        identities.iter().copied().enumerate()
+    {
         for (tidx, (server_ip, dst_mac, server_port)) in
             resolved_targets.iter().copied().enumerate()
         {
@@ -382,7 +412,9 @@ fn main() -> Result<()> {
 
     // --- 4) Send UDP echo requests: 10 client identities x N targets ---
     let total_expected = identities.len() * resolved_targets.len();
-    for (cidx, (client_ip, src_mac, udp_src_port)) in identities.iter().copied().enumerate() {
+    for (cidx, (_owner, _ipv4_rid, _mac_rid, _udp_rid, client_ip, src_mac, udp_src_port)) in
+        identities.iter().copied().enumerate()
+    {
         for (tidx, (server_ip, dst_mac, server_port)) in
             resolved_targets.iter().copied().enumerate()
         {
@@ -510,8 +542,8 @@ fn main() -> Result<()> {
         };
 
         // If parsing reached UDP, maintain/refresh the socket entry.
-        let _ = udp_sockets.on_rx(&pkt, &udp_ctx);
-
+        let conn = udp_sockets.on_rx(&pkt, &udp_ctx).unwrap();
+        let sock_id = conn.key.id;
         // Keep old reporting shape (cidx,tidx) for printing/stats.
         let Some(&tidx) = tidx_map.get(&(ip_layer.src, udp.src_port)) else {
             continue;
