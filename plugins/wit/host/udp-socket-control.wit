@@ -1,18 +1,7 @@
 package ntx:hostnet;
-
-/// Host-provided control-plane socket API for guests.
-///
-/// Design goals:
-/// - Guest-driven create+bind+finalize
-/// - Bind by ResourceId (UUID string) to reuse host-side resource registry/pools
-/// - Build returns a frame handle; the actual bytes are written into a shared memory
-///   managed by the host runtime.
-///
-/// Notes:
-/// - ResourceId is represented as a canonical UUID string.
-/// - sock-id is an opaque dataplane handle allocated by the host.
 interface udp-socket-control {
     /// Canonical UUID string.
+    use types.{ipv4-addr, mac-addr};
     type resource-id = string;
 
     /// Opaque dataplane socket/flow id.
@@ -22,24 +11,6 @@ interface udp-socket-control {
     record udp-socket {
         owner: resource-id,
         sock: sock-id,
-    }
-
-    /// IPv4 address.
-    record ipv4-addr {
-        a: u8,
-        b: u8,
-        c: u8,
-        d: u8,
-    }
-
-    /// MAC address.
-    record mac-addr {
-        a: u8,
-        b: u8,
-        c: u8,
-        d: u8,
-        e: u8,
-        f: u8,
     }
 
     /// A handle for a frame written into host-managed shared memory.

@@ -24,10 +24,9 @@ mod packet_engine_bindings {
         debug:true,
     });
 }
-
-use packet_engine_bindings::ntx::hostnet::resources::{
-    Host as ResourceHost, Ipv4Addr, MacAddr, ResourceError,
-};
+use packet_engine_bindings::ntx::hostnet::resources::{Host as ResourceHost, ResourceError};
+use packet_engine_bindings::ntx::hostnet::types::Host as TypesHost;
+use packet_engine_bindings::ntx::hostnet::types::{Ipv4Addr, MacAddr};
 use packet_engine_bindings::ntx::hostnet::udp_socket_control::{
     FrameHandle, Host as UdpHost, SocketError, UdpSocket,
 };
@@ -161,7 +160,7 @@ fn parse_uuid(s: &str) -> Result<Uuid, String> {
 fn fmt_uuid(id: &Uuid) -> String {
     id.to_string()
 }
-
+impl TypesHost for State {}
 impl ResourceHost for State {
     fn create_socket_owner(&mut self, name: String) -> wasmtime::Result<String, ResourceError> {
         let mut pools = self.pools.lock();
@@ -294,11 +293,10 @@ impl UdpHost for State {
     fn bind_peer(
         &mut self,
         sock: u64,
-        peer_ipv4: packet_engine_bindings::ntx::hostnet::udp_socket_control::Ipv4Addr,
+        peer_ipv4: Ipv4Addr,
         peer_port: u16,
-        peer_mac: packet_engine_bindings::ntx::hostnet::udp_socket_control::MacAddr,
-    ) -> wasmtime::Result<(), packet_engine_bindings::ntx::hostnet::udp_socket_control::SocketError>
-    {
+        peer_mac: MacAddr,
+    ) -> wasmtime::Result<(), SocketError> {
         self.hostnet.lock().binder.bind_peer(
             sock,
             ntx_network::Ipv4Addr([peer_ipv4.a, peer_ipv4.b, peer_ipv4.c, peer_ipv4.d]),

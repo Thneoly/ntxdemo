@@ -1,4 +1,5 @@
 package ntx:packet;
+use ntx:hostnet/types;
 use ntx:hostnet/udp-socket-control;
 use ntx:hostnet/resources;
 /// Packet engine component that consumes RX packets via shared memories.

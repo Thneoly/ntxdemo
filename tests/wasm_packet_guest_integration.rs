@@ -3,22 +3,29 @@ use std::path::PathBuf;
 use ntx::wasm_engine::shared_mem;
 use ntx::wasm_engine::{ComponentEngine, EngineConfig};
 
-fn packet_guest_component_path() -> PathBuf {
+fn packet_engine_component_path() -> PathBuf {
     // Build output convention for wasm32-wasip2 in this repo.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target")
         .join("wasm32-wasip2")
         .join("debug")
-        .join("packet_guest.wasm")
+        .join("packet_engine.wasm")
 }
 
 #[test]
-fn packet_guest_enqueue_notify_advances_tail() {
-    // If the guest component wasn't built yet, build it as a component.
-    let path = packet_guest_component_path();
+fn packet_engine_enqueue_notify_advances_tail() {
+    // If the engine component wasn't built yet, build it as a component.
+    let path = packet_engine_component_path();
     if !path.exists() {
         let status = std::process::Command::new("cargo")
-            .args(["component", "build", "-p", "packet-engine", "-q"])
+            .args([
+                "build",
+                "--target",
+                "wasm32-wasip2",
+                "-p",
+                "packet-engine",
+                "-q",
+            ])
             .status()
             .expect("failed to invoke cargo component build");
         assert!(status.success(), "cargo component build failed");
@@ -26,7 +33,7 @@ fn packet_guest_enqueue_notify_advances_tail() {
 
     assert!(
         path.exists(),
-        "guest component not found at {}",
+        "engine component not found at {}",
         path.display()
     );
 
@@ -62,7 +69,7 @@ fn packet_guest_enqueue_notify_advances_tail() {
 
     // Call notify.
     let n = engine.notify_rx().expect("notify_rx");
-    assert_eq!(n, 1, "guest should consume one descriptor");
+    assert_eq!(n, 1, "engine should consume one descriptor");
 
     // Verify descriptor tail advanced in control block (tail == head == 1 after consume).
     let desc_mem = engine.read_desc_buffer().expect("read desc buffer");

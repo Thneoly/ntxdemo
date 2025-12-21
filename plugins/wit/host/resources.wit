@@ -1,11 +1,9 @@
 package ntx:hostnet;
 
-/// Host-provided resource allocation API.
-///
-/// Scheme X: guest explicitly allocates/pins resources, obtains ResourceIds,
-/// then binds sockets by ResourceId.
 interface resources {
     /// Canonical UUID string.
+    use types.{ipv4-addr, mac-addr};
+
     type resource-id = string;
 
     /// Owner identity for a socket (also a ResourceId).
@@ -30,9 +28,6 @@ interface resources {
     /// Allocate+pin a UDP port for this owner from pool.
     alloc-udp-port: func(pool: string, owner: owner-id) -> result<resource-id, resource-error>;
 
-    /// Optional: resolve resource ids to concrete values for debugging/inspection.
-    record ipv4-addr { a: u8, b: u8, c: u8, d: u8 }
-    record mac-addr { a: u8, b: u8, c: u8, d: u8, e: u8, f: u8 }
 
     resolve-ipv4: func(rid: resource-id) -> result<ipv4-addr, resource-error>;
     resolve-mac: func(rid: resource-id) -> result<mac-addr, resource-error>;
