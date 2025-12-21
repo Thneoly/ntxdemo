@@ -24,7 +24,7 @@ use packet_engine_bindings::ntx::hostnet::resources::{Host as ResourceHost, Reso
 use packet_engine_bindings::ntx::hostnet::types::Host as TypesHost;
 use packet_engine_bindings::ntx::hostnet::types::{Ipv4Addr, MacAddr};
 use packet_engine_bindings::ntx::hostnet::udp_socket_control::{
-    FrameHandle, Host as UdpHost, SocketError, UdpSocket,
+    FrameHandle, Host as UdpHost, SocketError, UdpBind, UdpSocket,
 };
 
 #[derive(Debug, Clone)]
@@ -169,57 +169,25 @@ impl UdpHost for State {
         })
     }
 
-    fn bind_local_ipv4(
-        &mut self,
-        sock: u64,
-        local_ipv4: String,
-    ) -> wasmtime::Result<(), SocketError> {
-        kernel::hostnet_udp_bind_local_ipv4(sock, &local_ipv4)
-            .map_err(|e| SocketError::Other(e.to_string()))
-    }
-
-    fn bind_local_mac(
-        &mut self,
-        sock: u64,
-        local_mac: String,
-    ) -> wasmtime::Result<(), SocketError> {
-        kernel::hostnet_udp_bind_local_mac(sock, &local_mac)
-            .map_err(|e| SocketError::Other(e.to_string()))
-    }
-
-    fn bind_local_udp_port(
-        &mut self,
-        sock: u64,
-        local_udp_port: String,
-    ) -> wasmtime::Result<(), SocketError> {
-        kernel::hostnet_udp_bind_local_udp_port(sock, &local_udp_port)
-            .map_err(|e| SocketError::Other(e.to_string()))
-    }
-
-    fn bind_peer(
-        &mut self,
-        sock: u64,
-        peer_ipv4: Ipv4Addr,
-        peer_port: u16,
-        peer_mac: MacAddr,
-    ) -> wasmtime::Result<(), SocketError> {
-        kernel::hostnet_udp_bind_peer(
+    fn bind(&mut self, sock: u64, b: UdpBind) -> wasmtime::Result<(), SocketError> {
+        kernel::hostnet_udp_bind_all(
             sock,
-            ntx_network::Ipv4Addr([peer_ipv4.a, peer_ipv4.b, peer_ipv4.c, peer_ipv4.d]),
-            peer_port,
+            &b.local_ipv4,
+            &b.local_mac,
+            &b.local_udp_port,
+            ntx_network::Ipv4Addr([b.peer_ipv4.a, b.peer_ipv4.b, b.peer_ipv4.c, b.peer_ipv4.d]),
+            b.peer_port,
             ntx_network::MacAddr([
-                peer_mac.a, peer_mac.b, peer_mac.c, peer_mac.d, peer_mac.e, peer_mac.f,
+                b.peer_mac.a,
+                b.peer_mac.b,
+                b.peer_mac.c,
+                b.peer_mac.d,
+                b.peer_mac.e,
+                b.peer_mac.f,
             ]),
+            b.ttl,
         )
         .map_err(|e| SocketError::Other(e.to_string()))
-    }
-
-    fn bind_ttl(&mut self, sock: u64, ttl: u8) -> wasmtime::Result<(), SocketError> {
-        kernel::hostnet_udp_bind_ttl(sock, ttl).map_err(|e| SocketError::Other(e.to_string()))
-    }
-
-    fn finalize(&mut self, sock: u64) -> wasmtime::Result<(), SocketError> {
-        kernel::hostnet_udp_finalize(sock).map_err(|e| SocketError::Other(e.to_string()))
     }
 
     fn build_reply(

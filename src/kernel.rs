@@ -174,7 +174,7 @@ pub fn hostnet_udp_create(name: &str) -> Result<HostnetUdpSocket, HostnetError> 
     })
 }
 
-pub fn hostnet_udp_bind_local_ipv4(sock: u64, local_ipv4_rid: &str) -> Result<(), HostnetError> {
+fn hostnet_udp_bind_local_ipv4(sock: u64, local_ipv4_rid: &str) -> Result<(), HostnetError> {
     let rid = parse_uuid_str(local_ipv4_rid)?;
     KERNEL
         .hostnet_udp_binder
@@ -183,7 +183,7 @@ pub fn hostnet_udp_bind_local_ipv4(sock: u64, local_ipv4_rid: &str) -> Result<()
     Ok(())
 }
 
-pub fn hostnet_udp_bind_local_mac(sock: u64, local_mac_rid: &str) -> Result<(), HostnetError> {
+fn hostnet_udp_bind_local_mac(sock: u64, local_mac_rid: &str) -> Result<(), HostnetError> {
     let rid = parse_uuid_str(local_mac_rid)?;
     KERNEL
         .hostnet_udp_binder
@@ -192,7 +192,7 @@ pub fn hostnet_udp_bind_local_mac(sock: u64, local_mac_rid: &str) -> Result<(), 
     Ok(())
 }
 
-pub fn hostnet_udp_bind_local_udp_port(
+fn hostnet_udp_bind_local_udp_port(
     sock: u64,
     local_udp_port_rid: &str,
 ) -> Result<(), HostnetError> {
@@ -204,7 +204,7 @@ pub fn hostnet_udp_bind_local_udp_port(
     Ok(())
 }
 
-pub fn hostnet_udp_bind_peer(
+fn hostnet_udp_bind_peer(
     sock: u64,
     peer_ipv4: ntx_network::Ipv4Addr,
     peer_port: u16,
@@ -217,8 +217,33 @@ pub fn hostnet_udp_bind_peer(
     Ok(())
 }
 
-pub fn hostnet_udp_bind_ttl(sock: u64, ttl: u8) -> Result<(), HostnetError> {
+fn hostnet_udp_bind_ttl(sock: u64, ttl: u8) -> Result<(), HostnetError> {
     KERNEL.hostnet_udp_binder.lock().bind_ttl(sock, ttl);
+    Ok(())
+}
+
+/// Bind all required parameters in a single call.
+///
+/// This mirrors the WIT `udp-socket-control.bind` convenience API.
+pub fn hostnet_udp_bind_all(
+    sock: u64,
+    local_ipv4_rid: &str,
+    local_mac_rid: &str,
+    local_udp_port_rid: &str,
+    peer_ipv4: ntx_network::Ipv4Addr,
+    peer_port: u16,
+    peer_mac: ntx_network::MacAddr,
+    ttl: Option<u8>,
+) -> Result<(), HostnetError> {
+    hostnet_udp_bind_local_ipv4(sock, local_ipv4_rid)?;
+    hostnet_udp_bind_local_mac(sock, local_mac_rid)?;
+    hostnet_udp_bind_local_udp_port(sock, local_udp_port_rid)?;
+    hostnet_udp_bind_peer(sock, peer_ipv4, peer_port, peer_mac)?;
+    if let Some(ttl) = ttl {
+        hostnet_udp_bind_ttl(sock, ttl)?;
+    }
+    // One-step API: commit bindings into the conn-table.
+    hostnet_udp_finalize(sock)?;
     Ok(())
 }
 

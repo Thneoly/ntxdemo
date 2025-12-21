@@ -13,6 +13,26 @@ interface udp-socket-control {
         sock: sock-id,
     }
 
+    /// One-shot configuration for a UDP socket.
+    ///
+    /// This collapses multiple `bind-*` calls into a single host call.
+    ///
+    /// Semantics:
+    /// - `local-*` are ResourceId-based and must be valid/pinned resources.
+    /// - `peer-*` are value-based.
+    /// - `ttl` is optional; if not provided, host default is used.
+    record udp-bind {
+        local-ipv4: resource-id,
+        local-mac: resource-id,
+        local-udp-port: resource-id,
+
+        peer-ipv4: ipv4-addr,
+        peer-port: u16,
+        peer-mac: mac-addr,
+
+        ttl: option<u8>,
+    }
+
     /// A handle for a frame written into host-managed shared memory.
     ///
     /// The meaning of (region, offset, len) is host-defined, but stable:
@@ -35,19 +55,8 @@ interface udp-socket-control {
     /// Create a UDP socket. Host allocates both owner ResourceId and sock-id.
     create: func(name: string) -> result<udp-socket, socket-error>;
 
-    /// Bind local resources by ResourceId.
-    bind-local-ipv4: func(sock: sock-id, local-ipv4: resource-id) -> result<_, socket-error>;
-    bind-local-mac: func(sock: sock-id, local-mac: resource-id) -> result<_, socket-error>;
-    bind-local-udp-port: func(sock: sock-id, local-udp-port: resource-id) -> result<_, socket-error>;
-
-    /// Bind peer tuple (value-based).
-    bind-peer: func(sock: sock-id, peer-ipv4: ipv4-addr, peer-port: u16, peer-mac: mac-addr) -> result<_, socket-error>;
-
-    /// Optional TTL override.
-    bind-ttl: func(sock: sock-id, ttl: u8) -> result<_, socket-error>;
-
-    /// Resolve and finalize the socket into the host UDP conn-table.
-    finalize: func(sock: sock-id) -> result<_, socket-error>;
+    /// Bind a UDP socket to a port.
+    bind: func(sock: sock-id, b: udp-bind) -> result<_, socket-error>;
 
     /// Build a UDP reply frame and write it into host shared memory.
     ///

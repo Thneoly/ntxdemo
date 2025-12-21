@@ -642,7 +642,7 @@ mod tests {
         });
 
         let mut pools: ResourcePools = cfg.build().expect("build pools");
-        let owner = pools.alloc_socket_owner("s1");
+        let owner = pools.acquire_socket_owner("s1");
 
         let (ipv4_rid, _ip) = {
             let (rid, v) = pools

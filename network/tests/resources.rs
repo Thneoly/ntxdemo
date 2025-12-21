@@ -93,7 +93,7 @@ port:
     };
 
     let resolved = pools
-        .resolve_non_socket(ResourceKind::Ipv4, rid)
+        .resolve_non_socket(ResourceKind::Ipv4, &rid)
         .expect("resolve pinned ip");
     assert_eq!(resolved, NonSocketResourceValue::Ipv4(ip));
 }
@@ -203,7 +203,7 @@ udp_port:
 }
 
 #[test]
-fn alloc_udp_port_for_registers_resource_id() {
+fn acquire_udp_port_for_registers_resource_id() {
     let yaml = r#"
 udp_port:
   - name: demo
@@ -219,7 +219,7 @@ udp_port:
     let (rid, port) = {
         let (rid, v) = pools
             .acquire_and_pin_non_socket(ResourceKind::UdpPort, "demo", owner, Some(using_sock_id))
-            .expect("alloc udp port");
+            .expect("acquire udp port");
         let NonSocketResourceValue::UdpPort(p) = v else {
             unreachable!("resource kind/value mismatch")
         };
@@ -324,11 +324,11 @@ tcp_port:
 }
 
 #[test]
-fn alloc_socket_owner_registers_socket_info() {
+fn acquire_socket_owner_registers_socket_info() {
     let cfg: ResourcePoolsConfig = serde_yaml::from_str("{}").unwrap();
     let mut pools = cfg.build().unwrap();
 
-    let owner = pools.alloc_socket_owner("sock-a");
+    let owner = pools.acquire_socket_owner("sock-a");
     assert_eq!(pools.registry().kind_of(&owner), Some(ResourceKind::Socket));
     assert_eq!(
         pools.registry().socket_info(&owner).unwrap().name,
@@ -359,7 +359,7 @@ mac:
     let cfg: ResourcePoolsConfig = serde_yaml::from_str(yaml).unwrap();
     let mut pools = cfg.build().unwrap();
 
-    let owner = pools.alloc_socket_owner("sock-pin");
+    let owner = pools.acquire_socket_owner("sock-pin");
     let using_sock_id: SockId = 42;
 
     let ip: std::net::Ipv4Addr = "10.11.0.2".parse().unwrap();
