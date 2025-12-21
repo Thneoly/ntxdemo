@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
 
+use ntx::network::ConnTableConfig;
 use ntx::network::packet::headers::{Ipv4Addr, MacAddr};
 use ntx::network::prelude::*;
 use ntx::network::resources::ResourcePoolsConfig;
+use ntx::network::socket::{LocalIdentity, TimeContext, UdpRxContext};
 use ntx::network::stack::{
     LayerId, LayerRegistry, PacketContext, default_registry, layers, parse_packet_with_ctx,
 };
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct TargetsYaml {
@@ -180,12 +181,12 @@ fn main() -> Result<()> {
     let mut tx_udp: u64 = 0;
     let mut last_stats = std::time::Instant::now();
 
-    // Socket-like reverse-path cache (per UDP flow).
-    // Keyed by 4-tuple (peer_ip, peer_port, local_ip, local_port).
-    let mut udp_reply_cache: HashMap<
-        ntx::network::socket::udp::Key,
-        ntx::network::traffic::udp_echo::UdpReplyTemplate,
-    > = HashMap::new();
+    // Socket table for UDP flows.
+    // This replaces the ad-hoc HashMap<UdpReplyTemplate> and unifies recv+reply behavior.
+    let mut udp_sockets = ntx::network::socket::udp::Table::new(ConnTableConfig {
+        max_entries: 4096,
+        ttl: Some(std::time::Duration::from_secs(60)),
+    });
 
     let mut buf = vec![0u8; 2048];
 
@@ -220,14 +221,19 @@ fn main() -> Result<()> {
             }
         };
 
-        let eth_l2 = layers
+        // Socket tables want a PacketView; `ParsedPacket` implements it.
+        let pkt = ntx::network::stack::ParsedPacket { layers, payload };
+
+        let eth_l2 = pkt
+            .layers()
             .iter()
             .find(|l| l.id == LayerId::Ether)
             .and_then(|l| l.downcast_ref::<ntx::network::stack::layers::Ether>());
 
         // ---- ARP request for our IP -> reply ----
-        if layers.iter().any(|l| l.id == LayerId::Arp) {
-            let arp = layers
+        if pkt.layers().iter().any(|l| l.id == LayerId::Arp) {
+            let arp = pkt
+                .layers()
                 .iter()
                 .find(|l| l.id == LayerId::Arp)
                 .and_then(|l| l.downcast_ref::<ntx::network::stack::layers::Arp>());
@@ -281,20 +287,23 @@ fn main() -> Result<()> {
         }
 
         // ---- IPv4/UDP echo ----
-        let eth = layers
+        let eth = pkt
+            .layers()
             .iter()
             .find(|l| l.id == LayerId::Ether)
             .and_then(|l| l.downcast_ref::<ntx::network::stack::layers::Ether>());
-        let ip = layers
+        let ip = pkt
+            .layers()
             .iter()
             .find(|l| l.id == LayerId::Ipv4)
             .and_then(|l| l.downcast_ref::<ntx::network::stack::layers::Ipv4>());
-        let udp = layers
+        let udp = pkt
+            .layers()
             .iter()
             .find(|l| l.id == LayerId::Udp)
             .and_then(|l| l.downcast_ref::<ntx::network::stack::layers::Udp>());
 
-        let (Some(eth), Some(ip), Some(udp)) = (eth, ip, udp) else {
+        let (Some(_eth), Some(ip), Some(udp)) = (eth, ip, udp) else {
             if debug {
                 eprintln!("[dbg][udp] drop: missing ether/ipv4/udp layers");
             }
@@ -333,25 +342,14 @@ fn main() -> Result<()> {
             continue;
         };
 
-        // Echo reply (socket-like): cache the reverse-path headers for the flow and only
-        // inject payload on each send.
-        let key = ntx::network::socket::udp::Key {
-            id: 0,
-            peer_ip: ip.src,
-            peer_port: udp.src_port,
-            local_ip: my_ip,
-            local_port: port,
-        };
+        // Use the unified UDP socket table to track flows and build replies.
+        // We must provide the local identity chosen above so the socket layer knows
+        // which MAC/IP/port we are receiving for.
+        let udp_ctx =
+            UdpRxContext::new(TimeContext::new(), LocalIdentity::new(my_mac, my_ip), port);
 
-        let tpl = udp_reply_cache.entry(key).or_insert_with(|| {
-            // Swap src/dst using the currently chosen identity's MAC.
-            ntx::network::traffic::udp_echo::UdpReplyTemplate::from_layers(eth, ip, udp, my_mac)
-        });
-
-        let reply = tpl
-            .build(payload)
-            .context("build udp reply (template)")?
-            .bytes;
+        let conn = udp_sockets.on_rx(&pkt, &udp_ctx).context("udp on_rx")?;
+        let reply = conn.build_reply(payload).context("build udp reply")?.bytes;
 
         let _ = nic.send(&reply);
         tx_udp += 1;

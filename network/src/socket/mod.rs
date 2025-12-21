@@ -103,6 +103,31 @@ impl UdpRxContext {
     pub fn local_ip(&self) -> Ipv4Addr {
         self.local.local_ip
     }
+
+    /// Derive a [`UdpRxContext`] from an inbound packet and a prebuilt local-identity map.
+    ///
+    /// This is a convenience helper for apps that maintain multiple local identities
+    /// (e.g. echo client/server examples) and want to avoid doing per-packet linear scans.
+    ///
+    /// Contract:
+    /// - Returns `None` if the packet doesn't have IPv4+UDP layers.
+    /// - Returns `None` if `(dst_ip, dst_port)` isn't present in `local_map`.
+    ///
+    /// The map key is `(local_ip, local_port)`.
+    pub fn from_ipv4_udp_packet(
+        pkt: &impl PacketView,
+        time: TimeContext,
+        local_map: &std::collections::HashMap<(Ipv4Addr, u16), LocalIdentity>,
+    ) -> Option<Self> {
+        let ip = pkt.get::<crate::packet::layers::Ipv4>()?;
+        let udp = pkt.get::<crate::packet::layers::Udp>()?;
+        let local = *local_map.get(&(ip.dst, udp.dst_port))?;
+        Some(Self {
+            time,
+            local,
+            local_port: udp.dst_port,
+        })
+    }
 }
 
 /// A minimal protocol-agnostic parsed packet view for socket tables.

@@ -19,7 +19,7 @@ use parking_lot::{Mutex, RwLock};
 use serde::Deserialize;
 use std::path::Path;
 use std::sync::Arc;
-use tracing::error;
+use tracing::{error, info};
 
 use crate::audit_registry;
 

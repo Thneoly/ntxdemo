@@ -3,7 +3,8 @@ use anyhow::{Context, Result};
 use ntx_network::packet::headers::{Ipv4Addr, MacAddr};
 use ntx_network::prelude::*;
 use ntx_network::resources::ResourcePoolsConfig;
-use ntx_network::socket::udp::{Key, Table};
+use ntx_network::socket::udp::{Table, UdpBinding};
+use ntx_network::socket::{LocalIdentity, TimeContext, UdpRxContext};
 use ntx_network::stack::{
     LayerId, LayerRegistry, PacketContext, default_registry, layers, li, parse_packet_with_ctx,
 };
@@ -80,9 +81,9 @@ fn main() -> Result<()> {
 
     let reg: LayerRegistry = default_registry();
 
-    // Client-side connection table + ARP cache.
+    // Client-side UDP socket table + ARP cache.
     // - ArpCache learns (peer_ip -> peer_mac) from ARP replies.
-    // - Table remembers per-flow peer/local tuples and holds a reusable tx template.
+    // - Table stores per-flow socket bindings and can build tx frames by sock_id.
     let mut arp_cache = ArpCache::new(std::time::Duration::from_secs(60));
     let mut udp_sockets = Table::new(ConnTableConfig {
         max_entries: 4096,
@@ -99,7 +100,7 @@ fn main() -> Result<()> {
     };
 
     let mut identities: Vec<(Ipv4Addr, MacAddr, u16)> = Vec::with_capacity(10);
-    for i in 0..10 {
+    for i in 0..1 {
         let ip = {
             let pool = if let Some(p) = pools.ipv4("client") {
                 p
@@ -158,6 +159,21 @@ fn main() -> Result<()> {
     }
 
     let mut buf = vec![0u8; 2048];
+
+    // --- Local identity lookup: (dst_ip, dst_port) -> LocalIdentity ---
+    // Built once so RX doesn't need to scan `identities` per packet.
+    let local_map: std::collections::HashMap<(Ipv4Addr, u16), LocalIdentity> = identities
+        .iter()
+        .copied()
+        .map(|(ip, mac, port)| ((ip, port), LocalIdentity::new(mac, ip)))
+        .collect();
+
+    // For logging/stats only: map inbound (dst_ip,dst_port) back to identity index.
+    let cidx_map: std::collections::HashMap<(Ipv4Addr, u16), usize> = identities
+        .iter()
+        .enumerate()
+        .map(|(idx, (ip, _mac, port))| ((*ip, *port), idx))
+        .collect();
 
     // Reusable per-packet context (updated in polling loops).
     let mut ctx = PacketContext {
@@ -307,6 +323,14 @@ fn main() -> Result<()> {
         );
     }
 
+    // For RX logging/stats: map inbound server identity back to target index.
+    // Key by (server_ip, server_port) so it's unambiguous even if multiple ports are used.
+    let tidx_map: std::collections::HashMap<(Ipv4Addr, u16), usize> = resolved_targets
+        .iter()
+        .enumerate()
+        .map(|(idx, (ip, _mac, port))| ((*ip, *port), idx))
+        .collect();
+
     // --- 2) Publish ABR snapshot for accept()-based filtering (all 10 identities) ---
     // Important: for RX replies, UDP::accept checks bindings against (dst_ip, dst_port).
     // Replies are destined to each client's IP, but the bound *socket-like* concept on the
@@ -332,7 +356,31 @@ fn main() -> Result<()> {
     }
     ntx::network::abr::store_view(abr_store.snapshot());
 
-    // --- 3) Send UDP echo requests: 10 client identities x N targets ---
+    // --- 3) Create+bind one UDP socket per (client identity, target) pair ---
+    // This avoids creating a fresh `sock_id` for every send and keeps the socket table bounded.
+    let mut sock_ids: Vec<Vec<u64>> = vec![vec![0u64; resolved_targets.len()]; identities.len()];
+    for (cidx, (client_ip, src_mac, udp_src_port)) in identities.iter().copied().enumerate() {
+        for (tidx, (server_ip, dst_mac, server_port)) in
+            resolved_targets.iter().copied().enumerate()
+        {
+            let sock_id = udp_sockets.create_sock_id();
+            udp_sockets.bind_sock_id(
+                sock_id,
+                UdpBinding {
+                    peer_ip: server_ip,
+                    peer_port: server_port,
+                    local_ip: client_ip,
+                    local_port: udp_src_port,
+                    peer_mac: dst_mac,
+                    local_mac: src_mac,
+                    ttl: 64,
+                },
+            );
+            sock_ids[cidx][tidx] = sock_id;
+        }
+    }
+
+    // --- 4) Send UDP echo requests: 10 client identities x N targets ---
     let total_expected = identities.len() * resolved_targets.len();
     for (cidx, (client_ip, src_mac, udp_src_port)) in identities.iter().copied().enumerate() {
         for (tidx, (server_ip, dst_mac, server_port)) in
@@ -340,31 +388,11 @@ fn main() -> Result<()> {
         {
             let app_payload = format!("hello-echo-c{:02}-t{:02}", cidx, tidx);
 
-            // Ensure we have a connected socket for this (peer, local) tuple.
-            // This uses ARP cache to resolve peer MAC and stores a reusable tx template.
-            let sock = udp_sockets
-                .connect_via_arp_cache(
-                    &mut arp_cache,
-                    server_ip,
-                    server_port,
-                    client_ip,
-                    udp_src_port,
-                    src_mac,
-                    64,
-                )
-                .with_context(|| {
-                    format!(
-                        "connect via arp cache: peer={} local={} src_port={udp_src_port}",
-                        ntx::network::fmt_ipv4!(server_ip),
-                        ntx::network::fmt_ipv4!(client_ip)
-                    )
-                })?;
+            let sock_id = sock_ids[cidx][tidx];
 
-            // Use the socket template to build the bytes. (Despite the name `reply`,
-            // the template encode path is the same and includes checksums.)
-            let frame = sock
-                .build_reply(app_payload.as_bytes())
-                .with_context(|| format!("build echo request (socket) c={cidx} t={tidx}"))?
+            let frame = udp_sockets
+                .build_reply_for_sock_id(sock_id, app_payload.as_bytes())
+                .map_err(|e| anyhow::anyhow!("build udp frame: {e}"))?
                 .bytes;
 
             // Best-effort send.
@@ -383,7 +411,7 @@ fn main() -> Result<()> {
         }
     }
 
-    // --- 4) Wait for replies (expect up to 10*N) ---
+    // --- 5) Wait for replies (expect up to 10*N) ---
     use std::collections::BTreeSet;
     let mut got: BTreeSet<(usize, usize)> = BTreeSet::new();
 
@@ -452,69 +480,47 @@ fn main() -> Result<()> {
             }
         };
 
-        let ip = layers
-            .iter()
-            .find(|l| l.id == LayerId::Ipv4)
-            .and_then(|l| l.downcast_ref::<ntx::network::stack::layers::Ipv4>());
-        let udp = layers
-            .iter()
-            .find(|l| l.id == LayerId::Udp)
-            .and_then(|l| l.downcast_ref::<ntx::network::stack::layers::Udp>());
+        let pkt = ntx::network::stack::ParsedPacket {
+            layers,
+            payload: &payload,
+        };
 
-        let (Some(ip), Some(udp)) = (ip, udp) else {
+        // Attribute replies by (dst_ip, dst_port) using the prebuilt map.
+        // This avoids scanning `identities` on every RX packet.
+        let Some(udp_ctx) =
+            UdpRxContext::from_ipv4_udp_packet(&pkt, TimeContext::new(), &local_map)
+        else {
             if debug {
-                eprintln!("[dbg][rx] drop: missing ip/udp layer");
+                eprintln!("[dbg][rx] drop: dst not one of our identities");
             }
             continue;
         };
 
-        // Correlate using the unified socket-table key instead of ad-hoc tuple matching.
-        // Incoming reply should match an existing connected socket:
-        // - peer_ip == reply src
-        // - local_ip == reply dst
-        // - peer_port == reply src_port
-        // - local_port == reply dst_port
-        let flow_key = Key {
-            id: 0,
-            peer_ip: ip.src,
-            peer_port: udp.src_port,
-            local_ip: ip.dst,
-            local_port: udp.dst_port,
-        };
-        if udp_sockets.get(&flow_key).is_none() {
-            if debug {
-                eprintln!(
-                    "[dbg][rx] drop: no matching udp socket: peer={} local={} ports {}->{}",
-                    ntx::network::fmt_ipv4!(ip.src),
-                    ntx::network::fmt_ipv4!(ip.dst),
-                    udp.src_port,
-                    udp.dst_port
-                );
-            }
+        // For logging + tidx mapping we still need the IP/UDP layers (cheap, no scan).
+        let Some(ip_layer) = pkt.get::<ntx::network::stack::layers::Ipv4>() else {
             continue;
-        }
+        };
+        let Some(udp) = pkt.get::<ntx::network::stack::layers::Udp>() else {
+            continue;
+        };
 
-        // Keep old reporting shape (cidx,tidx) by mapping using identities + resolved targets.
-        // This preserves the existing success criteria (10 x N replies).
-        let Some(cidx) = identities
-            .iter()
-            .position(|(client_ip, _mac, udp_src_port)| {
-                *client_ip == ip.dst && *udp_src_port == udp.dst_port
-            })
-        else {
+        // Keep old reporting shape (cidx,tidx) for printing/stats.
+        let Some(&cidx) = cidx_map.get(&(ip_layer.dst, udp.dst_port)) else {
             continue;
         };
-        let Some(tidx) = resolved_targets
-            .iter()
-            .position(|(server_ip, _mac, _port)| *server_ip == ip.src)
-        else {
+
+        // If parsing reached UDP, maintain/refresh the socket entry.
+        let _ = udp_sockets.on_rx(&pkt, &udp_ctx);
+
+        // Keep old reporting shape (cidx,tidx) for printing/stats.
+        let Some(&tidx) = tidx_map.get(&(ip_layer.src, udp.src_port)) else {
             continue;
         };
 
         if got.insert((cidx, tidx)) {
             eprintln!(
                 "got reply c#{cidx} <- t#{tidx}: dst_ip={} dst_port={} {} bytes: {:?}",
-                ntx::network::fmt_ipv4!(ip.dst),
+                ntx::network::fmt_ipv4!(ip_layer.dst),
                 udp.dst_port,
                 payload.len(),
                 payload
