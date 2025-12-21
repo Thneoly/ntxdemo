@@ -90,7 +90,7 @@ fn main() -> Result<()> {
         ttl: Some(std::time::Duration::from_secs(60)),
     });
 
-    // --- Resource pools: allocate 10 identities (ip, mac, udp-port) ---
+    // --- Resource pools: acquire 10 identities (ip, mac, udp-port) ---
     let mut pools = if let Some(path) = resources_yaml {
         eprintln!("loading resource pools from: {}", path);
         let cfg = ResourcePoolsConfig::load_yaml_file(path)?;
@@ -114,44 +114,66 @@ fn main() -> Result<()> {
         u16,
     )> = Vec::with_capacity(10);
 
-    // Select pool names once to avoid borrow-checker conflicts (and to keep behavior stable).
-    let ipv4_pool_name: &str = if pools.ipv4("client").is_some() {
-        "client"
-    } else if pools.ipv4("demo").is_some() {
-        "demo"
-    } else {
-        "default"
-    };
-
-    let mac_pool_name: &str = if pools.mac("client").is_some() {
-        "client"
-    } else if pools.mac("demo").is_some() {
-        "demo"
-    } else {
-        "default"
-    };
-
-    let udp_pool_name: &str = if pools.udp_port("client").is_some() {
-        "client"
-    } else if pools.udp_port("demo").is_some() {
-        "demo"
-    } else {
-        "default"
-    };
+    // We intentionally avoid inspecting pools here because the per-pool accessors
+    // are not part of the public API anymore ("single entrypoint").
+    //
+    // Convention used by our sample yamls: prefer `client`, else `demo`, else `default`.
+    let ipv4_pool_candidates: [&str; 3] = ["client", "demo", "default"];
+    let mac_pool_candidates: [&str; 3] = ["client", "demo", "default"];
+    let udp_pool_candidates: [&str; 3] = ["client", "demo", "default"];
     for i in 0..10 {
-        let owner = pools.alloc_socket_owner(format!("ntx-echo-client-id#{i}"));
+        let owner = pools.acquire_socket_owner(format!("ntx-echo-client-id#{i}"));
 
-        let (ipv4_rid, ip) = pools
-            .alloc_ipv4_for_socket(ipv4_pool_name, owner)
-            .with_context(|| format!("allocate+pin ipv4 identity #{i}"))?;
+        let (ipv4_rid, v) = ipv4_pool_candidates
+            .iter()
+            .find_map(|pool| {
+                pools
+                    .acquire_and_pin_non_socket(
+                        ntx_network::resources::ResourceKind::Ipv4,
+                        pool,
+                        owner,
+                        None,
+                    )
+                    .ok()
+            })
+            .with_context(|| format!("acquire+pin ipv4 identity #{i}"))?;
+        let ntx_network::resources::NonSocketResourceValue::Ipv4(ip) = v else {
+            unreachable!("resource kind/value mismatch")
+        };
 
-        let (mac_rid, mac) = pools
-            .alloc_mac_for_socket(mac_pool_name, owner)
-            .with_context(|| format!("allocate+pin mac identity #{i}"))?;
+        let (mac_rid, v) = mac_pool_candidates
+            .iter()
+            .find_map(|pool| {
+                pools
+                    .acquire_and_pin_non_socket(
+                        ntx_network::resources::ResourceKind::Mac,
+                        pool,
+                        owner,
+                        None,
+                    )
+                    .ok()
+            })
+            .with_context(|| format!("acquire+pin mac identity #{i}"))?;
+        let ntx_network::resources::NonSocketResourceValue::Mac(mac) = v else {
+            unreachable!("resource kind/value mismatch")
+        };
 
-        let (udp_rid, udp_port) = pools
-            .alloc_udp_port_for_socket(udp_pool_name, owner)
-            .with_context(|| format!("allocate+pin udp port identity #{i}"))?;
+        let (udp_rid, v) = udp_pool_candidates
+            .iter()
+            .find_map(|pool| {
+                pools
+                    .acquire_and_pin_non_socket(
+                        ntx_network::resources::ResourceKind::UdpPort,
+                        pool,
+                        owner,
+                        None,
+                    )
+                    .ok()
+            })
+            .with_context(|| format!("acquire+pin udp port identity #{i}"))?;
+        let ntx_network::resources::NonSocketResourceValue::UdpPort(udp_port) = v else {
+            unreachable!("resource kind/value mismatch")
+        };
 
         if debug {
             eprintln!(
@@ -171,7 +193,7 @@ fn main() -> Result<()> {
         ));
     }
 
-    eprintln!("allocated {} identities:", identities.len());
+    eprintln!("acquired {} identities:", identities.len());
     for (idx, (_owner, _ipv4_rid, _mac_rid, _udp_rid, ip, mac, udp_port)) in
         identities.iter().enumerate()
     {
@@ -238,7 +260,7 @@ fn main() -> Result<()> {
     let Some((_owner0, _ipv4_rid0, _mac_rid0, _udp_rid0, arp_spa, _mac0, _port0)) =
         identities.first().copied()
     else {
-        anyhow::bail!("no client identities allocated");
+        anyhow::bail!("no client identities acquired");
     };
 
     let mut resolved_targets: Vec<(Ipv4Addr, MacAddr, u16)> = Vec::new();

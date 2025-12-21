@@ -22,9 +22,9 @@ pub enum PortProtocol {
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ResourcePoolsConfig {
     #[serde(default)]
-    pub ipv4: Vec<Ipv4PoolConfig>,
-    #[serde(default)]
     pub mac: Vec<MacPoolConfig>,
+    #[serde(default)]
+    pub ipv4: Vec<Ipv4PoolConfig>,
 
     /// Legacy/compat: treated as UDP port pools.
     ///

@@ -84,7 +84,7 @@ impl ResourceRegistry {
     }
 
     #[inline]
-    pub fn alloc_resource_id(&self) -> ResourceId {
+    pub fn acquire_resource_id(&self) -> ResourceId {
         Uuid::new_v4()
     }
 

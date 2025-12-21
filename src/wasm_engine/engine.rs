@@ -97,28 +97,28 @@ impl ResourceHost for State {
         kernel::hostnet_create_socket_owner(&name).map_err(|e| ResourceError::Other(e.to_string()))
     }
 
-    fn alloc_ipv4(
+    fn acquire_ipv4(
         &mut self,
         pool: String,
         owner: String,
     ) -> wasmtime::Result<String, ResourceError> {
-        kernel::hostnet_alloc_ipv4(&pool, &owner).map_err(|e| ResourceError::Other(e.to_string()))
+        kernel::hostnet_acquire_ipv4(&pool, &owner).map_err(|e| ResourceError::Other(e.to_string()))
     }
 
-    fn alloc_mac(
+    fn acquire_mac(
         &mut self,
         pool: String,
         owner: String,
     ) -> wasmtime::Result<String, ResourceError> {
-        kernel::hostnet_alloc_mac(&pool, &owner).map_err(|e| ResourceError::Other(e.to_string()))
+        kernel::hostnet_acquire_mac(&pool, &owner).map_err(|e| ResourceError::Other(e.to_string()))
     }
 
-    fn alloc_udp_port(
+    fn acquire_udp_port(
         &mut self,
         pool: String,
         owner: String,
     ) -> wasmtime::Result<String, ResourceError> {
-        kernel::hostnet_alloc_udp_port(&pool, &owner)
+        kernel::hostnet_acquire_udp_port(&pool, &owner)
             .map_err(|e| ResourceError::Other(e.to_string()))
     }
 

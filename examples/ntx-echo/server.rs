@@ -59,7 +59,7 @@ fn main() -> Result<()> {
     // If omitted, we keep the historical fixed server identity (10.0.0.2 + iface MAC).
     let resources_yaml = std::env::args().nth(2);
 
-    // Optional: provide a targets yaml as argv[3]. If present, we allocate as many identities
+    // Optional: provide a targets yaml as argv[3]. If present, we acquire as many identities
     // as targets (to keep the old multi-identity behavior). If absent, default to 1 identity.
     let targets_yaml = std::env::args().nth(3);
 
@@ -93,34 +93,49 @@ fn main() -> Result<()> {
         };
 
         for i in 0..identity_count {
-            let ip = {
-                let pool = if let Some(p) = pools.ipv4("server") {
-                    p
-                } else if let Some(p) = pools.ipv4("demo") {
-                    p
-                } else {
-                    pools
-                        .ipv4("default")
-                        .context("missing ipv4 pool named server/demo/default")?
-                };
-                pool.acquire()
-                    .ok_or_else(|| anyhow::anyhow!("ipv4 pool exhausted"))
-                    .with_context(|| format!("allocate server ipv4 identity #{i}"))?
-            };
+            // In this example we don't need control-plane realism (no rids, no pinning).
+            // We still avoid reaching into pool internals; only use the public acquire API.
+            let ipv4_pool_candidates: [&str; 3] = ["server", "demo", "default"];
+            let mac_pool_candidates: [&str; 3] = ["server", "demo", "default"];
 
-            let mac = {
-                let pool = if let Some(p) = pools.mac("server") {
-                    p
-                } else if let Some(p) = pools.mac("demo") {
-                    p
-                } else {
+            // Create a throwaway owner for each identity.
+            let owner = pools.acquire_socket_owner(format!("ntx-echo-server-id#{i}"));
+
+            let (_rid, v) = ipv4_pool_candidates
+                .iter()
+                .find_map(|pool| {
                     pools
-                        .mac("default")
-                        .context("missing mac pool named server/demo/default")?
-                };
-                pool.acquire()
-                    .ok_or_else(|| anyhow::anyhow!("mac pool exhausted"))
-                    .with_context(|| format!("allocate server mac identity #{i}"))?
+                        .acquire_and_pin_non_socket(
+                            ntx_network::resources::ResourceKind::Ipv4,
+                            pool,
+                            owner,
+                            None,
+                        )
+                        .ok()
+                })
+                .ok_or_else(|| anyhow::anyhow!("missing ipv4 pool named server/demo/default"))
+                .with_context(|| format!("acquire server ipv4 identity #{i}"))?;
+            let ntx_network::resources::NonSocketResourceValue::Ipv4(ip_std) = v else {
+                unreachable!("resource kind/value mismatch")
+            };
+            let ip = Ipv4Addr(ip_std.octets());
+
+            let (_rid, v) = mac_pool_candidates
+                .iter()
+                .find_map(|pool| {
+                    pools
+                        .acquire_and_pin_non_socket(
+                            ntx_network::resources::ResourceKind::Mac,
+                            pool,
+                            owner,
+                            None,
+                        )
+                        .ok()
+                })
+                .ok_or_else(|| anyhow::anyhow!("missing mac pool named server/demo/default"))
+                .with_context(|| format!("acquire server mac identity #{i}"))?;
+            let ntx_network::resources::NonSocketResourceValue::Mac(mac) = v else {
+                unreachable!("resource kind/value mismatch")
             };
 
             server_identities.push((ip, mac));

@@ -14,6 +14,8 @@ use ntx_network::{
         parse_packet_with_ctx,
     },
 };
+
+use ntx_network::resources::NonSocketResourceValue;
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
 use serde::Deserialize;
@@ -66,56 +68,95 @@ fn fmt_uuid(id: &uuid::Uuid) -> String {
 /// Allocate a new socket owner id and register it (hostnet WIT adapter).
 pub fn hostnet_create_socket_owner(name: &str) -> Result<String, HostnetError> {
     let mut pools = KERNEL.pools.lock();
-    let owner = pools.alloc_socket_owner(name.to_string());
+    let owner = pools.acquire_socket_owner(name.to_string());
     Ok(fmt_uuid(&owner))
 }
 
 /// Allocate+pin an IPv4 for this owner from pool (hostnet WIT adapter).
-pub fn hostnet_alloc_ipv4(pool: &str, owner: &str) -> Result<String, HostnetError> {
+pub fn hostnet_acquire_ipv4(pool: &str, owner: &str) -> Result<String, HostnetError> {
     let owner = parse_uuid_str(owner)?;
     let mut pools = KERNEL.pools.lock();
-    let (rid, _ip) = pools
-        .alloc_ipv4_for_socket(pool, owner)
-        .map_err(anyhow::Error::from)?;
+    let using_sock_id = pools.registry().socket_info(&owner).and_then(|s| s.sock_id);
+    let (rid, v) = pools.acquire_and_pin_non_socket(
+        resources::ResourceKind::Ipv4,
+        pool,
+        owner,
+        using_sock_id,
+    )?;
+    let NonSocketResourceValue::Ipv4(_ip) = v else {
+        unreachable!("resource kind/value mismatch")
+    };
     Ok(fmt_uuid(&rid))
 }
 
 /// Allocate+pin a MAC for this owner from pool (hostnet WIT adapter).
-pub fn hostnet_alloc_mac(pool: &str, owner: &str) -> Result<String, HostnetError> {
+pub fn hostnet_acquire_mac(pool: &str, owner: &str) -> Result<String, HostnetError> {
     let owner = parse_uuid_str(owner)?;
     let mut pools = KERNEL.pools.lock();
-    let (rid, _mac) = pools
-        .alloc_mac_for_socket(pool, owner)
-        .map_err(anyhow::Error::from)?;
+    let using_sock_id = pools.registry().socket_info(&owner).and_then(|s| s.sock_id);
+    let (rid, v) = pools.acquire_and_pin_non_socket(
+        resources::ResourceKind::Mac,
+        pool,
+        owner,
+        using_sock_id,
+    )?;
+    let NonSocketResourceValue::Mac(_mac) = v else {
+        unreachable!("resource kind/value mismatch")
+    };
     Ok(fmt_uuid(&rid))
 }
 
 /// Allocate+pin a UDP port for this owner from pool (hostnet WIT adapter).
-pub fn hostnet_alloc_udp_port(pool: &str, owner: &str) -> Result<String, HostnetError> {
+pub fn hostnet_acquire_udp_port(pool: &str, owner: &str) -> Result<String, HostnetError> {
     let owner = parse_uuid_str(owner)?;
     let mut pools = KERNEL.pools.lock();
-    let (rid, _port) = pools
-        .alloc_udp_port_for_socket(pool, owner)
-        .map_err(anyhow::Error::from)?;
+    let using_sock_id = pools.registry().socket_info(&owner).and_then(|s| s.sock_id);
+    let (rid, v) = pools.acquire_and_pin_non_socket(
+        resources::ResourceKind::UdpPort,
+        pool,
+        owner,
+        using_sock_id,
+    )?;
+    let NonSocketResourceValue::UdpPort(_port) = v else {
+        unreachable!("resource kind/value mismatch")
+    };
     Ok(fmt_uuid(&rid))
 }
 
 pub fn hostnet_resolve_ipv4(rid: &str) -> Result<std::net::Ipv4Addr, HostnetError> {
     let rid = parse_uuid_str(rid)?;
     let pools = KERNEL.pools.lock();
-    pools.resolve_ipv4(&rid).ok_or(HostnetError::NotFound)
+    pools
+        .resolve_non_socket(resources::ResourceKind::Ipv4, &rid)
+        .and_then(|v| match v {
+            NonSocketResourceValue::Ipv4(ip) => Some(ip),
+            _ => None,
+        })
+        .ok_or(HostnetError::NotFound)
 }
 
 pub fn hostnet_resolve_mac(rid: &str) -> Result<ntx_network::MacAddr, HostnetError> {
     let rid = parse_uuid_str(rid)?;
     let pools = KERNEL.pools.lock();
-    pools.resolve_mac(&rid).ok_or(HostnetError::NotFound)
+    pools
+        .resolve_non_socket(resources::ResourceKind::Mac, &rid)
+        .and_then(|v| match v {
+            NonSocketResourceValue::Mac(mac) => Some(mac),
+            _ => None,
+        })
+        .ok_or(HostnetError::NotFound)
 }
 
 pub fn hostnet_resolve_udp_port(rid: &str) -> Result<u16, HostnetError> {
     let rid = parse_uuid_str(rid)?;
     let pools = KERNEL.pools.lock();
-    pools.resolve_udp_port(&rid).ok_or(HostnetError::NotFound)
+    pools
+        .resolve_non_socket(resources::ResourceKind::UdpPort, &rid)
+        .and_then(|v| match v {
+            NonSocketResourceValue::UdpPort(p) => Some(p),
+            _ => None,
+        })
+        .ok_or(HostnetError::NotFound)
 }
 
 // ---- UDP socket control wrappers (binder + table live in kernel) ----
@@ -224,16 +265,16 @@ pub fn hostnet_udp_build_reply(
 /// Resource request options.
 ///
 /// Kernel doesn't currently distinguish client/server; this interface is intended as a
-/// control-plane hook to register/allocate resources and then refresh the ABR snapshot.
+/// control-plane hook to register/acquire resources and then refresh the ABR snapshot.
 #[derive(Debug, Clone, Default)]
 pub struct ResourceRequest {
-    /// Socket owner id. If `None`, kernel will allocate a new socket owner id.
+    /// Socket owner id. If `None`, kernel will acquire a new socket owner id.
     ///
     /// This is a `resources::ResourceId` (UUID v4) and is used as `resources::OwnerId`
-    /// for all subsequent resource allocations.
+    /// for all subsequent resource acquisitions.
     pub owner: Option<resources::OwnerId>,
 
-    /// Optional friendly name to store in the registry when `owner` is auto-allocated.
+    /// Optional friendly name to store in the registry when `owner` is auto-acquired.
     pub owner_name: Option<String>,
 
     /// Pool names. If empty, defaults to "default".
@@ -249,7 +290,7 @@ pub struct ResourceRequest {
     pub pin_tcp_ports: Vec<u16>,
 }
 
-/// Resource request result (allocated/pinned ids).
+/// Resource request result (all acquired/pinned ids).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResourceResponse {
     pub owner: resources::OwnerId,
@@ -412,13 +453,13 @@ pub fn init(_path: impl AsRef<Path>) -> Result<()> {
     Ok(())
 }
 
-/// Request/allocate resources from kernel control-plane.
+/// Request/acquire resources from kernel control-plane.
 ///
 /// This is intentionally minimal for now: it provides a single place where future
 /// resource acquisition can hook in, and ensures the ABR snapshot is refreshed exactly
 /// once after resources change.
 pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
-    // Apply pins/allocations to the shared pools (control-plane).
+    // Apply pins/acquisitions to the shared pools (control-plane).
     // Note: Pinning is deterministic and establishes ownership; dataplane uses ABR snapshot.
     let mut pools = KERNEL.pools.lock();
 
@@ -427,7 +468,7 @@ pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
             .owner_name
             .clone()
             .unwrap_or_else(|| "socket".to_string());
-        pools.alloc_socket_owner(name)
+        pools.acquire_socket_owner(name)
     });
 
     // Step-2 audit / management registry: record owner name (best-effort).
@@ -468,12 +509,26 @@ pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
 
     // IPv4
     if let Some(ip) = req.pin_ipv4 {
-        let rid = pools.pin_ipv4_with_id(ipv4_pool, resp.owner, ip, None)?;
+        let rid = pools.pin_non_socket_with_id(
+            resources::ResourceKind::Ipv4,
+            ipv4_pool,
+            resp.owner,
+            NonSocketResourceValue::Ipv4(ip),
+            None,
+        )?;
         resp.ipv4 = Some((rid, ip));
 
         audit_registry::with_audit_registry_mut(|reg| reg.record_ipv4(resp.owner, rid, ip));
     } else if wants_auto_acquire {
-        let (rid, ip) = pools.alloc_ipv4_for(ipv4_pool, resp.owner, None)?;
+        let (rid, v) = pools.acquire_and_pin_non_socket(
+            resources::ResourceKind::Ipv4,
+            ipv4_pool,
+            resp.owner,
+            None,
+        )?;
+        let NonSocketResourceValue::Ipv4(ip) = v else {
+            unreachable!("resource kind/value mismatch")
+        };
         resp.ipv4 = Some((rid, ip));
 
         audit_registry::with_audit_registry_mut(|reg| reg.record_ipv4(resp.owner, rid, ip));
@@ -481,12 +536,26 @@ pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
 
     // MAC
     if let Some(mac) = req.pin_mac {
-        let rid = pools.pin_mac_with_id(mac_pool, resp.owner, mac, None)?;
+        let rid = pools.pin_non_socket_with_id(
+            resources::ResourceKind::Mac,
+            mac_pool,
+            resp.owner,
+            NonSocketResourceValue::Mac(mac),
+            None,
+        )?;
         resp.mac = Some((rid, mac));
 
         audit_registry::with_audit_registry_mut(|reg| reg.record_mac(resp.owner, rid, mac));
     } else if wants_auto_acquire {
-        let (rid, mac) = pools.alloc_mac_for(mac_pool, resp.owner, None)?;
+        let (rid, v) = pools.acquire_and_pin_non_socket(
+            resources::ResourceKind::Mac,
+            mac_pool,
+            resp.owner,
+            None,
+        )?;
+        let NonSocketResourceValue::Mac(mac) = v else {
+            unreachable!("resource kind/value mismatch")
+        };
         resp.mac = Some((rid, mac));
 
         audit_registry::with_audit_registry_mut(|reg| reg.record_mac(resp.owner, rid, mac));
@@ -495,13 +564,27 @@ pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
     // UDP ports
     if !req.pin_udp_ports.is_empty() {
         for p in &req.pin_udp_ports {
-            let rid = pools.pin_udp_port_with_id(udp_pool, resp.owner, *p, None)?;
+            let rid = pools.pin_non_socket_with_id(
+                resources::ResourceKind::UdpPort,
+                udp_pool,
+                resp.owner,
+                NonSocketResourceValue::UdpPort(*p),
+                None,
+            )?;
             resp.udp_ports.push((rid, *p));
 
             audit_registry::with_audit_registry_mut(|reg| reg.record_udp_port(resp.owner, rid, *p));
         }
     } else if wants_auto_acquire {
-        let (rid, port) = pools.alloc_udp_port_for(udp_pool, resp.owner, None)?;
+        let (rid, v) = pools.acquire_and_pin_non_socket(
+            resources::ResourceKind::UdpPort,
+            udp_pool,
+            resp.owner,
+            None,
+        )?;
+        let NonSocketResourceValue::UdpPort(port) = v else {
+            unreachable!("resource kind/value mismatch")
+        };
         resp.udp_ports.push((rid, port));
 
         audit_registry::with_audit_registry_mut(|reg| reg.record_udp_port(resp.owner, rid, port));
@@ -510,13 +593,27 @@ pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
     // TCP ports
     if !req.pin_tcp_ports.is_empty() {
         for p in &req.pin_tcp_ports {
-            let rid = pools.pin_tcp_port_with_id(tcp_pool, resp.owner, *p, None)?;
+            let rid = pools.pin_non_socket_with_id(
+                resources::ResourceKind::TcpPort,
+                tcp_pool,
+                resp.owner,
+                NonSocketResourceValue::TcpPort(*p),
+                None,
+            )?;
             resp.tcp_ports.push((rid, *p));
 
             audit_registry::with_audit_registry_mut(|reg| reg.record_tcp_port(resp.owner, rid, *p));
         }
     } else if wants_auto_acquire {
-        let (rid, port) = pools.alloc_tcp_port_for(tcp_pool, resp.owner, None)?;
+        let (rid, v) = pools.acquire_and_pin_non_socket(
+            resources::ResourceKind::TcpPort,
+            tcp_pool,
+            resp.owner,
+            None,
+        )?;
+        let NonSocketResourceValue::TcpPort(port) = v else {
+            unreachable!("resource kind/value mismatch")
+        };
         resp.tcp_ports.push((rid, port));
 
         audit_registry::with_audit_registry_mut(|reg| reg.record_tcp_port(resp.owner, rid, port));
@@ -535,7 +632,7 @@ pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
 ///
 /// This wires together:
 /// - `udp::create_udp_socket` (owner + sock_id)
-/// - resource allocation (IPv4/MAC/UDP port) with `using_sock_id` propagation
+/// - resource acquisition (IPv4/MAC/UDP port) with `using_sock_id` propagation
 /// - `UdpSocketBinder` bind-by-ResourceId + finalize into the UDP conn-table
 pub fn create_udp_socket(req: UdpSocketCreateRequest) -> Result<UdpSocketCreateResponse> {
     let ipv4_pool = if req.ipv4_pool.is_empty() {
@@ -556,14 +653,40 @@ pub fn create_udp_socket(req: UdpSocketCreateRequest) -> Result<UdpSocketCreateR
 
     let ttl = req.ttl.unwrap_or(64);
 
-    // Step 1: create owner+sock_id, and allocate resources (control-plane).
+    // Step 1: create owner+sock_id, and acquire resources (control-plane).
     let mut pools = KERNEL.pools.lock();
     let mut table = KERNEL.udp_sockets.lock();
     let (owner, sock_id) = udp::create_udp_socket(&mut pools, &table, req.name);
 
-    let (local_ipv4_rid, local_ipv4) = pools.alloc_ipv4_for_socket(ipv4_pool, owner)?;
-    let (local_mac_rid, local_mac) = pools.alloc_mac_for_socket(mac_pool, owner)?;
-    let (local_udp_port_rid, local_udp_port) = pools.alloc_udp_port_for_socket(udp_pool, owner)?;
+    let (local_ipv4_rid, v) = pools.acquire_and_pin_non_socket(
+        resources::ResourceKind::Ipv4,
+        ipv4_pool,
+        owner,
+        Some(sock_id),
+    )?;
+    let NonSocketResourceValue::Ipv4(local_ipv4) = v else {
+        unreachable!("resource kind/value mismatch")
+    };
+
+    let (local_mac_rid, v) = pools.acquire_and_pin_non_socket(
+        resources::ResourceKind::Mac,
+        mac_pool,
+        owner,
+        Some(sock_id),
+    )?;
+    let NonSocketResourceValue::Mac(local_mac) = v else {
+        unreachable!("resource kind/value mismatch")
+    };
+
+    let (local_udp_port_rid, v) = pools.acquire_and_pin_non_socket(
+        resources::ResourceKind::UdpPort,
+        udp_pool,
+        owner,
+        Some(sock_id),
+    )?;
+    let NonSocketResourceValue::UdpPort(local_udp_port) = v else {
+        unreachable!("resource kind/value mismatch")
+    };
 
     // Step 2: bind by ResourceId and finalize into table.
     let mut binder = UdpSocketBinder::new();
@@ -588,7 +711,7 @@ pub fn create_udp_socket(req: UdpSocketCreateRequest) -> Result<UdpSocketCreateR
 
 /// Refresh the cached ABR view from the global ABR snapshot.
 ///
-/// Call this after control-plane changes (e.g. resources allocated/released).
+/// Call this after control-plane changes (e.g. resources acquired/released).
 pub fn refresh_abr() {
     KERNEL.refresh_abr_view();
 }
@@ -788,7 +911,7 @@ mod tests {
         req: &ResourceRequest,
     ) -> Result<()> {
         let owner = req.owner.unwrap_or_else(|| {
-            pools.alloc_socket_owner(
+            pools.acquire_socket_owner(
                 req.owner_name
                     .clone()
                     .unwrap_or_else(|| "socket".to_string()),
@@ -821,66 +944,92 @@ mod tests {
             && req.pin_udp_ports.is_empty()
             && req.pin_tcp_ports.is_empty();
 
-        if let Some(pool) = pools.ipv4(ipv4_pool) {
-            if let Some(ip) = req.pin_ipv4 {
-                pool.pin(owner, ntx_network::Ipv4Addr(ip.octets()))?;
-            } else if wants_auto_acquire {
-                let Some(ip) = pool.acquire_for(&owner) else {
-                    anyhow::bail!("no available ipv4 in pool {ipv4_pool}");
-                };
-                pool.pin(owner, ip)?;
-            }
+        // Pin or auto-acquire ipv4.
+        if let Some(ip) = req.pin_ipv4 {
+            pools.pin_non_socket_with_id(
+                resources::ResourceKind::Ipv4,
+                ipv4_pool,
+                owner,
+                NonSocketResourceValue::Ipv4(ip),
+                None,
+            )?;
+        } else if wants_auto_acquire {
+            let (_rid, v) = pools.acquire_and_pin_non_socket(
+                resources::ResourceKind::Ipv4,
+                ipv4_pool,
+                owner,
+                None,
+            )?;
+            let NonSocketResourceValue::Ipv4(_ip) = v else {
+                unreachable!("resource kind/value mismatch")
+            };
         }
 
-        // Note: this helper only exists to validate ABR publishing in isolation.
-        // Keep MAC behavior minimal to avoid double-pin semantics across helpers.
+        // Pin or auto-acquire mac.
         if let Some(mac) = req.pin_mac {
-            if let Some(pool) = pools.mac(mac_pool) {
-                pool.pin(owner, mac)?;
-            }
+            pools.pin_non_socket_with_id(
+                resources::ResourceKind::Mac,
+                mac_pool,
+                owner,
+                NonSocketResourceValue::Mac(mac),
+                None,
+            )?;
+        } else if wants_auto_acquire {
+            let (_rid, v) = pools.acquire_and_pin_non_socket(
+                resources::ResourceKind::Mac,
+                mac_pool,
+                owner,
+                None,
+            )?;
+            let NonSocketResourceValue::Mac(_mac) = v else {
+                unreachable!("resource kind/value mismatch")
+            };
         }
 
-        let mac_pool = if req.mac_pool.is_empty() {
-            "default"
-        } else {
-            req.mac_pool.as_str()
-        };
-
-        if let Some(pool) = pools.mac(mac_pool) {
-            if let Some(mac) = req.pin_mac {
-                pool.pin(owner, mac)?;
-            } else if wants_auto_acquire {
-                let Some(mac) = pool.acquire_for(&owner) else {
-                    anyhow::bail!("no available mac in pool {mac_pool}");
-                };
-                pool.pin(owner, mac)?;
+        // Pin or auto-acquire udp ports.
+        if !req.pin_udp_ports.is_empty() {
+            for p in &req.pin_udp_ports {
+                pools.pin_non_socket_with_id(
+                    resources::ResourceKind::UdpPort,
+                    udp_pool,
+                    owner,
+                    NonSocketResourceValue::UdpPort(*p),
+                    None,
+                )?;
             }
+        } else if wants_auto_acquire {
+            let (_rid, v) = pools.acquire_and_pin_non_socket(
+                resources::ResourceKind::UdpPort,
+                udp_pool,
+                owner,
+                None,
+            )?;
+            let NonSocketResourceValue::UdpPort(_p) = v else {
+                unreachable!("resource kind/value mismatch")
+            };
         }
 
-        if let Some(pool) = pools.udp_port(udp_pool) {
-            if !req.pin_udp_ports.is_empty() {
-                for p in &req.pin_udp_ports {
-                    pool.pin(owner, *p)?;
-                }
-            } else if wants_auto_acquire {
-                let Some(port) = pool.acquire_for(&owner) else {
-                    anyhow::bail!("no available udp port in pool {udp_pool}");
-                };
-                pool.pin(owner, port)?;
+        // Pin or auto-acquire tcp ports.
+        if !req.pin_tcp_ports.is_empty() {
+            for p in &req.pin_tcp_ports {
+                pools.pin_non_socket_with_id(
+                    resources::ResourceKind::TcpPort,
+                    tcp_pool,
+                    owner,
+                    NonSocketResourceValue::TcpPort(*p),
+                    None,
+                )?;
             }
-        }
-
-        if let Some(pool) = pools.tcp_port(tcp_pool) {
-            if !req.pin_tcp_ports.is_empty() {
-                for p in &req.pin_tcp_ports {
-                    pool.pin(owner, *p)?;
-                }
-            } else if wants_auto_acquire {
-                let Some(port) = pool.acquire_for(&owner) else {
-                    anyhow::bail!("no available tcp port in pool {tcp_pool}");
-                };
-                pool.pin(owner, port)?;
-            }
+        } else if wants_auto_acquire {
+            let (_rid, v) = pools.acquire_and_pin_non_socket(
+                resources::ResourceKind::TcpPort,
+                tcp_pool,
+                owner,
+                None,
+            )?;
+            let NonSocketResourceValue::TcpPort(_p) = v else {
+                unreachable!("resource kind/value mismatch")
+            };
         }
 
         pools.publish_abr_for_owner(store, &owner, abr::BindingOwner::KernelIface);

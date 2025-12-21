@@ -11,6 +11,46 @@ use std::collections::HashMap;
 
 use super::core::{ConnEntry, ConnTableCore, HasSockId};
 
+#[derive(Debug)]
+pub enum UdpSocketError {
+    MissingBinding(&'static str),
+    MissingLocalIpv4Rid { sock_id: u64, rid: ResourceId },
+    MissingLocalMacRid { sock_id: u64, rid: ResourceId },
+    MissingLocalPortRid { sock_id: u64, rid: ResourceId },
+    PayloadTooLarge(usize),
+    UnknownSockId(u64),
+    Build(anyhow::Error),
+}
+
+impl std::fmt::Display for UdpSocketError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingBinding(what) => write!(f, "udp socket missing binding: {what}"),
+            Self::MissingLocalIpv4Rid { sock_id, rid } => {
+                write!(
+                    f,
+                    "udp socket missing local ipv4 rid for sock_id={sock_id}: {rid}"
+                )
+            }
+            Self::MissingLocalMacRid { sock_id, rid } => {
+                write!(
+                    f,
+                    "udp socket missing local mac rid for sock_id={sock_id}: {rid}"
+                )
+            }
+            Self::MissingLocalPortRid { sock_id, rid } => {
+                write!(
+                    f,
+                    "udp socket missing local port rid for sock_id={sock_id}: {rid}"
+                )
+            }
+            Self::PayloadTooLarge(n) => write!(f, "udp socket payload too large: {n}"),
+            Self::UnknownSockId(id) => write!(f, "udp socket unknown sock_id: {id}"),
+            Self::Build(e) => write!(f, "udp socket build error: {e}"),
+        }
+    }
+}
+
 /// Socket binding information required to send UDP frames for a given `sock_id`.
 ///
 /// This is the minimal set of fields needed to build an L2+L3+L4 reply template.
@@ -131,27 +171,51 @@ impl UdpSocketBinder {
         let ttl = p.ttl.unwrap_or(64);
 
         let local_ip = pools
-            .resolve_ipv4(&local_ipv4_rid)
-            .ok_or(UdpSocketError::UnknownResource(local_ipv4_rid))?;
+            .resolve_non_socket(crate::resources::ResourceKind::Ipv4, &local_ipv4_rid)
+            .and_then(|v| match v {
+                crate::resources::NonSocketResourceValue::Ipv4(ip) => Some(ip),
+                _ => None,
+            })
+            .ok_or(UdpSocketError::MissingLocalIpv4Rid {
+                sock_id,
+                rid: local_ipv4_rid,
+            })?;
+
         let local_mac = pools
-            .resolve_mac(&local_mac_rid)
-            .ok_or(UdpSocketError::UnknownResource(local_mac_rid))?;
+            .resolve_non_socket(crate::resources::ResourceKind::Mac, &local_mac_rid)
+            .and_then(|v| match v {
+                crate::resources::NonSocketResourceValue::Mac(mac) => Some(mac),
+                _ => None,
+            })
+            .ok_or(UdpSocketError::MissingLocalMacRid {
+                sock_id,
+                rid: local_mac_rid,
+            })?;
+
         let local_port = pools
-            .resolve_udp_port(&local_port_rid)
-            .ok_or(UdpSocketError::UnknownResource(local_port_rid))?;
+            .resolve_non_socket(crate::resources::ResourceKind::UdpPort, &local_port_rid)
+            .and_then(|v| match v {
+                crate::resources::NonSocketResourceValue::UdpPort(p) => Some(p),
+                _ => None,
+            })
+            .ok_or(UdpSocketError::MissingLocalPortRid {
+                sock_id,
+                rid: local_port_rid,
+            })?;
 
         table.bind_sock_id(
             sock_id,
             UdpBinding {
                 peer_ip: peer_ipv4,
                 peer_port,
-                local_ip: crate::Ipv4Addr(local_ip.octets()),
+                local_ip: Ipv4Addr(local_ip.octets()),
                 local_port,
                 peer_mac,
                 local_mac,
                 ttl,
             },
         );
+
         Ok(())
     }
 }
@@ -173,7 +237,7 @@ pub fn create_udp_socket(
     table: &Table,
     name: impl Into<String>,
 ) -> (ResourceId, u64) {
-    let owner = pools.alloc_socket_owner(name);
+    let owner = pools.acquire_socket_owner(name);
     let sock_id = table.create_sock_id();
     // Optional strong association: record sock_id back into the socket registry entry.
     pools.registry_mut().set_socket_sock_id(&owner, sock_id);
@@ -183,31 +247,7 @@ pub fn create_udp_socket(
 /// Back-compat helper if callers only need the socket owner id.
 #[inline]
 pub fn create_udp_socket_owner(pools: &mut ResourcePools, name: impl Into<String>) -> ResourceId {
-    pools.alloc_socket_owner(name)
-}
-
-/// Errors for network-level UDP socket lifecycle operations.
-#[derive(Debug)]
-pub enum UdpSocketError {
-    UnknownSockId(u64),
-    PayloadTooLarge(usize),
-    Build(anyhow::Error),
-
-    MissingBinding(&'static str),
-
-    UnknownResource(ResourceId),
-}
-
-impl std::fmt::Display for UdpSocketError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnknownSockId(id) => write!(f, "udp sock_id not found: {id}"),
-            Self::PayloadTooLarge(n) => write!(f, "udp payload too large: {n} bytes"),
-            Self::Build(e) => write!(f, "udp build error: {e}"),
-            Self::MissingBinding(field) => write!(f, "udp socket missing binding: {field}"),
-            Self::UnknownResource(rid) => write!(f, "udp socket unknown resource id: {rid}"),
-        }
-    }
+    pools.acquire_socket_owner(name)
 }
 
 impl std::error::Error for UdpSocketError {
@@ -545,6 +585,7 @@ impl Table {
 mod tests {
     use super::*;
     use crate::ConnTableConfig;
+    use crate::resources::{NonSocketResourceValue, ResourceKind};
     use crate::resources::{ResourcePools, ResourcePoolsConfig};
 
     #[test]
@@ -603,15 +644,33 @@ mod tests {
         let mut pools: ResourcePools = cfg.build().expect("build pools");
         let owner = pools.alloc_socket_owner("s1");
 
-        let (ipv4_rid, _ip) = pools
-            .alloc_ipv4_for("default", owner, None)
-            .expect("alloc ipv4");
-        let (mac_rid, _mac) = pools
-            .alloc_mac_for("default", owner, None)
-            .expect("alloc mac");
-        let (udp_rid, _port) = pools
-            .alloc_udp_port_for("default", owner, None)
-            .expect("alloc udp port");
+        let (ipv4_rid, _ip) = {
+            let (rid, v) = pools
+                .acquire_and_pin_non_socket(ResourceKind::Ipv4, "default", owner, None)
+                .expect("alloc ipv4");
+            let NonSocketResourceValue::Ipv4(ip) = v else {
+                unreachable!("resource kind/value mismatch")
+            };
+            (rid, ip)
+        };
+        let (mac_rid, _mac) = {
+            let (rid, v) = pools
+                .acquire_and_pin_non_socket(ResourceKind::Mac, "default", owner, None)
+                .expect("alloc mac");
+            let NonSocketResourceValue::Mac(mac) = v else {
+                unreachable!("resource kind/value mismatch")
+            };
+            (rid, mac)
+        };
+        let (udp_rid, _port) = {
+            let (rid, v) = pools
+                .acquire_and_pin_non_socket(ResourceKind::UdpPort, "default", owner, None)
+                .expect("alloc udp port");
+            let NonSocketResourceValue::UdpPort(p) = v else {
+                unreachable!("resource kind/value mismatch")
+            };
+            (rid, p)
+        };
 
         let mut table = Table::new(ConnTableConfig {
             max_entries: 128,
@@ -667,9 +726,17 @@ mod tests {
         );
 
         // Owner id can be used to allocate resources.
-        let (rid, ip) = pools
-            .alloc_ipv4_for_socket("default", owner)
+        let (rid, v) = pools
+            .acquire_and_pin_non_socket(
+                crate::resources::ResourceKind::Ipv4,
+                "default",
+                owner,
+                Some(sock_id),
+            )
             .expect("alloc ipv4");
+        let crate::resources::NonSocketResourceValue::Ipv4(ip) = v else {
+            unreachable!("resource kind/value mismatch")
+        };
         assert_eq!(ip, std::net::Ipv4Addr::new(10, 0, 0, 1));
         assert_eq!(pools.registry().using_sock_id_of(&rid), Some(sock_id));
     }
