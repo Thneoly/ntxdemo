@@ -48,7 +48,7 @@ pub fn logger_init() {
 
     let registry = tracing_subscriber::registry()
         .with(stdout_layer)
-        .with(tracing_subscriber::filter::LevelFilter::TRACE);
+        .with(tracing_subscriber::filter::LevelFilter::INFO);
 
     if let Some(file_layer) = writer_layer {
         registry.with(file_layer).init();
