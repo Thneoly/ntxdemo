@@ -17,6 +17,7 @@ mod parse;
 mod pools;
 mod port;
 mod publish;
+mod socket;
 
 pub use config::*;
 pub use id::*;
@@ -25,5 +26,6 @@ pub use mac::*;
 pub use named::*;
 pub use pools::*;
 pub use port::*;
+pub use socket::*;
 // Note: `publish` contains convenience helpers for examples; we don't glob re-export
 // to avoid unused-import warnings when the helper isn't referenced.

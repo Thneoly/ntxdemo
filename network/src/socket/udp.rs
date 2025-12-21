@@ -2,12 +2,222 @@ use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 use crate::packet::layers::{Ipv4, Udp};
+use crate::resources::{ResourceId, ResourcePools};
 use crate::socket::{PacketView, UdpRxContext};
 use crate::stack::ReplyFrame;
 use crate::traffic::udp_echo::UdpReplyTemplate;
 use crate::{Ipv4Addr, MacAddr};
+use std::collections::HashMap;
 
 use super::core::{ConnEntry, ConnTableCore, HasSockId};
+
+/// Socket binding information required to send UDP frames for a given `sock_id`.
+///
+/// This is the minimal set of fields needed to build an L2+L3+L4 reply template.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UdpBinding {
+    pub peer_ip: Ipv4Addr,
+    pub peer_port: u16,
+    pub local_ip: Ipv4Addr,
+    pub local_port: u16,
+    pub peer_mac: MacAddr,
+    pub local_mac: MacAddr,
+    pub ttl: u8,
+}
+
+/// ResourceId-based binding for a UDP socket.
+///
+/// This is the control-plane friendly representation: all fields are `ResourceId`s.
+/// Concrete values are resolved from `resources::ResourcePools` when finalizing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UdpResourceBinding {
+    pub local_ipv4: ResourceId,
+    pub local_mac: ResourceId,
+    pub local_udp_port: ResourceId,
+
+    pub peer_ipv4: Ipv4Addr,
+    pub peer_mac: MacAddr,
+    pub peer_udp_port: u16,
+
+    pub ttl: u8,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PartialUdpResourceBinding {
+    local_ipv4: Option<ResourceId>,
+    local_mac: Option<ResourceId>,
+    local_udp_port: Option<ResourceId>,
+    peer_ipv4: Option<Ipv4Addr>,
+    peer_mac: Option<MacAddr>,
+    peer_udp_port: Option<u16>,
+    ttl: Option<u8>,
+}
+
+/// A helper that manages resource-id based socket bindings.
+///
+/// This deliberately lives outside of `Table` so we don't have to change the generic
+/// conn table container to store protocol-specific user state.
+#[derive(Debug, Default)]
+pub struct UdpSocketBinder {
+    bindings: HashMap<u64, PartialUdpResourceBinding>,
+}
+
+impl UdpSocketBinder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn bind_local_ipv4_rid(&mut self, sock_id: u64, rid: ResourceId) {
+        self.bindings.entry(sock_id).or_default().local_ipv4 = Some(rid);
+    }
+
+    pub fn bind_local_mac_rid(&mut self, sock_id: u64, rid: ResourceId) {
+        self.bindings.entry(sock_id).or_default().local_mac = Some(rid);
+    }
+
+    pub fn bind_local_udp_port_rid(&mut self, sock_id: u64, rid: ResourceId) {
+        self.bindings.entry(sock_id).or_default().local_udp_port = Some(rid);
+    }
+
+    pub fn bind_peer(
+        &mut self,
+        sock_id: u64,
+        peer_ipv4: Ipv4Addr,
+        peer_udp_port: u16,
+        peer_mac: MacAddr,
+    ) {
+        let b = self.bindings.entry(sock_id).or_default();
+        b.peer_ipv4 = Some(peer_ipv4);
+        b.peer_udp_port = Some(peer_udp_port);
+        b.peer_mac = Some(peer_mac);
+    }
+
+    pub fn bind_ttl(&mut self, sock_id: u64, ttl: u8) {
+        self.bindings.entry(sock_id).or_default().ttl = Some(ttl);
+    }
+
+    /// Finalize bindings for this sock_id, resolving `ResourceId -> value` via ResourcePools,
+    /// and inserting/updating the UDP conn entry.
+    pub fn finalize_into_table(
+        &self,
+        pools: &ResourcePools,
+        table: &mut Table,
+        sock_id: u64,
+    ) -> Result<(), UdpSocketError> {
+        let Some(p) = self.bindings.get(&sock_id).cloned() else {
+            return Err(UdpSocketError::MissingBinding("binding state"));
+        };
+
+        let local_ipv4_rid = p
+            .local_ipv4
+            .ok_or(UdpSocketError::MissingBinding("local_ipv4"))?;
+        let local_mac_rid = p
+            .local_mac
+            .ok_or(UdpSocketError::MissingBinding("local_mac"))?;
+        let local_port_rid = p
+            .local_udp_port
+            .ok_or(UdpSocketError::MissingBinding("local_udp_port"))?;
+
+        let peer_ipv4 = p
+            .peer_ipv4
+            .ok_or(UdpSocketError::MissingBinding("peer_ipv4"))?;
+        let peer_mac = p
+            .peer_mac
+            .ok_or(UdpSocketError::MissingBinding("peer_mac"))?;
+        let peer_port = p
+            .peer_udp_port
+            .ok_or(UdpSocketError::MissingBinding("peer_udp_port"))?;
+
+        let ttl = p.ttl.unwrap_or(64);
+
+        let local_ip = pools
+            .resolve_ipv4(&local_ipv4_rid)
+            .ok_or(UdpSocketError::UnknownResource(local_ipv4_rid))?;
+        let local_mac = pools
+            .resolve_mac(&local_mac_rid)
+            .ok_or(UdpSocketError::UnknownResource(local_mac_rid))?;
+        let local_port = pools
+            .resolve_udp_port(&local_port_rid)
+            .ok_or(UdpSocketError::UnknownResource(local_port_rid))?;
+
+        table.bind_sock_id(
+            sock_id,
+            UdpBinding {
+                peer_ip: peer_ipv4,
+                peer_port,
+                local_ip: crate::Ipv4Addr(local_ip.octets()),
+                local_port,
+                peer_mac,
+                local_mac,
+                ttl,
+            },
+        );
+        Ok(())
+    }
+}
+
+/// Control-plane helper: create a new UDP socket.
+///
+/// Returns `(owner_id, sock_id)`:
+/// - `owner_id` (`ResourceId`) is the control-plane identity used as `resources::OwnerId`.
+/// - `sock_id` (`u64`) is the dataplane id used to reference bindings/conn-table entries.
+///
+/// Typical flow:
+/// 1. `(owner, sock) = create_udp_socket(pools, &table, name)`
+/// 2. allocate resources in pools using `owner` (ipv4/mac/udp_port)
+/// 3. bind by resource ids using `UdpSocketBinder` keyed by `sock`
+/// 4. `finalize_into_table(pools, &mut table, sock)`
+#[inline]
+pub fn create_udp_socket(
+    pools: &mut ResourcePools,
+    table: &Table,
+    name: impl Into<String>,
+) -> (ResourceId, u64) {
+    let owner = pools.alloc_socket_owner(name);
+    let sock_id = table.create_sock_id();
+    // Optional strong association: record sock_id back into the socket registry entry.
+    pools.registry_mut().set_socket_sock_id(&owner, sock_id);
+    (owner, sock_id)
+}
+
+/// Back-compat helper if callers only need the socket owner id.
+#[inline]
+pub fn create_udp_socket_owner(pools: &mut ResourcePools, name: impl Into<String>) -> ResourceId {
+    pools.alloc_socket_owner(name)
+}
+
+/// Errors for network-level UDP socket lifecycle operations.
+#[derive(Debug)]
+pub enum UdpSocketError {
+    UnknownSockId(u64),
+    PayloadTooLarge(usize),
+    Build(anyhow::Error),
+
+    MissingBinding(&'static str),
+
+    UnknownResource(ResourceId),
+}
+
+impl std::fmt::Display for UdpSocketError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownSockId(id) => write!(f, "udp sock_id not found: {id}"),
+            Self::PayloadTooLarge(n) => write!(f, "udp payload too large: {n} bytes"),
+            Self::Build(e) => write!(f, "udp build error: {e}"),
+            Self::MissingBinding(field) => write!(f, "udp socket missing binding: {field}"),
+            Self::UnknownResource(rid) => write!(f, "udp socket unknown resource id: {rid}"),
+        }
+    }
+}
+
+impl std::error::Error for UdpSocketError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Build(e) => Some(e.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 /// UDP flow key used by the socket/conn-table layer.
 ///
@@ -116,6 +326,86 @@ impl Conn {
 pub type Table = ConnTableCore<Conn>;
 
 impl Table {
+    /// Create a new UDP socket id with no binding yet.
+    ///
+    /// This is a pure userspace control-plane operation.
+    /// Call `bind_sock_id` to associate the id with a concrete 4-tuple + MACs.
+    #[inline]
+    pub fn create_sock_id(&self) -> u64 {
+        crate::resources::alloc_sock_id()
+    }
+
+    /// Bind an existing `sock_id` to a concrete UDP tuple + L2 addresses.
+    ///
+    /// This inserts/updates a connection entry such that future `send_with_sock_id`
+    /// calls can build an Ethernet+IPv4+UDP reply frame.
+    pub fn bind_sock_id(&mut self, sock_id: u64, binding: UdpBinding) {
+        let key = Key {
+            id: sock_id,
+            peer_ip: binding.peer_ip,
+            peer_port: binding.peer_port,
+            local_ip: binding.local_ip,
+            local_port: binding.local_port,
+        };
+
+        let now = Instant::now();
+        let (entry, _inserted) = self.upsert_with_sock_id(key, || {
+            let tpl = UdpReplyTemplate {
+                eth: crate::EthernetHeader {
+                    dst: binding.peer_mac,
+                    src: binding.local_mac,
+                    ethertype: crate::ETH_TYPE_IPV4,
+                },
+                ip: crate::Ipv4Header {
+                    src: binding.local_ip,
+                    dst: binding.peer_ip,
+                    protocol: 17,
+                    ttl: binding.ttl,
+                    identification: 0,
+                    flags_fragment: 0,
+                },
+                udp: crate::UdpHeader {
+                    src_port: binding.local_port,
+                    dst_port: binding.peer_port,
+                },
+            };
+
+            Conn {
+                key,
+                reply: tpl,
+                created_at: now,
+                last_seen: now,
+            }
+        });
+        entry.set_last_seen(now);
+        let _ = entry;
+    }
+
+    /// Build a UDP reply frame for `payload` using the socket binding identified by `sock_id`.
+    ///
+    /// This does not transmit the frame; it only returns a `ReplyFrame` which callers
+    /// may send via a NIC backend.
+    pub fn build_reply_for_sock_id(
+        &mut self,
+        sock_id: u64,
+        payload: &[u8],
+    ) -> Result<ReplyFrame, UdpSocketError> {
+        // No hard limit required here, but protect against pathological allocations.
+        // Ethernet+IPv4+UDP headers are small; payload dominates.
+        if payload.len() > 65507 {
+            // 65535 - 20 (ipv4) - 8 (udp)
+            return Err(UdpSocketError::PayloadTooLarge(payload.len()));
+        }
+
+        let conn = self
+            .iter()
+            .map(|(_k, c)| c)
+            .find(|c| c.key.id == sock_id)
+            .ok_or(UdpSocketError::UnknownSockId(sock_id))?;
+
+        conn.build_reply(payload).map_err(UdpSocketError::Build)
+    }
+
     /// 统一的“收包入口”：从 RX 包中提取 flow key、构建/刷新连接条目，并返回连接。
     ///
     /// 约定：
@@ -248,5 +538,155 @@ impl Table {
                     && local_port.map(|p| c.key.local_port == p).unwrap_or(true)
             })
             .map(|c| c.key.id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ConnTableConfig;
+    use crate::resources::{ResourcePools, ResourcePoolsConfig};
+
+    #[test]
+    fn udp_socket_create_bind_and_build_reply() {
+        let mut table = Table::new(ConnTableConfig {
+            max_entries: 128,
+            ttl: None,
+        });
+
+        let id = table.create_sock_id();
+        table.bind_sock_id(
+            id,
+            UdpBinding {
+                peer_ip: crate::Ipv4Addr([10, 0, 0, 2]),
+                peer_port: 12345,
+                local_ip: crate::Ipv4Addr([10, 0, 0, 1]),
+                local_port: 10000,
+                peer_mac: crate::MacAddr([1, 2, 3, 4, 5, 6]),
+                local_mac: crate::MacAddr([6, 5, 4, 3, 2, 1]),
+                ttl: 64,
+            },
+        );
+
+        let payload = b"hello";
+        let frame = table
+            .build_reply_for_sock_id(id, payload)
+            .expect("build reply");
+
+        // Sanity check: payload appears at the end of the frame.
+        assert!(frame.bytes.ends_with(payload));
+    }
+
+    #[test]
+    fn udp_socket_bind_by_resource_id_then_finalize() {
+        // Build in-memory pools (no IO) and allocate pinned resources for one owner.
+        let mut cfg = ResourcePoolsConfig::new();
+        cfg.ipv4.push(crate::resources::Ipv4PoolConfig {
+            name: "default".to_string(),
+            cidr: "10.0.0.0/30".to_string(),
+            exclude: vec![],
+        });
+        cfg.mac.push(crate::resources::MacPoolConfig {
+            name: "default".to_string(),
+            start: "02:00:00:00:00:10".to_string(),
+            end: "02:00:00:00:00:10".to_string(),
+            exclude: vec![],
+        });
+        cfg.udp_port.push(crate::resources::PortPoolConfig {
+            name: "default".to_string(),
+            protocol: None,
+            start: 10000,
+            end: 10000,
+            exclude: vec![],
+        });
+
+        let mut pools: ResourcePools = cfg.build().expect("build pools");
+        let owner = pools.alloc_socket_owner("s1");
+
+        let (ipv4_rid, _ip) = pools
+            .alloc_ipv4_for("default", owner, None)
+            .expect("alloc ipv4");
+        let (mac_rid, _mac) = pools
+            .alloc_mac_for("default", owner, None)
+            .expect("alloc mac");
+        let (udp_rid, _port) = pools
+            .alloc_udp_port_for("default", owner, None)
+            .expect("alloc udp port");
+
+        let mut table = Table::new(ConnTableConfig {
+            max_entries: 128,
+            ttl: None,
+        });
+
+        let sock_id = table.create_sock_id();
+
+        let mut binder = UdpSocketBinder::new();
+        binder.bind_local_ipv4_rid(sock_id, ipv4_rid);
+        binder.bind_local_mac_rid(sock_id, mac_rid);
+        binder.bind_local_udp_port_rid(sock_id, udp_rid);
+        binder.bind_peer(
+            sock_id,
+            crate::Ipv4Addr([10, 0, 0, 2]),
+            12345,
+            crate::MacAddr([1, 2, 3, 4, 5, 6]),
+        );
+        binder.bind_ttl(sock_id, 64);
+
+        binder
+            .finalize_into_table(&pools, &mut table, sock_id)
+            .expect("finalize");
+
+        let frame = table
+            .build_reply_for_sock_id(sock_id, b"hello")
+            .expect("build reply");
+        assert!(frame.bytes.ends_with(b"hello"));
+    }
+
+    #[test]
+    fn udp_create_socket_allocates_owner_id() {
+        let mut cfg = ResourcePoolsConfig::new();
+        cfg.ipv4.push(crate::resources::Ipv4PoolConfig {
+            name: "default".to_string(),
+            cidr: "10.0.0.0/30".to_string(),
+            exclude: vec![],
+        });
+
+        let mut pools: ResourcePools = cfg.build().expect("build pools");
+
+        let table = Table::new(ConnTableConfig {
+            max_entries: 128,
+            ttl: None,
+        });
+
+        let (owner, sock_id) = create_udp_socket(&mut pools, &table, "udp-s1");
+        assert_eq!(pools.registry().socket_info(&owner).unwrap().name, "udp-s1");
+        assert!(sock_id > 0);
+        assert_eq!(
+            pools.registry().socket_info(&owner).unwrap().sock_id,
+            Some(sock_id)
+        );
+
+        // Owner id can be used to allocate resources.
+        let (rid, ip) = pools
+            .alloc_ipv4_for_socket("default", owner)
+            .expect("alloc ipv4");
+        assert_eq!(ip, std::net::Ipv4Addr::new(10, 0, 0, 1));
+        assert_eq!(pools.registry().using_sock_id_of(&rid), Some(sock_id));
+    }
+
+    #[test]
+    fn udp_socket_build_reply_unknown_id_errors() {
+        let mut table = Table::new(ConnTableConfig {
+            max_entries: 128,
+            ttl: None,
+        });
+
+        let err = table
+            .build_reply_for_sock_id(9999, b"x")
+            .expect_err("should error");
+        match err {
+            UdpSocketError::UnknownSockId(9999) => {}
+            other => panic!("unexpected error: {other}"),
+        }
     }
 }

@@ -4,7 +4,10 @@ use ntx_network::{
     nic::AfPacketNic,
     prelude::*,
     resources,
-    socket::{self, udp::Table},
+    socket::{
+        self,
+        udp::{self, Table, UdpSocketBinder},
+    },
     stack::{
         LayerId, LayerRegistry, PacketContext,
         layers::{Ipv4, Udp},
@@ -56,6 +59,45 @@ pub struct ResourceResponse {
     pub mac: Option<(resources::ResourceId, ntx_network::MacAddr)>,
     pub udp_ports: Vec<(resources::ResourceId, u16)>,
     pub tcp_ports: Vec<(resources::ResourceId, u16)>,
+}
+
+/// Minimal control-plane inputs needed to create and bind a UDP socket.
+///
+/// Notes:
+/// - This is a pure control-plane operation: it only updates resource pools + UDP conn table.
+/// - No NIC IO happens here.
+#[derive(Debug, Clone)]
+pub struct UdpSocketCreateRequest {
+    /// Friendly name stored in registry.
+    pub name: String,
+
+    /// Pool names used for local resource acquisition. If empty, defaults to "default".
+    pub ipv4_pool: String,
+    pub mac_pool: String,
+    pub udp_port_pool: String,
+
+    /// Peer tuple (value-based).
+    pub peer_ipv4: ntx_network::Ipv4Addr,
+    pub peer_udp_port: u16,
+    pub peer_mac: ntx_network::MacAddr,
+
+    /// Defaults to 64 if not provided.
+    pub ttl: Option<u8>,
+}
+
+/// Result of creating a UDP socket via kernel wrapper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UdpSocketCreateResponse {
+    pub owner: resources::ResourceId,
+    pub sock_id: u64,
+
+    pub local_ipv4_rid: resources::ResourceId,
+    pub local_mac_rid: resources::ResourceId,
+    pub local_udp_port_rid: resources::ResourceId,
+
+    pub local_ipv4: std::net::Ipv4Addr,
+    pub local_mac: ntx_network::MacAddr,
+    pub local_udp_port: u16,
 }
 struct Kernel {
     config: Config,
@@ -273,6 +315,61 @@ pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
     // Refresh cached ABR view once.
     refresh_abr();
     Ok(resp)
+}
+
+/// Kernel-facing convenience wrapper: create a UDP socket and fully bind it.
+///
+/// This wires together:
+/// - `udp::create_udp_socket` (owner + sock_id)
+/// - resource allocation (IPv4/MAC/UDP port) with `using_sock_id` propagation
+/// - `UdpSocketBinder` bind-by-ResourceId + finalize into the UDP conn-table
+pub fn create_udp_socket(req: UdpSocketCreateRequest) -> Result<UdpSocketCreateResponse> {
+    let ipv4_pool = if req.ipv4_pool.is_empty() {
+        "default"
+    } else {
+        req.ipv4_pool.as_str()
+    };
+    let mac_pool = if req.mac_pool.is_empty() {
+        "default"
+    } else {
+        req.mac_pool.as_str()
+    };
+    let udp_pool = if req.udp_port_pool.is_empty() {
+        "default"
+    } else {
+        req.udp_port_pool.as_str()
+    };
+
+    let ttl = req.ttl.unwrap_or(64);
+
+    // Step 1: create owner+sock_id, and allocate resources (control-plane).
+    let mut pools = KERNEL.pools.lock();
+    let mut table = KERNEL.udp_sockets.lock();
+    let (owner, sock_id) = udp::create_udp_socket(&mut pools, &table, req.name);
+
+    let (local_ipv4_rid, local_ipv4) = pools.alloc_ipv4_for_socket(ipv4_pool, owner)?;
+    let (local_mac_rid, local_mac) = pools.alloc_mac_for_socket(mac_pool, owner)?;
+    let (local_udp_port_rid, local_udp_port) = pools.alloc_udp_port_for_socket(udp_pool, owner)?;
+
+    // Step 2: bind by ResourceId and finalize into table.
+    let mut binder = UdpSocketBinder::new();
+    binder.bind_local_ipv4_rid(sock_id, local_ipv4_rid);
+    binder.bind_local_mac_rid(sock_id, local_mac_rid);
+    binder.bind_local_udp_port_rid(sock_id, local_udp_port_rid);
+    binder.bind_peer(sock_id, req.peer_ipv4, req.peer_udp_port, req.peer_mac);
+    binder.bind_ttl(sock_id, ttl);
+    binder.finalize_into_table(&pools, &mut table, sock_id)?;
+
+    Ok(UdpSocketCreateResponse {
+        owner,
+        sock_id,
+        local_ipv4_rid,
+        local_mac_rid,
+        local_udp_port_rid,
+        local_ipv4,
+        local_mac,
+        local_udp_port,
+    })
 }
 
 /// Refresh the cached ABR view from the global ABR snapshot.

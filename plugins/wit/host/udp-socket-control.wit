@@ -1,0 +1,85 @@
+package ntx:hostnet;
+
+/// Host-provided control-plane socket API for guests.
+///
+/// Design goals:
+/// - Guest-driven create+bind+finalize
+/// - Bind by ResourceId (UUID string) to reuse host-side resource registry/pools
+/// - Build returns a frame handle; the actual bytes are written into a shared memory
+///   managed by the host runtime.
+///
+/// Notes:
+/// - ResourceId is represented as a canonical UUID string.
+/// - sock-id is an opaque dataplane handle allocated by the host.
+interface udp-socket-control {
+    /// Canonical UUID string.
+    type resource-id = string;
+
+    /// Opaque dataplane socket/flow id.
+    type sock-id = u64;
+
+    /// Socket handle returned to the guest.
+    record udp-socket {
+        owner: resource-id,
+        sock: sock-id,
+    }
+
+    /// IPv4 address.
+    record ipv4-addr {
+        a: u8,
+        b: u8,
+        c: u8,
+        d: u8,
+    }
+
+    /// MAC address.
+    record mac-addr {
+        a: u8,
+        b: u8,
+        c: u8,
+        d: u8,
+        e: u8,
+        f: u8,
+    }
+
+    /// A handle for a frame written into host-managed shared memory.
+    ///
+    /// The meaning of (region, offset, len) is host-defined, but stable:
+    /// - region: which backing buffer
+    /// - offset/len: byte range where the frame bytes were written
+    record frame-handle {
+        region: u32,
+        offset: u32,
+        len: u32,
+    }
+
+    variant socket-error {
+        invalid-argument,
+        invalid-state,
+        not-found,
+        no-space,
+        other(string),
+    }
+
+    /// Create a UDP socket. Host allocates both owner ResourceId and sock-id.
+    create: func(name: string) -> result<udp-socket, socket-error>;
+
+    /// Bind local resources by ResourceId.
+    bind-local-ipv4: func(sock: sock-id, local-ipv4: resource-id) -> result<_, socket-error>;
+    bind-local-mac: func(sock: sock-id, local-mac: resource-id) -> result<_, socket-error>;
+    bind-local-udp-port: func(sock: sock-id, local-udp-port: resource-id) -> result<_, socket-error>;
+
+    /// Bind peer tuple (value-based).
+    bind-peer: func(sock: sock-id, peer-ipv4: ipv4-addr, peer-port: u16, peer-mac: mac-addr) -> result<_, socket-error>;
+
+    /// Optional TTL override.
+    bind-ttl: func(sock: sock-id, ttl: u8) -> result<_, socket-error>;
+
+    /// Resolve and finalize the socket into the host UDP conn-table.
+    finalize: func(sock: sock-id) -> result<_, socket-error>;
+
+    /// Build a UDP reply frame and write it into host shared memory.
+    ///
+    /// Returns a handle to the written frame bytes.
+    build-reply: func(sock: sock-id, payload: list<u8>) -> result<frame-handle, socket-error>;
+}

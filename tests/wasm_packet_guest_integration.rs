@@ -18,7 +18,7 @@ fn packet_guest_enqueue_notify_advances_tail() {
     let path = packet_guest_component_path();
     if !path.exists() {
         let status = std::process::Command::new("cargo")
-            .args(["component", "build", "-p", "packet-guest", "-q"])
+            .args(["component", "build", "-p", "packet-engine", "-q"])
             .status()
             .expect("failed to invoke cargo component build");
         assert!(status.success(), "cargo component build failed");

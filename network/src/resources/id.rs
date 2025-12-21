@@ -34,6 +34,7 @@ pub enum ResourceKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SocketInfo {
     pub name: String,
+    pub sock_id: Option<SockId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +138,16 @@ impl ResourceRegistry {
         }
     }
 
+    pub fn set_socket_sock_id(&mut self, socket_id: &ResourceId, sock_id: SockId) -> Option<()> {
+        match self.by_id.get_mut(socket_id) {
+            Some(ResourceRecord::Socket { info }) => {
+                info.sock_id = Some(sock_id);
+                Some(())
+            }
+            _ => None,
+        }
+    }
+
     pub fn kind_of(&self, id: &ResourceId) -> Option<ResourceKind> {
         match self.by_id.get(id) {
             Some(ResourceRecord::Socket { .. }) => Some(ResourceKind::Socket),
@@ -180,6 +191,7 @@ mod tests {
             socket_id,
             SocketInfo {
                 name: "s1".to_string(),
+                sock_id: None,
             },
         );
 

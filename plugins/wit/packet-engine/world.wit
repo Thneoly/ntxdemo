@@ -1,5 +1,6 @@
 package ntx:packet;
-
+use ntx:hostnet/udp-socket-control;
+use ntx:hostnet/resources;
 /// Packet engine component that consumes RX packets via shared memories.
 ///
 /// Note: WIT does not currently support exporting raw linear memories.
@@ -9,6 +10,8 @@ package ntx:packet;
 /// When we need true multi-memory (core wasm `memory0/memory1`), we can switch
 /// away from component model or add a custom adapter.
 world packet-engine {
+    import udp-socket-control;
+    import resources;
     /// Returns the current contents of the descriptor buffer.
     export desc-get: func() -> list<u8>;
     /// Overwrite a slice of the descriptor buffer at `off`.

@@ -68,9 +68,49 @@ impl ResourcePools {
     /// other resources (MAC/IP/ports).
     pub fn alloc_socket_owner(&mut self, name: impl Into<String>) -> ResourceId {
         let socket_id = self.registry.alloc_resource_id();
-        self.registry
-            .register_socket(socket_id, SocketInfo { name: name.into() });
+        self.registry.register_socket(
+            socket_id,
+            SocketInfo {
+                name: name.into(),
+                sock_id: None,
+            },
+        );
         socket_id
+    }
+
+    #[inline]
+    fn sock_id_for_owner(&self, owner: &OwnerId) -> Option<SockId> {
+        self.registry.socket_info(owner).and_then(|s| s.sock_id)
+    }
+
+    /// Allocate a UDP port for a socket owner and automatically record `using_sock_id`.
+    pub fn alloc_udp_port_for_socket(
+        &mut self,
+        pool_name: &str,
+        owner: OwnerId,
+    ) -> anyhow::Result<(ResourceId, u16)> {
+        let using = self.sock_id_for_owner(&owner);
+        self.alloc_udp_port_for(pool_name, owner, using)
+    }
+
+    /// Allocate an IPv4 address for a socket owner and automatically record `using_sock_id`.
+    pub fn alloc_ipv4_for_socket(
+        &mut self,
+        pool_name: &str,
+        owner: OwnerId,
+    ) -> anyhow::Result<(ResourceId, Ipv4Addr)> {
+        let using = self.sock_id_for_owner(&owner);
+        self.alloc_ipv4_for(pool_name, owner, using)
+    }
+
+    /// Allocate a MAC address for a socket owner and automatically record `using_sock_id`.
+    pub fn alloc_mac_for_socket(
+        &mut self,
+        pool_name: &str,
+        owner: OwnerId,
+    ) -> anyhow::Result<(ResourceId, crate::MacAddr)> {
+        let using = self.sock_id_for_owner(&owner);
+        self.alloc_mac_for(pool_name, owner, using)
     }
 
     /// Allocate a resource id and acquire+pin a UDP port for `owner`.
@@ -276,5 +316,50 @@ impl ResourcePools {
     #[inline]
     pub fn port(&mut self, name: &str) -> Option<&mut PortPool> {
         self.udp_port(name)
+    }
+
+    /// Resolve an IPv4 `ResourceId` to its concrete value.
+    ///
+    /// Notes:
+    /// - `ResourcePools` tracks ownership/relationships via `registry`, but the pool values
+    ///   themselves are keyed by *owner*.
+    /// - Therefore resolution is: `resource_id -> owner_id -> owner_to_pinned[...]`.
+    pub fn resolve_ipv4(&self, rid: &ResourceId) -> Option<std::net::Ipv4Addr> {
+        let owner = self.registry.owner_of(rid)?;
+        let pool = self
+            .ipv4
+            .inner
+            .values()
+            .find(|p| p.owner_to_pinned.contains_key(&owner))?;
+        pool.owner_to_pinned
+            .get(&owner)
+            .map(|ip| std::net::Ipv4Addr::from(ip.0))
+    }
+
+    /// Resolve a MAC `ResourceId` to its concrete value.
+    pub fn resolve_mac(&self, rid: &ResourceId) -> Option<crate::MacAddr> {
+        let owner = self.registry.owner_of(rid)?;
+        let pool = self
+            .mac
+            .inner
+            .values()
+            .find(|p| p.owner_to_pinned.contains_key(&owner))?;
+        pool.owner_to_pinned.get(&owner).copied()
+    }
+
+    /// Resolve a UDP port `ResourceId` to its concrete value.
+    ///
+    /// If the owner has multiple pinned ports, this returns the first pinned port.
+    /// (The caller can select a specific port later by extending the API with a selector.)
+    pub fn resolve_udp_port(&self, rid: &ResourceId) -> Option<u16> {
+        let owner = self.registry.owner_of(rid)?;
+        let pool = self
+            .udp_port
+            .inner
+            .values()
+            .find(|p| p.owner_to_pinned.contains_key(&owner))?;
+        pool.owner_to_pinned
+            .get(&owner)
+            .and_then(|ports| ports.iter().next().copied())
     }
 }

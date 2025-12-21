@@ -1,6 +1,6 @@
 wit_bindgen::generate!({
     world: "ntx:packet/packet-engine",
-    path: "../wit/packet-engine",
+    path: ["../wit/host","../wit/packet-engine"],
     generate_all,
     debug: true,
 });

@@ -10,6 +10,10 @@ crate-type = ["cdylib"]
 [package.metadata.component]
 package = "ntx:packet"
 
+[package.metadata.component.dependencies]
+"ntx:hostnet" = { path = "../wit/host" }
+
+
 [package.metadata.component.target]
 path = "../wit/packet-engine"
 world = "packet-engine"

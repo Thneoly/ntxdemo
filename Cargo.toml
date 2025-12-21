@@ -45,6 +45,10 @@ scheduler-component = []
 # Enable experimental TCP client mode in the root binary.
 tcp-client = []
 
+# Internal: expose limited `ComponentEngine` internals (store + typed bindings)
+# to integration tests that need to invoke component imports.
+wasm-engine-test-access = []
+
 [[example]]
 name = "ntx-echo-client"
 path = "examples/ntx-echo/client.rs"
