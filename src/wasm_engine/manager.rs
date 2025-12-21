@@ -93,6 +93,23 @@ impl EngineManager {
         Ok(0)
     }
 
+    pub fn run(&mut self) -> Result<(), EngineError> {
+        let Some(default) = self.default.clone() else {
+            tracing::warn!(target: "ntx::wasm_engine", "EngineManager::run: no default engine configured (did you set NTX_COMPONENT?)");
+            return Ok(());
+        };
+
+        for (handle, engine) in &mut self.engines {
+            if *handle == default {
+                tracing::info!(target: "ntx::wasm_engine", engine = %handle.0, "EngineManager::run: dispatching to default engine");
+                return engine.run();
+            }
+        }
+
+        tracing::warn!(target: "ntx::wasm_engine", engine = %default.0, "EngineManager::run: default engine handle not found");
+        Ok(())
+    }
+
     pub fn read_desc_buffer(&mut self) -> Result<Option<Vec<u8>>, EngineError> {
         let Some(default) = self.default.clone() else {
             return Ok(None);

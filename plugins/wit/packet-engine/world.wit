@@ -28,4 +28,12 @@ world packet-engine {
     ///
     /// Returns number of packets consumed in this call.
     export notify-rx: func() -> u32;
+
+    /// Drive a minimal end-to-end demo from within the guest.
+    ///
+    /// Expected behavior:
+    /// - acquire resources
+    /// - create + bind a UDP socket
+    /// - send one UDP datagram containing only the application payload
+    export run: func() -> result<_, string>;
 }

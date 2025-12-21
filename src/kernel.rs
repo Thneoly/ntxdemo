@@ -262,10 +262,18 @@ pub fn hostnet_tx(frame: HostnetFrameHandle) -> Result<u32, HostnetError> {
         ));
     }
 
+    tracing::info!(
+        target: "ntx::kernel",
+        region = frame.region,
+        offset = frame.offset,
+        len = frame.len,
+        "hostnet_tx: requested"
+    );
     let bytes = &arena[off..end];
     let nic = KERNEL.nic();
     nic.send(bytes)
         .map_err(|e| HostnetError::Other(anyhow::Error::from(e)))?;
+    tracing::info!(target: "ntx::kernel", sent_len = frame.len, "hostnet_tx: NIC send ok");
     Ok(frame.len)
 }
 

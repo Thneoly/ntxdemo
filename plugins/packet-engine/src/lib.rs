@@ -207,6 +207,83 @@ impl Guest for Component {
         DESC.with(|b| *b.borrow_mut() = dmem);
         consumed
     }
+
+    fn run() -> Result<(), String> {
+        // Minimal closed-loop TX demo driven from the guest.
+        // We keep values explicit to avoid depending on environment variables.
+        let owner = ntx::hostnet::resources::create_socket_owner("packet-engine")
+            .map_err(|e| format!("create_socket_owner failed: {e:?}"))?;
+
+        // Acquire+pin local ipv4/mac/udp-port (host chooses actual values).
+        ntx::hostnet::resources::acquire_udp_port("default", &owner)
+            .map_err(|e| format!("acquire_udp_port failed: {e:?}"))?;
+
+        // Create UDP socket id.
+        let sock = ntx::hostnet::udp_socket_control::create("echo")
+            .map_err(|e| format!("udp.create failed: {e:?}"))?;
+
+        // Demo peer tuple.
+        // NOTE: This assumes your host test topology has a reachable peer at 10.0.0.2.
+        let peer_ipv4 = ntx::hostnet::types::Ipv4Addr {
+            a: 10,
+            b: 0,
+            c: 0,
+            d: 2,
+        };
+        let peer_port: u16 = 7;
+        let peer_mac = ntx::hostnet::types::MacAddr {
+            a: 2,
+            b: 0,
+            c: 0,
+            d: 0,
+            e: 0,
+            f: 2,
+        };
+
+        // Local identity: for now we use stable demo values.
+        // Ownership correctness is enforced host-side by mapping value->rid and checking owner.
+        let local_ipv4 = ntx::hostnet::types::Ipv4Addr {
+            a: 10,
+            b: 0,
+            c: 0,
+            d: 1,
+        };
+        let local_mac = ntx::hostnet::types::MacAddr {
+            a: 2,
+            b: 0,
+            c: 0,
+            d: 0,
+            e: 0,
+            f: 1,
+        };
+
+        // Pick a local UDP port by resolving a rid from the acquired pool.
+        // The minimal host resource API currently only provides `resolve_udp_port(rid)`;
+        // since `acquire_udp_port` doesn't return the rid, we use a conventional demo port.
+        // Host will map it to the pinned resource for this owner.
+        let local_udp_port: u16 = 10000;
+
+        let bind = ntx::hostnet::udp_socket_control::UdpBind {
+            local_ipv4,
+            local_mac,
+            local_udp_port,
+            peer_ipv4,
+            peer_port,
+            peer_mac,
+            ttl: Some(64),
+        };
+
+        ntx::hostnet::udp_socket_control::bind(sock.sock, bind)
+            .map_err(|e| format!("udp.bind failed: {e:?}"))?;
+
+        // Send one application payload (no headers).
+        let payload: &[u8] = b"hello from guest";
+        let frame = ntx::hostnet::udp_socket_control::build_reply(sock.sock, payload)
+            .map_err(|e| format!("udp.build_reply failed: {e:?}"))?;
+        let _ = ntx::hostnet::udp_socket_control::tx(frame)
+            .map_err(|e| format!("udp.tx failed: {e:?}"))?;
+        Ok(())
+    }
 }
 
 // Demo buffers. In a real shared-memory design these would be linear memories.

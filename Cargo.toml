@@ -60,3 +60,7 @@ path = "examples/ntx-echo/server.rs"
 [[example]]
 name = "wasm-engine-demo"
 path = "examples/wasm_engine_demo.rs"
+
+[[example]]
+name = "packet-engine-run"
+path = "examples/packet_engine_run.rs"

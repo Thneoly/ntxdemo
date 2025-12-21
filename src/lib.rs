@@ -1,3 +1,4 @@
+pub mod app_config;
 pub mod audit_registry;
 pub mod error;
 pub mod event_bus;

@@ -1,3 +1,4 @@
+use crate::app_config::{SchedulerConfig, WasmConfig};
 use crate::error::SchedulerError;
 use crate::event_bus::{Bytes, EventBus, SimpleEventBus, build_event};
 use crate::kernel::non_blocking_recv_with_sock;
@@ -12,6 +13,7 @@ use std::sync::{
 };
 use std::thread;
 use std::time::{Duration, Instant};
+// (no direct tracing macro imports; use `tracing::...!` at call sites)
 
 /// A self-contained priority scheduler for the root crate.
 ///
@@ -269,6 +271,14 @@ pub fn start_scheduler() -> Result<(), SchedulerError> {
 pub fn init() {
     seed_net_io_wait();
 }
+
+/// Initialize global scheduler using explicit configuration.
+///
+/// This avoids relying on environment variables (which are often sanitized by sudo wrappers).
+pub fn init_with_config(cfg: SchedulerConfig) {
+    seed_net_io_wait();
+    Scheduler::global().apply_config(cfg);
+}
 fn seed_net_io_wait() {
     // Make NIC RX a resident task by default: it doesn't need re-submit.
     Scheduler::global().register_resident(Task::net_io("netio-wait", NetworkIoTask::NicRx));
@@ -285,25 +295,68 @@ impl Scheduler {
         let tm = PollTimeManager::new();
         let bus = SimpleEventBus::new();
 
-        // Best-effort: auto-load demo component if env var is present.
-        // This keeps the core crate runnable without requiring wasm artifacts.
-        if let Ok(path) = std::env::var("NTX_COMPONENT") {
-            let cfg = EngineConfig {
-                component_path: path.into(),
-                entry_candidates: vec!["handle-packet".into(), "run-scenario".into()],
-            };
-            let mut mgr = EngineManager::global()
-                .lock()
-                .expect("engine manager poisoned");
-            if !mgr.has_default() {
-                let _ = mgr.load_and_register_demo(EngineHandle("default".into()), cfg);
-            }
-        }
+        // WASM auto-load is applied explicitly via `init_with_config`.
         Self {
             shared: Arc::new((Mutex::new(SharedState::default()), Condvar::new())),
             shutdown,
             tm,
             bus,
+        }
+    }
+
+    fn apply_config(&self, cfg: SchedulerConfig) {
+        self.apply_wasm_config(cfg.wasm);
+    }
+
+    fn apply_wasm_config(&self, cfg: WasmConfig) {
+        let Some(component_path) = cfg.component_path else {
+            tracing::info!(
+                target: "ntx::scheduler",
+                "wasm auto-load disabled (no component_path configured)"
+            );
+            return;
+        };
+
+        let component_str = component_path.display().to_string();
+        tracing::info!(
+            target: "ntx::scheduler",
+            component = %component_str,
+            "attempting to auto-load wasm engine from config"
+        );
+
+        let engine_cfg = EngineConfig {
+            component_path: component_path,
+            entry_candidates: cfg.entry_candidates,
+        };
+
+        let mut mgr = EngineManager::global()
+            .lock()
+            .expect("engine manager poisoned");
+        if mgr.has_default() {
+            tracing::info!(
+                target: "ntx::scheduler",
+                "wasm engine default already configured; skip auto-load"
+            );
+            return;
+        }
+
+        match mgr.load_and_register_demo(EngineHandle("default".into()), engine_cfg) {
+            Ok(()) => {
+                tracing::info!(
+                    target: "ntx::scheduler",
+                    component = %component_str,
+                    "wasm engine auto-load succeeded"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    target: "ntx::scheduler",
+                    component = %component_str,
+                    error = %e,
+                    error_dbg = ?e,
+                    "wasm engine auto-load failed"
+                );
+            }
         }
     }
 
@@ -491,12 +544,32 @@ impl Scheduler {
                 false
             }
             TaskKind::WasmCall(wasm) => {
+                tracing::debug!(
+                    target: "ntx::scheduler",
+                    function = %wasm.function,
+                    input_len = wasm.input.len(),
+                    "executing wasm call"
+                );
                 // Drive guest processing.
                 let mut mgr = EngineManager::global()
                     .lock()
                     .expect("engine manager poisoned");
 
                 match wasm.function.as_str() {
+                    "run" => {
+                        // One-shot demo entrypoint: drive guest-side acquire/bind/send loop.
+                        // If no engine is configured, this becomes a no-op.
+                        match mgr.run() {
+                            Ok(()) => {
+                                tracing::info!(target: "ntx::scheduler", "wasm run() completed");
+                                true
+                            }
+                            Err(e) => {
+                                tracing::error!(target: "ntx::scheduler", error = %e, "wasm run() failed");
+                                false
+                            }
+                        }
+                    }
                     "notify-rx" => match mgr.notify_rx() {
                         Ok(n) => n > 0,
                         Err(_e) => false,

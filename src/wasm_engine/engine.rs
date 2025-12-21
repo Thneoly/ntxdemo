@@ -438,6 +438,47 @@ impl ComponentEngine {
         Ok(n)
     }
 
+    /// Call the guest `run` export (packet-engine demo).
+    pub fn run(&mut self) -> Result<(), EngineError> {
+        tracing::info!(
+            target: "ntx::wasm_engine",
+            component = %self.cfg.component_path.display(),
+            "ComponentEngine::run: calling guest export"
+        );
+        if let Some(packet) = &self.packet {
+            return packet
+                .call_run(&mut self.store)
+                .context("run call")
+                .map_err(EngineError::Call)
+                .and_then(|r| match r {
+                    Ok(()) => {
+                        tracing::info!(target: "ntx::wasm_engine", "ComponentEngine::run: guest returned Ok");
+                        Ok(())
+                    }
+                    Err(e) => Err(EngineError::Call(anyhow::anyhow!(e))),
+                });
+        }
+
+        // Fallback: dynamic lookup.
+        let func = self.find_export_func("run")?;
+        let typed = func
+            .typed::<(), (Result<(), String>,)>(&self.store)
+            .context("run signature mismatch")
+            .map_err(EngineError::Call)?;
+        match typed
+            .call(&mut self.store, ())
+            .context("run call")
+            .map_err(EngineError::Call)?
+            .0
+        {
+            Ok(()) => {
+                tracing::info!(target: "ntx::wasm_engine", "ComponentEngine::run: guest returned Ok (dynamic)");
+                Ok(())
+            }
+            Err(e) => Err(EngineError::Call(anyhow::anyhow!(e))),
+        }
+    }
+
     /// Convenience for tests: read current descriptor buffer.
     pub fn read_desc_buffer(&mut self) -> Result<Vec<u8>, EngineError> {
         self.desc_get()

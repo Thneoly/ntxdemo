@@ -1,0 +1,17 @@
+# Unified app configuration for Ntx.
+
+kernel:
+  # Kernel config path (NIC + resource pools).
+  config_path: "config/config.yaml"
+
+scheduler:
+  wasm:
+    # Optional: Wasmtime component path to auto-load.
+    # If unset, wasm tasks (like `run`) won't execute.
+    component_path: "./target/wasm32-wasip2/debug/packet_engine.wasm"
+
+    # Candidate export entrypoints.
+    entry_candidates:
+      - "handle-packet"
+      - "run-scenario"
+      - "run"
