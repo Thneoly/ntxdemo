@@ -19,16 +19,8 @@ interface resources {
     /// Allocate a new socket owner id and register it.
     create-socket-owner: func(name: string) -> result<owner-id, resource-error>;
 
-    /// Allocate+pin an IPv4 for this owner from pool.
-    acquire-ipv4: func(pool: string, owner: owner-id) -> result<resource-id, resource-error>;
-
-    /// Allocate+pin a MAC for this owner from pool.
-    acquire-mac: func(pool: string, owner: owner-id) -> result<resource-id, resource-error>;
-
     /// Allocate+pin a UDP port for this owner from pool.
     acquire-udp-port: func(pool: string, owner: owner-id) -> result<resource-id, resource-error>;
 
-    resolve-ipv4: func(rid: resource-id) -> result<ipv4-addr, resource-error>;
-    resolve-mac: func(rid: resource-id) -> result<mac-addr, resource-error>;
     resolve-udp-port: func(rid: resource-id) -> result<u16, resource-error>;
 }

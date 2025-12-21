@@ -76,13 +76,7 @@ pub fn hostnet_create_socket_owner(name: &str) -> Result<String, HostnetError> {
 pub fn hostnet_acquire_ipv4(pool: &str, owner: &str) -> Result<String, HostnetError> {
     let owner = parse_uuid_str(owner)?;
     let mut pools = KERNEL.pools.lock();
-    let using_sock_id = pools.registry().socket_info(&owner).and_then(|s| s.sock_id);
-    let (rid, v) = pools.acquire_and_pin_non_socket(
-        resources::ResourceKind::Ipv4,
-        pool,
-        owner,
-        using_sock_id,
-    )?;
+    let (rid, v) = pools.acquire_and_pin_non_socket(resources::ResourceKind::Ipv4, pool, owner)?;
     let NonSocketResourceValue::Ipv4(_ip) = v else {
         unreachable!("resource kind/value mismatch")
     };
@@ -93,13 +87,7 @@ pub fn hostnet_acquire_ipv4(pool: &str, owner: &str) -> Result<String, HostnetEr
 pub fn hostnet_acquire_mac(pool: &str, owner: &str) -> Result<String, HostnetError> {
     let owner = parse_uuid_str(owner)?;
     let mut pools = KERNEL.pools.lock();
-    let using_sock_id = pools.registry().socket_info(&owner).and_then(|s| s.sock_id);
-    let (rid, v) = pools.acquire_and_pin_non_socket(
-        resources::ResourceKind::Mac,
-        pool,
-        owner,
-        using_sock_id,
-    )?;
+    let (rid, v) = pools.acquire_and_pin_non_socket(resources::ResourceKind::Mac, pool, owner)?;
     let NonSocketResourceValue::Mac(_mac) = v else {
         unreachable!("resource kind/value mismatch")
     };
@@ -110,13 +98,8 @@ pub fn hostnet_acquire_mac(pool: &str, owner: &str) -> Result<String, HostnetErr
 pub fn hostnet_acquire_udp_port(pool: &str, owner: &str) -> Result<String, HostnetError> {
     let owner = parse_uuid_str(owner)?;
     let mut pools = KERNEL.pools.lock();
-    let using_sock_id = pools.registry().socket_info(&owner).and_then(|s| s.sock_id);
-    let (rid, v) = pools.acquire_and_pin_non_socket(
-        resources::ResourceKind::UdpPort,
-        pool,
-        owner,
-        using_sock_id,
-    )?;
+    let (rid, v) =
+        pools.acquire_and_pin_non_socket(resources::ResourceKind::UdpPort, pool, owner)?;
     let NonSocketResourceValue::UdpPort(_port) = v else {
         unreachable!("resource kind/value mismatch")
     };
@@ -539,7 +522,6 @@ pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
             ipv4_pool,
             resp.owner,
             NonSocketResourceValue::Ipv4(ip),
-            None,
         )?;
         resp.ipv4 = Some((rid, ip));
 
@@ -549,7 +531,6 @@ pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
             resources::ResourceKind::Ipv4,
             ipv4_pool,
             resp.owner,
-            None,
         )?;
         let NonSocketResourceValue::Ipv4(ip) = v else {
             unreachable!("resource kind/value mismatch")
@@ -566,18 +547,13 @@ pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
             mac_pool,
             resp.owner,
             NonSocketResourceValue::Mac(mac),
-            None,
         )?;
         resp.mac = Some((rid, mac));
 
         audit_registry::with_audit_registry_mut(|reg| reg.record_mac(resp.owner, rid, mac));
     } else if wants_auto_acquire {
-        let (rid, v) = pools.acquire_and_pin_non_socket(
-            resources::ResourceKind::Mac,
-            mac_pool,
-            resp.owner,
-            None,
-        )?;
+        let (rid, v) =
+            pools.acquire_and_pin_non_socket(resources::ResourceKind::Mac, mac_pool, resp.owner)?;
         let NonSocketResourceValue::Mac(mac) = v else {
             unreachable!("resource kind/value mismatch")
         };
@@ -594,7 +570,6 @@ pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
                 udp_pool,
                 resp.owner,
                 NonSocketResourceValue::UdpPort(*p),
-                None,
             )?;
             resp.udp_ports.push((rid, *p));
 
@@ -605,7 +580,6 @@ pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
             resources::ResourceKind::UdpPort,
             udp_pool,
             resp.owner,
-            None,
         )?;
         let NonSocketResourceValue::UdpPort(port) = v else {
             unreachable!("resource kind/value mismatch")
@@ -623,7 +597,6 @@ pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
                 tcp_pool,
                 resp.owner,
                 NonSocketResourceValue::TcpPort(*p),
-                None,
             )?;
             resp.tcp_ports.push((rid, *p));
 
@@ -634,7 +607,6 @@ pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
             resources::ResourceKind::TcpPort,
             tcp_pool,
             resp.owner,
-            None,
         )?;
         let NonSocketResourceValue::TcpPort(port) = v else {
             unreachable!("resource kind/value mismatch")
@@ -657,7 +629,7 @@ pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
 ///
 /// This wires together:
 /// - `udp::create_udp_socket` (owner + sock_id)
-/// - resource acquisition (IPv4/MAC/UDP port) with `using_sock_id` propagation
+/// - resource acquisition (IPv4/MAC/UDP port) owned by `owner`
 /// - `UdpSocketBinder` bind-by-ResourceId + finalize into the UDP conn-table
 pub fn create_udp_socket(req: UdpSocketCreateRequest) -> Result<UdpSocketCreateResponse> {
     let ipv4_pool = if req.ipv4_pool.is_empty() {
@@ -683,32 +655,20 @@ pub fn create_udp_socket(req: UdpSocketCreateRequest) -> Result<UdpSocketCreateR
     let mut table = KERNEL.udp_sockets.lock();
     let (owner, sock_id) = udp::create_udp_socket(&mut pools, &table, req.name);
 
-    let (local_ipv4_rid, v) = pools.acquire_and_pin_non_socket(
-        resources::ResourceKind::Ipv4,
-        ipv4_pool,
-        owner,
-        Some(sock_id),
-    )?;
+    let (local_ipv4_rid, v) =
+        pools.acquire_and_pin_non_socket(resources::ResourceKind::Ipv4, ipv4_pool, owner)?;
     let NonSocketResourceValue::Ipv4(local_ipv4) = v else {
         unreachable!("resource kind/value mismatch")
     };
 
-    let (local_mac_rid, v) = pools.acquire_and_pin_non_socket(
-        resources::ResourceKind::Mac,
-        mac_pool,
-        owner,
-        Some(sock_id),
-    )?;
+    let (local_mac_rid, v) =
+        pools.acquire_and_pin_non_socket(resources::ResourceKind::Mac, mac_pool, owner)?;
     let NonSocketResourceValue::Mac(local_mac) = v else {
         unreachable!("resource kind/value mismatch")
     };
 
-    let (local_udp_port_rid, v) = pools.acquire_and_pin_non_socket(
-        resources::ResourceKind::UdpPort,
-        udp_pool,
-        owner,
-        Some(sock_id),
-    )?;
+    let (local_udp_port_rid, v) =
+        pools.acquire_and_pin_non_socket(resources::ResourceKind::UdpPort, udp_pool, owner)?;
     let NonSocketResourceValue::UdpPort(local_udp_port) = v else {
         unreachable!("resource kind/value mismatch")
     };
@@ -976,14 +936,12 @@ mod tests {
                 ipv4_pool,
                 owner,
                 NonSocketResourceValue::Ipv4(ip),
-                None,
             )?;
         } else if wants_auto_acquire {
             let (_rid, v) = pools.acquire_and_pin_non_socket(
                 resources::ResourceKind::Ipv4,
                 ipv4_pool,
                 owner,
-                None,
             )?;
             let NonSocketResourceValue::Ipv4(_ip) = v else {
                 unreachable!("resource kind/value mismatch")
@@ -997,15 +955,10 @@ mod tests {
                 mac_pool,
                 owner,
                 NonSocketResourceValue::Mac(mac),
-                None,
             )?;
         } else if wants_auto_acquire {
-            let (_rid, v) = pools.acquire_and_pin_non_socket(
-                resources::ResourceKind::Mac,
-                mac_pool,
-                owner,
-                None,
-            )?;
+            let (_rid, v) =
+                pools.acquire_and_pin_non_socket(resources::ResourceKind::Mac, mac_pool, owner)?;
             let NonSocketResourceValue::Mac(_mac) = v else {
                 unreachable!("resource kind/value mismatch")
             };
@@ -1019,7 +972,6 @@ mod tests {
                     udp_pool,
                     owner,
                     NonSocketResourceValue::UdpPort(*p),
-                    None,
                 )?;
             }
         } else if wants_auto_acquire {
@@ -1027,7 +979,6 @@ mod tests {
                 resources::ResourceKind::UdpPort,
                 udp_pool,
                 owner,
-                None,
             )?;
             let NonSocketResourceValue::UdpPort(_p) = v else {
                 unreachable!("resource kind/value mismatch")
@@ -1042,7 +993,6 @@ mod tests {
                     tcp_pool,
                     owner,
                     NonSocketResourceValue::TcpPort(*p),
-                    None,
                 )?;
             }
         } else if wants_auto_acquire {
@@ -1050,7 +1000,6 @@ mod tests {
                 resources::ResourceKind::TcpPort,
                 tcp_pool,
                 owner,
-                None,
             )?;
             let NonSocketResourceValue::TcpPort(_p) = v else {
                 unreachable!("resource kind/value mismatch")

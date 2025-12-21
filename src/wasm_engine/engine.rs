@@ -96,58 +96,17 @@ impl ResourceHost for State {
         // NOTE: kernel expects to own the pools; wasm_engine shouldn't maintain a parallel copy.
         kernel::hostnet_create_socket_owner(&name).map_err(|e| ResourceError::Other(e.to_string()))
     }
-
-    fn acquire_ipv4(
-        &mut self,
-        pool: String,
-        owner: String,
-    ) -> wasmtime::Result<String, ResourceError> {
-        kernel::hostnet_acquire_ipv4(&pool, &owner).map_err(|e| ResourceError::Other(e.to_string()))
-    }
-
-    fn acquire_mac(
-        &mut self,
-        pool: String,
-        owner: String,
-    ) -> wasmtime::Result<String, ResourceError> {
-        kernel::hostnet_acquire_mac(&pool, &owner).map_err(|e| ResourceError::Other(e.to_string()))
-    }
-
     fn acquire_udp_port(
         &mut self,
         pool: String,
         owner: String,
     ) -> wasmtime::Result<String, ResourceError> {
+        kernel::hostnet_acquire_ipv4(&pool, &owner)
+            .map_err(|e| ResourceError::Other(e.to_string()))?;
+        kernel::hostnet_acquire_mac(&pool, &owner)
+            .map_err(|e| ResourceError::Other(e.to_string()))?;
         kernel::hostnet_acquire_udp_port(&pool, &owner)
             .map_err(|e| ResourceError::Other(e.to_string()))
-    }
-
-    fn resolve_ipv4(&mut self, rid: String) -> wasmtime::Result<Ipv4Addr, ResourceError> {
-        let ip = kernel::hostnet_resolve_ipv4(&rid).map_err(|e| match e {
-            kernel::HostnetError::NotFound => ResourceError::NotFound,
-            other => ResourceError::Other(other.to_string()),
-        })?;
-        Ok(Ipv4Addr {
-            a: ip.octets()[0],
-            b: ip.octets()[1],
-            c: ip.octets()[2],
-            d: ip.octets()[3],
-        })
-    }
-
-    fn resolve_mac(&mut self, rid: String) -> wasmtime::Result<MacAddr, ResourceError> {
-        let mac = kernel::hostnet_resolve_mac(&rid).map_err(|e| match e {
-            kernel::HostnetError::NotFound => ResourceError::NotFound,
-            other => ResourceError::Other(other.to_string()),
-        })?;
-        Ok(MacAddr {
-            a: mac.0[0],
-            b: mac.0[1],
-            c: mac.0[2],
-            d: mac.0[3],
-            e: mac.0[4],
-            f: mac.0[5],
-        })
     }
 
     fn resolve_udp_port(&mut self, rid: String) -> wasmtime::Result<u16, ResourceError> {

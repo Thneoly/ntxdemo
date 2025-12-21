@@ -109,7 +109,6 @@ fn main() -> Result<()> {
                             ntx_network::resources::ResourceKind::Ipv4,
                             pool,
                             owner,
-                            None,
                         )
                         .ok()
                 })
@@ -128,7 +127,6 @@ fn main() -> Result<()> {
                             ntx_network::resources::ResourceKind::Mac,
                             pool,
                             owner,
-                            None,
                         )
                         .ok()
                 })

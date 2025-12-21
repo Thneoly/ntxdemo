@@ -41,11 +41,6 @@ pub struct SocketInfo {
 pub struct NonSocketOwner {
     /// The socket resource id that owns this resource (used as `resources::OwnerId`).
     pub owner_id: ResourceId,
-
-    /// The flow/socket-table id that is using this particular resource.
-    ///
-    /// Default: `Some(owner_sock_id)` when available at registration time.
-    pub using_sock_id: Option<SockId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,16 +104,12 @@ impl ResourceRegistry {
         resource_id: ResourceId,
         kind: ResourceKind,
         owner_id: ResourceId,
-        using_sock_id: Option<SockId>,
     ) {
         self.by_id.insert(
             resource_id,
             ResourceRecord::NonSocket {
                 kind,
-                owner: NonSocketOwner {
-                    owner_id,
-                    using_sock_id,
-                },
+                owner: NonSocketOwner { owner_id },
             },
         );
         self.resources_by_owner
@@ -163,13 +154,6 @@ impl ResourceRegistry {
         }
     }
 
-    pub fn using_sock_id_of(&self, id: &ResourceId) -> Option<SockId> {
-        match self.by_id.get(id) {
-            Some(ResourceRecord::NonSocket { owner, .. }) => owner.using_sock_id,
-            _ => None,
-        }
-    }
-
     pub fn resources_of_owner(&self, owner_id: &ResourceId) -> Vec<ResourceId> {
         self.resources_by_owner
             .get(owner_id)
@@ -196,11 +180,10 @@ mod tests {
         );
 
         let rid = Uuid::new_v4();
-        reg.register_non_socket(rid, ResourceKind::Ipv4, socket_id, Some(10));
+        reg.register_non_socket(rid, ResourceKind::Ipv4, socket_id);
 
         assert_eq!(reg.kind_of(&rid), Some(ResourceKind::Ipv4));
         assert_eq!(reg.owner_of(&rid), Some(socket_id));
-        assert_eq!(reg.using_sock_id_of(&rid), Some(10));
         assert_eq!(reg.socket_info(&socket_id).unwrap().name, "s1");
 
         let owned = reg.resources_of_owner(&socket_id);

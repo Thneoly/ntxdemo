@@ -646,7 +646,7 @@ mod tests {
 
         let (ipv4_rid, _ip) = {
             let (rid, v) = pools
-                .acquire_and_pin_non_socket(ResourceKind::Ipv4, "default", owner, None)
+                .acquire_and_pin_non_socket(ResourceKind::Ipv4, "default", owner)
                 .expect("alloc ipv4");
             let NonSocketResourceValue::Ipv4(ip) = v else {
                 unreachable!("resource kind/value mismatch")
@@ -655,7 +655,7 @@ mod tests {
         };
         let (mac_rid, _mac) = {
             let (rid, v) = pools
-                .acquire_and_pin_non_socket(ResourceKind::Mac, "default", owner, None)
+                .acquire_and_pin_non_socket(ResourceKind::Mac, "default", owner)
                 .expect("alloc mac");
             let NonSocketResourceValue::Mac(mac) = v else {
                 unreachable!("resource kind/value mismatch")
@@ -664,7 +664,7 @@ mod tests {
         };
         let (udp_rid, _port) = {
             let (rid, v) = pools
-                .acquire_and_pin_non_socket(ResourceKind::UdpPort, "default", owner, None)
+                .acquire_and_pin_non_socket(ResourceKind::UdpPort, "default", owner)
                 .expect("alloc udp port");
             let NonSocketResourceValue::UdpPort(p) = v else {
                 unreachable!("resource kind/value mismatch")
@@ -726,19 +726,14 @@ mod tests {
         );
 
         // Owner id can be used to allocate resources.
-        let (rid, v) = pools
-            .acquire_and_pin_non_socket(
-                crate::resources::ResourceKind::Ipv4,
-                "default",
-                owner,
-                Some(sock_id),
-            )
+        let (_rid, v) = pools
+            .acquire_and_pin_non_socket(crate::resources::ResourceKind::Ipv4, "default", owner)
             .expect("alloc ipv4");
         let crate::resources::NonSocketResourceValue::Ipv4(ip) = v else {
             unreachable!("resource kind/value mismatch")
         };
         assert_eq!(ip, std::net::Ipv4Addr::new(10, 0, 0, 1));
-        assert_eq!(pools.registry().using_sock_id_of(&rid), Some(sock_id));
+        // using_sock_id was removed; ownership is tracked only via owner_id.
     }
 
     #[test]

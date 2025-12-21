@@ -132,7 +132,6 @@ fn main() -> Result<()> {
                         ntx_network::resources::ResourceKind::Ipv4,
                         pool,
                         owner,
-                        None,
                     )
                     .ok()
             })
@@ -149,7 +148,6 @@ fn main() -> Result<()> {
                         ntx_network::resources::ResourceKind::Mac,
                         pool,
                         owner,
-                        None,
                     )
                     .ok()
             })
@@ -166,7 +164,6 @@ fn main() -> Result<()> {
                         ntx_network::resources::ResourceKind::UdpPort,
                         pool,
                         owner,
-                        None,
                     )
                     .ok()
             })
@@ -565,7 +562,7 @@ fn main() -> Result<()> {
 
         // If parsing reached UDP, maintain/refresh the socket entry.
         let conn = udp_sockets.on_rx(&pkt, &udp_ctx).unwrap();
-        let sock_id = conn.key.id;
+        let _sock_id = conn.key.id;
         // Keep old reporting shape (cidx,tidx) for printing/stats.
         let Some(&tidx) = tidx_map.get(&(ip_layer.src, udp.src_port)) else {
             continue;

@@ -93,7 +93,7 @@ impl ResourcePools {
     }
 
     // Note: socket-specific acquire_* wrappers were intentionally removed to keep a single
-    // acquisition entrypoint for non-socket resources; callers should infer `using_sock_id`
+    // acquisition entrypoint for non-socket resources.
     // (if desired) via the registry and pass it into `acquire_and_pin_non_socket`.
 
     /// Generic (public) API: acquire a new `ResourceId`, acquire from pool, pin it, and
@@ -105,7 +105,6 @@ impl ResourcePools {
         kind: ResourceKind,
         pool_name: &str,
         owner: OwnerId,
-        using_sock_id: Option<SockId>,
     ) -> anyhow::Result<(ResourceId, NonSocketResourceValue)> {
         let rid = self.registry.acquire_resource_id();
 
@@ -120,7 +119,7 @@ impl ResourcePools {
                 let addr = Ipv4Addr::from(ip.0);
                 pool.pin(owner, ip)?;
                 self.registry
-                    .register_non_socket(rid, ResourceKind::Ipv4, owner, using_sock_id);
+                    .register_non_socket(rid, ResourceKind::Ipv4, owner);
                 // Reverse index for kernel RX correlation: dst ip -> owner.
                 self.registry.register_ipv4_owner(addr, owner);
                 NonSocketResourceValue::Ipv4(addr)
@@ -134,7 +133,7 @@ impl ResourcePools {
                 };
                 pool.pin(owner, mac)?;
                 self.registry
-                    .register_non_socket(rid, ResourceKind::Mac, owner, using_sock_id);
+                    .register_non_socket(rid, ResourceKind::Mac, owner);
                 NonSocketResourceValue::Mac(mac)
             }
             ResourceKind::UdpPort => {
@@ -146,7 +145,7 @@ impl ResourcePools {
                 };
                 pool.pin(owner, port)?;
                 self.registry
-                    .register_non_socket(rid, ResourceKind::UdpPort, owner, using_sock_id);
+                    .register_non_socket(rid, ResourceKind::UdpPort, owner);
                 NonSocketResourceValue::UdpPort(port)
             }
             ResourceKind::TcpPort => {
@@ -158,7 +157,7 @@ impl ResourcePools {
                 };
                 pool.pin(owner, port)?;
                 self.registry
-                    .register_non_socket(rid, ResourceKind::TcpPort, owner, using_sock_id);
+                    .register_non_socket(rid, ResourceKind::TcpPort, owner);
                 NonSocketResourceValue::TcpPort(port)
             }
             ResourceKind::Socket => {
@@ -178,7 +177,6 @@ impl ResourcePools {
         pool_name: &str,
         owner: OwnerId,
         value: NonSocketResourceValue,
-        using_sock_id: Option<SockId>,
     ) -> anyhow::Result<ResourceId> {
         let rid = self.registry.acquire_resource_id();
 
@@ -189,7 +187,7 @@ impl ResourcePools {
                 };
                 pool.pin(owner, crate::Ipv4Addr(ipv4.octets()))?;
                 self.registry
-                    .register_non_socket(rid, ResourceKind::Ipv4, owner, using_sock_id);
+                    .register_non_socket(rid, ResourceKind::Ipv4, owner);
                 // Reverse index for kernel RX correlation: dst ip -> owner.
                 self.registry.register_ipv4_owner(ipv4, owner);
             }
@@ -199,7 +197,7 @@ impl ResourcePools {
                 };
                 pool.pin(owner, mac)?;
                 self.registry
-                    .register_non_socket(rid, ResourceKind::Mac, owner, using_sock_id);
+                    .register_non_socket(rid, ResourceKind::Mac, owner);
             }
             (ResourceKind::UdpPort, NonSocketResourceValue::UdpPort(port)) => {
                 let Some(pool) = self.udp_port(pool_name) else {
@@ -207,7 +205,7 @@ impl ResourcePools {
                 };
                 pool.pin(owner, port)?;
                 self.registry
-                    .register_non_socket(rid, ResourceKind::UdpPort, owner, using_sock_id);
+                    .register_non_socket(rid, ResourceKind::UdpPort, owner);
             }
             (ResourceKind::TcpPort, NonSocketResourceValue::TcpPort(port)) => {
                 let Some(pool) = self.tcp_port(pool_name) else {
@@ -215,7 +213,7 @@ impl ResourcePools {
                 };
                 pool.pin(owner, port)?;
                 self.registry
-                    .register_non_socket(rid, ResourceKind::TcpPort, owner, using_sock_id);
+                    .register_non_socket(rid, ResourceKind::TcpPort, owner);
             }
             (ResourceKind::Socket, _) => {
                 anyhow::bail!("pin_non_socket_with_id does not support ResourceKind::Socket")

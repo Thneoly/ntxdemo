@@ -1,6 +1,6 @@
 use ntx_network::abr;
 use ntx_network::resources::ResourcePoolsConfig;
-use ntx_network::resources::{NonSocketResourceValue, ResourceKind, SockId};
+use ntx_network::resources::{NonSocketResourceValue, ResourceKind};
 use uuid::Uuid;
 
 #[test]
@@ -27,7 +27,7 @@ udp_port:
     // /30 host range => 10.0.0.1-10.0.0.2, but 10.0.0.1 excluded => only 10.0.0.2
     // Use the public single-entrypoint API instead of per-pool accessors.
     let (rid, v) = pools
-        .acquire_and_pin_non_socket(ResourceKind::Ipv4, "demo", Uuid::new_v4(), None)
+        .acquire_and_pin_non_socket(ResourceKind::Ipv4, "demo", Uuid::new_v4())
         .expect("acquire ipv4");
     let NonSocketResourceValue::Ipv4(ip) = v else {
         panic!("expected ipv4, got {v:?} for rid={rid}")
@@ -38,7 +38,7 @@ udp_port:
     let mut macs = std::collections::BTreeSet::new();
     for _ in 0..3 {
         let (_rid, v) = pools
-            .acquire_and_pin_non_socket(ResourceKind::Mac, "demo", Uuid::new_v4(), None)
+            .acquire_and_pin_non_socket(ResourceKind::Mac, "demo", Uuid::new_v4())
             .expect("acquire mac");
         let NonSocketResourceValue::Mac(mac) = v else {
             panic!("expected mac")
@@ -49,10 +49,10 @@ udp_port:
 
     // Port range: 40000..=40002 excluding 40001 => {40000,40002}
     let (_rid1, v1) = pools
-        .acquire_and_pin_non_socket(ResourceKind::UdpPort, "demo", Uuid::new_v4(), None)
+        .acquire_and_pin_non_socket(ResourceKind::UdpPort, "demo", Uuid::new_v4())
         .expect("acquire udp port 1");
     let (_rid2, v2) = pools
-        .acquire_and_pin_non_socket(ResourceKind::UdpPort, "demo", Uuid::new_v4(), None)
+        .acquire_and_pin_non_socket(ResourceKind::UdpPort, "demo", Uuid::new_v4())
         .expect("acquire udp port 2");
     let NonSocketResourceValue::UdpPort(p1) = v1 else {
         panic!("expected udp port")
@@ -86,7 +86,7 @@ port:
     // Acquire an IP and pin it to a stable owner; then ensure resolve works.
     let owner = Uuid::new_v4();
     let (rid, v) = pools
-        .acquire_and_pin_non_socket(ResourceKind::Ipv4, "demo", owner, None)
+        .acquire_and_pin_non_socket(ResourceKind::Ipv4, "demo", owner)
         .expect("acquire ipv4");
     let NonSocketResourceValue::Ipv4(ip) = v else {
         panic!("expected ipv4")
@@ -115,12 +115,12 @@ tcp_port:
     let mut pools = cfg.build().unwrap();
 
     let (_rid, v) = pools
-        .acquire_and_pin_non_socket(ResourceKind::UdpPort, "demo", Uuid::new_v4(), None)
+        .acquire_and_pin_non_socket(ResourceKind::UdpPort, "demo", Uuid::new_v4())
         .expect("acquire udp");
     assert_eq!(v, NonSocketResourceValue::UdpPort(42000));
 
     let (_rid, v) = pools
-        .acquire_and_pin_non_socket(ResourceKind::TcpPort, "demo", Uuid::new_v4(), None)
+        .acquire_and_pin_non_socket(ResourceKind::TcpPort, "demo", Uuid::new_v4())
         .expect("acquire tcp");
     assert_eq!(v, NonSocketResourceValue::TcpPort(43000));
 }
@@ -144,17 +144,17 @@ udp_port:
 
     // Pin one IPv4 and multiple UDP ports for the same owner.
     let (_ip_rid, ip_v) = pools
-        .acquire_and_pin_non_socket(ResourceKind::Ipv4, "demo", owner, None)
+        .acquire_and_pin_non_socket(ResourceKind::Ipv4, "demo", owner)
         .expect("acquire ipv4");
     let NonSocketResourceValue::Ipv4(ip) = ip_v else {
         panic!("expected ipv4")
     };
 
     let (_p1_rid, p1_v) = pools
-        .acquire_and_pin_non_socket(ResourceKind::UdpPort, "demo", owner, None)
+        .acquire_and_pin_non_socket(ResourceKind::UdpPort, "demo", owner)
         .expect("acquire port1");
     let (_p2_rid, p2_v) = pools
-        .acquire_and_pin_non_socket(ResourceKind::UdpPort, "demo", owner, None)
+        .acquire_and_pin_non_socket(ResourceKind::UdpPort, "demo", owner)
         .expect("acquire port2");
     let NonSocketResourceValue::UdpPort(p1) = p1_v else {
         panic!("expected udp port")
@@ -192,7 +192,7 @@ udp_port:
     let mut ports = std::collections::BTreeSet::new();
     for _ in 0..3 {
         let (_rid, v) = pools
-            .acquire_and_pin_non_socket(ResourceKind::UdpPort, "demo", owner, None)
+            .acquire_and_pin_non_socket(ResourceKind::UdpPort, "demo", owner)
             .expect("acquire udp port");
         let NonSocketResourceValue::UdpPort(p) = v else {
             panic!("expected udp port")
@@ -215,10 +215,9 @@ udp_port:
     let mut pools = cfg.build().unwrap();
 
     let owner = Uuid::new_v4();
-    let using_sock_id: SockId = 123;
     let (rid, port) = {
         let (rid, v) = pools
-            .acquire_and_pin_non_socket(ResourceKind::UdpPort, "demo", owner, Some(using_sock_id))
+            .acquire_and_pin_non_socket(ResourceKind::UdpPort, "demo", owner)
             .expect("acquire udp port");
         let NonSocketResourceValue::UdpPort(p) = v else {
             unreachable!("resource kind/value mismatch")
@@ -229,7 +228,6 @@ udp_port:
     assert_eq!(port, 47000);
     assert_eq!(pools.registry().kind_of(&rid), Some(ResourceKind::UdpPort));
     assert_eq!(pools.registry().owner_of(&rid), Some(owner));
-    assert_eq!(pools.registry().using_sock_id_of(&rid), Some(using_sock_id));
 
     // Owner should be able to enumerate resources.
     let owned = pools.registry().resources_of_owner(&owner);
@@ -248,10 +246,9 @@ ipv4:
     let mut pools = cfg.build().unwrap();
 
     let owner = Uuid::new_v4();
-    let using_sock_id: SockId = 7;
     let (rid, _ip) = {
         let (rid, v) = pools
-            .acquire_and_pin_non_socket(ResourceKind::Ipv4, "demo", owner, Some(using_sock_id))
+            .acquire_and_pin_non_socket(ResourceKind::Ipv4, "demo", owner)
             .expect("alloc ipv4");
         let NonSocketResourceValue::Ipv4(ip) = v else {
             unreachable!("resource kind/value mismatch")
@@ -261,7 +258,6 @@ ipv4:
 
     assert_eq!(pools.registry().kind_of(&rid), Some(ResourceKind::Ipv4));
     assert_eq!(pools.registry().owner_of(&rid), Some(owner));
-    assert_eq!(pools.registry().using_sock_id_of(&rid), Some(using_sock_id));
 }
 
 #[test]
@@ -277,10 +273,9 @@ mac:
     let mut pools = cfg.build().unwrap();
 
     let owner = Uuid::new_v4();
-    let using_sock_id: SockId = 8;
     let (rid, _mac) = {
         let (rid, v) = pools
-            .acquire_and_pin_non_socket(ResourceKind::Mac, "demo", owner, Some(using_sock_id))
+            .acquire_and_pin_non_socket(ResourceKind::Mac, "demo", owner)
             .expect("alloc mac");
         let NonSocketResourceValue::Mac(mac) = v else {
             unreachable!("resource kind/value mismatch")
@@ -290,7 +285,6 @@ mac:
 
     assert_eq!(pools.registry().kind_of(&rid), Some(ResourceKind::Mac));
     assert_eq!(pools.registry().owner_of(&rid), Some(owner));
-    assert_eq!(pools.registry().using_sock_id_of(&rid), Some(using_sock_id));
 }
 
 #[test]
@@ -306,10 +300,9 @@ tcp_port:
     let mut pools = cfg.build().unwrap();
 
     let owner = Uuid::new_v4();
-    let using_sock_id: SockId = 9;
     let (rid, port) = {
         let (rid, v) = pools
-            .acquire_and_pin_non_socket(ResourceKind::TcpPort, "demo", owner, Some(using_sock_id))
+            .acquire_and_pin_non_socket(ResourceKind::TcpPort, "demo", owner)
             .expect("alloc tcp port");
         let NonSocketResourceValue::TcpPort(p) = v else {
             unreachable!("resource kind/value mismatch")
@@ -320,7 +313,6 @@ tcp_port:
     assert_eq!(port, 48000);
     assert_eq!(pools.registry().kind_of(&rid), Some(ResourceKind::TcpPort));
     assert_eq!(pools.registry().owner_of(&rid), Some(owner));
-    assert_eq!(pools.registry().using_sock_id_of(&rid), Some(using_sock_id));
 }
 
 #[test]
@@ -360,7 +352,6 @@ mac:
     let mut pools = cfg.build().unwrap();
 
     let owner = pools.acquire_socket_owner("sock-pin");
-    let using_sock_id: SockId = 42;
 
     let ip: std::net::Ipv4Addr = "10.11.0.2".parse().unwrap();
     let ip_rid = pools
@@ -369,15 +360,10 @@ mac:
             "demo",
             owner,
             NonSocketResourceValue::Ipv4(ip),
-            Some(using_sock_id),
         )
         .expect("pin ipv4");
     assert_eq!(pools.registry().kind_of(&ip_rid), Some(ResourceKind::Ipv4));
     assert_eq!(pools.registry().owner_of(&ip_rid), Some(owner));
-    assert_eq!(
-        pools.registry().using_sock_id_of(&ip_rid),
-        Some(using_sock_id)
-    );
 
     let udp_rid = pools
         .pin_non_socket_with_id(
@@ -385,7 +371,6 @@ mac:
             "demo",
             owner,
             NonSocketResourceValue::UdpPort(49000),
-            Some(using_sock_id),
         )
         .expect("pin udp");
     assert_eq!(
@@ -400,7 +385,6 @@ mac:
             "demo",
             owner,
             NonSocketResourceValue::TcpPort(49100),
-            Some(using_sock_id),
         )
         .expect("pin tcp");
     assert_eq!(
@@ -416,7 +400,6 @@ mac:
             "demo",
             owner,
             NonSocketResourceValue::Mac(mac),
-            Some(using_sock_id),
         )
         .expect("pin mac");
     assert_eq!(pools.registry().kind_of(&mac_rid), Some(ResourceKind::Mac));
