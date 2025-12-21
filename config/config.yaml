@@ -1,0 +1,4 @@
+nic:
+  iface: "ntx0"
+resource:
+  path: "config/resource/resources.yaml"

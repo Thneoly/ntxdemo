@@ -11,7 +11,7 @@ impl ResourcePools {
     pub fn publish_abr_for_owner(
         &self,
         store: &mut abr::BindingStore,
-        owner: &str,
+        owner: &super::OwnerId,
         abr_owner: BindingOwner,
     ) {
         store.clear();
@@ -65,7 +65,7 @@ impl ResourcePools {
 fn publish_ports(
     store: &mut abr::BindingStore,
     pools: &NamedPools<PortPool>,
-    owner: &str,
+    owner: &super::OwnerId,
     ip_be: u32,
     abr_owner: BindingOwner,
     mk: fn(u32, u16, BindingOwner) -> abr::Binding,

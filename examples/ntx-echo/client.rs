@@ -475,6 +475,7 @@ fn main() -> Result<()> {
         // - peer_port == reply src_port
         // - local_port == reply dst_port
         let flow_key = Key {
+            id: 0,
             peer_ip: ip.src,
             peer_port: udp.src_port,
             local_ip: ip.dst,

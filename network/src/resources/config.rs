@@ -42,6 +42,9 @@ pub struct ResourcePoolsConfig {
 }
 
 impl ResourcePoolsConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
     /// Load config from a YAML file.
     pub fn load_yaml_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();

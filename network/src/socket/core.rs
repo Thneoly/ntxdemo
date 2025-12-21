@@ -29,6 +29,14 @@ pub trait ConnEntry {
     fn set_last_seen(&mut self, now: Instant);
 }
 
+/// Optional capability for a connection key to expose a stable process-local id.
+///
+/// This enables `ConnTableCore` to keep a secondary index that can resolve
+/// `sock_id -> key -> entry` without changing the primary key semantics.
+pub trait HasSockId {
+    fn sock_id(&self) -> u64;
+}
+
 /// Generic stats for connection tables.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ConnTableStats {
@@ -69,6 +77,7 @@ impl Default for ConnTableConfig {
 pub struct ConnTableCore<C: ConnEntry> {
     pub(crate) cfg: ConnTableConfig,
     pub(crate) map: HashMap<C::Key, C>,
+    pub(crate) by_sock_id: HashMap<u64, C::Key>,
     pub(crate) stats: ConnTableStats,
 }
 
@@ -83,6 +92,7 @@ impl<C: ConnEntry> ConnTableCore<C> {
         Self {
             cfg,
             map: HashMap::new(),
+            by_sock_id: HashMap::new(),
             stats: ConnTableStats::default(),
         }
     }
@@ -127,7 +137,12 @@ impl<C: ConnEntry> ConnTableCore<C> {
     }
 
     pub fn remove(&mut self, key: &C::Key) -> Option<C> {
-        self.map.remove(key)
+        let removed = self.map.remove(key);
+        if removed.is_some() {
+            // Also remove any sock_id mapping pointing to this key.
+            self.by_sock_id.retain(|_, v| v != key);
+        }
+        removed
     }
 
     pub fn insert(&mut self, key: C::Key, value: C) -> Option<C> {
@@ -173,6 +188,24 @@ impl<C: ConnEntry> ConnTableCore<C> {
         (self.map.get_mut(&key).expect("inserted"), true)
     }
 
+    /// Lookup by sock id (secondary index) without affecting the primary key semantics.
+    pub fn get_by_sock_id(&mut self, sock_id: u64) -> Option<&C>
+    where
+        C::Key: HasSockId,
+    {
+        let key = self.by_sock_id.get(&sock_id).copied()?;
+        self.get(&key)
+    }
+
+    /// Debug/peek variant of [`ConnTableCore::get_by_sock_id`] (no stats).
+    pub fn peek_by_sock_id(&self, sock_id: u64) -> Option<&C>
+    where
+        C::Key: HasSockId,
+    {
+        let key = self.by_sock_id.get(&sock_id).copied()?;
+        self.peek(&key)
+    }
+
     /// 获取现有条目或插入新值，但返回不可变引用（避免上层 `peek()+expect()` 的样板）。
     ///
     /// 注意：如果你需要在命中/插入后修改条目（例如刷新 last_seen），请优先使用
@@ -207,6 +240,7 @@ impl<C: ConnEntry> ConnTableCore<C> {
                 if self.map.remove(&k).is_some() {
                     self.stats.evictions += 1;
                 }
+                self.by_sock_id.retain(|_, v| v != &k);
             }
         }
 
@@ -220,7 +254,40 @@ impl<C: ConnEntry> ConnTableCore<C> {
                 if self.map.remove(&oldest_key).is_some() {
                     self.stats.evictions += 1;
                 }
+                self.by_sock_id.retain(|_, v| v != &oldest_key);
             }
         }
+    }
+}
+
+impl<C> ConnTableCore<C>
+where
+    C: ConnEntry,
+    C::Key: HasSockId,
+{
+    #[inline]
+    fn index_sock_id_for_key(&mut self, key: &C::Key) {
+        self.by_sock_id.insert(key.sock_id(), *key);
+    }
+
+    /// upsert variant that also maintains the sock_id index.
+    pub fn upsert_with_sock_id(
+        &mut self,
+        key: C::Key,
+        create: impl FnOnce() -> C,
+    ) -> (&mut C, bool) {
+        // Fast path: exists.
+        self.stats.lookups += 1;
+        if self.map.contains_key(&key) {
+            self.stats.hits += 1;
+            self.index_sock_id_for_key(&key);
+            return (self.map.get_mut(&key).expect("exists"), false);
+        }
+
+        self.evict_if_needed();
+        self.map.insert(key, create());
+        self.index_sock_id_for_key(&key);
+        self.stats.inserts += 1;
+        (self.map.get_mut(&key).expect("inserted"), true)
     }
 }

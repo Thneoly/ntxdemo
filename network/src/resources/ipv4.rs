@@ -55,7 +55,7 @@ impl Ipv4Pool {
     }
 
     /// Acquire from a pinned allocation if owner has one, otherwise allocate normally.
-    pub fn acquire_for(&mut self, owner: &str) -> Option<Ipv4Addr> {
+    pub fn acquire_for(&mut self, owner: &OwnerId) -> Option<Ipv4Addr> {
         if let Some(ip) = self.owner_to_pinned.get(owner).copied() {
             // If pinned IP is currently free, lease it. If it is already leased, still return it.
             // This keeps semantics simple: pin means “this owner gets this resource”.
@@ -70,8 +70,8 @@ impl Ipv4Pool {
     /// Pin a specific IP for an owner.
     ///
     /// If the IP is free in this pool, it is removed from the available queue.
-    pub fn pin(&mut self, owner: impl Into<OwnerId>, ip: Ipv4Addr) -> anyhow::Result<()> {
-        let owner = owner.into();
+    pub fn pin(&mut self, owner: OwnerId, ip: Ipv4Addr) -> anyhow::Result<()> {
+        let owner = owner;
         if let Some(existing) = self.owner_to_pinned.get(&owner) {
             anyhow::bail!("owner already pinned to {existing:?}");
         }
@@ -90,7 +90,7 @@ impl Ipv4Pool {
         Ok(())
     }
 
-    pub fn unpin_owner(&mut self, owner: &str) -> bool {
+    pub fn unpin_owner(&mut self, owner: &OwnerId) -> bool {
         let Some(ip) = self.owner_to_pinned.remove(owner) else {
             return false;
         };

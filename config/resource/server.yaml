@@ -1,0 +1,18 @@
+# ntx-echo server resources
+#
+# Provides 2 server identities (ip, mac) for listening:
+#   ip:  10.0.0.2 and 10.0.0.3
+#   mac: 02:00:00:00:00:a2 and 02:00:00:00:00:a3
+#
+# The server listens on UDP dst_port=7 for BOTH identities.
+
+ipv4:
+  - name: server
+    cidr: "10.0.0.0/29"
+    # Reserve only .2 and .3 for the server identities.
+    exclude: ["10.0.0.1", "10.0.0.4", "10.0.0.5", "10.0.0.6"]
+
+mac:
+  - name: server
+    start: "02:00:00:00:00:a2"
+    end:   "02:00:00:00:00:a3"

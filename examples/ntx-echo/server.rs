@@ -336,6 +336,7 @@ fn main() -> Result<()> {
         // Echo reply (socket-like): cache the reverse-path headers for the flow and only
         // inject payload on each send.
         let key = ntx::network::socket::udp::Key {
+            id: 0,
             peer_ip: ip.src,
             peer_port: udp.src_port,
             local_ip: my_ip,

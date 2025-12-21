@@ -54,7 +54,7 @@ impl PortPool {
         Some(p)
     }
 
-    pub fn acquire_for(&mut self, owner: &str) -> Option<u16> {
+    pub fn acquire_for(&mut self, owner: &OwnerId) -> Option<u16> {
         let Some(ports) = self.owner_to_pinned.get(owner) else {
             return self.acquire();
         };
@@ -82,7 +82,7 @@ impl PortPool {
 
             if !self.leased.contains(&p) {
                 self.leased.insert(p);
-                self.owner_rr.insert(owner.to_string(), (idx + 1) % len);
+                self.owner_rr.insert(owner.clone(), (idx + 1) % len);
                 return Some(p);
             }
         }
@@ -91,8 +91,8 @@ impl PortPool {
         self.acquire()
     }
 
-    pub fn pin(&mut self, owner: impl Into<OwnerId>, port: u16) -> anyhow::Result<()> {
-        let owner = owner.into();
+    pub fn pin(&mut self, owner: OwnerId, port: u16) -> anyhow::Result<()> {
+        let owner = owner;
 
         if let Some(existing_owner) = self.pinned.get(&port) {
             anyhow::bail!("port already pinned by owner {existing_owner}");
@@ -111,7 +111,7 @@ impl PortPool {
     }
 
     /// Unpin a single port for an owner.
-    pub fn unpin(&mut self, owner: &str, port: u16) -> bool {
+    pub fn unpin(&mut self, owner: &OwnerId, port: u16) -> bool {
         match self.pinned.get(&port) {
             Some(o) if o == owner => {}
             _ => return false,
@@ -133,7 +133,7 @@ impl PortPool {
         true
     }
 
-    pub fn unpin_owner(&mut self, owner: &str) -> bool {
+    pub fn unpin_owner(&mut self, owner: &OwnerId) -> bool {
         let Some(ports) = self.owner_to_pinned.remove(owner) else {
             return false;
         };

@@ -2,7 +2,7 @@
 pub mod abr;
 mod fmt;
 #[cfg(feature = "host")]
-mod nic;
+pub mod nic;
 pub mod packet;
 pub mod prelude;
 pub mod resources;

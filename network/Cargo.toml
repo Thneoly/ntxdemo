@@ -26,3 +26,4 @@ bitflags = "2.9.4"
 libc = { version = "0.2", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9.34-deprecated"
+uuid = { version = "1", features = ["v4", "serde"] }

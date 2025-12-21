@@ -9,6 +9,7 @@
 //! - Config-driven: parse a config file at startup to define the available resources.
 
 mod config;
+mod id;
 mod ipv4;
 mod mac;
 mod named;
@@ -18,6 +19,7 @@ mod port;
 mod publish;
 
 pub use config::*;
+pub use id::*;
 pub use ipv4::*;
 pub use mac::*;
 pub use named::*;

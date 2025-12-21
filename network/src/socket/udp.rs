@@ -1,3 +1,4 @@
+use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 use crate::packet::layers::{Ipv4, Udp};
@@ -6,18 +7,50 @@ use crate::stack::ReplyFrame;
 use crate::traffic::udp_echo::UdpReplyTemplate;
 use crate::{Ipv4Addr, MacAddr};
 
-use super::core::{ConnEntry, ConnTableCore};
+use super::core::{ConnEntry, ConnTableCore, HasSockId};
 
 /// UDP flow key used by the socket/conn-table layer.
 ///
 /// This intentionally lives in `socket::udp` (not `stack`/`packet`) to avoid
 /// cross-layer coupling. Conversion from parsed packets happens locally.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy)]
 pub struct Key {
+    /// Monotonically increasing flow id (process-local).
+    pub id: u64,
     pub peer_ip: Ipv4Addr,
     pub peer_port: u16,
     pub local_ip: Ipv4Addr,
     pub local_port: u16,
+}
+
+impl PartialEq for Key {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.peer_ip == other.peer_ip
+            && self.peer_port == other.peer_port
+            && self.local_ip == other.local_ip
+            && self.local_port == other.local_port
+    }
+}
+
+impl Eq for Key {}
+
+impl Hash for Key {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // NOTE: scheme B - hash ignores `id`, only uses the 4-tuple.
+        self.peer_ip.hash(state);
+        self.peer_port.hash(state);
+        self.local_ip.hash(state);
+        self.local_port.hash(state);
+    }
+}
+
+impl HasSockId for Key {
+    #[inline]
+    fn sock_id(&self) -> u64 {
+        self.id
+    }
 }
 
 impl Key {
@@ -31,6 +64,7 @@ impl Key {
             .ok_or_else(|| anyhow::anyhow!("missing udp"))?;
 
         Ok(Self {
+            id: crate::resources::alloc_sock_id(),
             peer_ip: ip.src,
             peer_port: udp.src_port,
             local_ip: ip.dst,
@@ -99,7 +133,7 @@ impl Table {
         // - 负责把 RX 上的语义转换成 Conn（含 reply template）
         // - 负责 refresh last_seen
         let now = ctx.now();
-        let (entry, _inserted) = self.upsert_with(key, || {
+        let (entry, _inserted) = self.upsert_with_sock_id(key, || {
             let tpl = UdpReplyTemplate::from_parsed_packet(pkt, ctx.local_mac())
                 .expect("validated layers by Key::from_parsed_packet");
             Conn {
@@ -128,6 +162,7 @@ impl Table {
         ttl: u8,
     ) -> &Conn {
         let key = Key {
+            id: crate::resources::alloc_sock_id(),
             peer_ip,
             peer_port,
             local_ip,
@@ -135,7 +170,7 @@ impl Table {
         };
 
         let now = Instant::now();
-        let (entry, inserted) = self.upsert_with(key, || {
+        let (entry, inserted) = self.upsert_with_sock_id(key, || {
             let tpl = UdpReplyTemplate {
                 eth: crate::EthernetHeader {
                     dst: peer_mac,
@@ -193,5 +228,25 @@ impl Table {
         Ok(self.connect(
             peer_ip, peer_port, local_ip, local_port, peer_mac, local_mac, ttl,
         ))
+    }
+
+    /// Find a socket id by destination/local address.
+    ///
+    /// This is a convenience helper for higher layers that only know the inbound
+    /// packet's destination (local) ip/port and want to correlate it to an existing
+    /// cached UDP "socket/connection".
+    ///
+    /// Notes:
+    /// - This does a linear scan over the table (MVP-friendly). If we need this
+    ///   long-term, we should add a dedicated index keyed by (local_ip, local_port).
+    #[inline]
+    pub fn sock_id_for_local(&self, local_ip: Ipv4Addr, local_port: Option<u16>) -> Option<u64> {
+        self.iter()
+            .map(|(_k, c)| c)
+            .find(|c| {
+                c.key.local_ip == local_ip
+                    && local_port.map(|p| c.key.local_port == p).unwrap_or(true)
+            })
+            .map(|c| c.key.id)
     }
 }

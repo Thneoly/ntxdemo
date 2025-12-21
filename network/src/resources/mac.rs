@@ -48,7 +48,7 @@ impl MacPool {
         Some(mac)
     }
 
-    pub fn acquire_for(&mut self, owner: &str) -> Option<MacAddr> {
+    pub fn acquire_for(&mut self, owner: &OwnerId) -> Option<MacAddr> {
         if let Some(mac) = self.owner_to_pinned.get(owner).copied() {
             if self.pinned.contains_key(&mac) {
                 self.leased.insert(mac);
@@ -58,8 +58,8 @@ impl MacPool {
         self.acquire()
     }
 
-    pub fn pin(&mut self, owner: impl Into<OwnerId>, mac: MacAddr) -> anyhow::Result<()> {
-        let owner = owner.into();
+    pub fn pin(&mut self, owner: OwnerId, mac: MacAddr) -> anyhow::Result<()> {
+        let owner = owner;
         if let Some(existing) = self.owner_to_pinned.get(&owner) {
             anyhow::bail!("owner already pinned to {existing:?}");
         }
@@ -76,7 +76,7 @@ impl MacPool {
         Ok(())
     }
 
-    pub fn unpin_owner(&mut self, owner: &str) -> bool {
+    pub fn unpin_owner(&mut self, owner: &OwnerId) -> bool {
         let Some(mac) = self.owner_to_pinned.remove(owner) else {
             return false;
         };

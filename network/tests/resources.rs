@@ -1,5 +1,7 @@
 use ntx_network::abr;
 use ntx_network::resources::ResourcePoolsConfig;
+use ntx_network::resources::{ResourceKind, SockId};
+use uuid::Uuid;
 
 #[test]
 fn parse_and_build_pools_from_yaml() {
@@ -73,10 +75,11 @@ port:
     pools.ipv4("demo").unwrap().release(ip);
 
     // Pin an IP for an owner.
-    pools.ipv4("demo").unwrap().pin("comp-a", ip).unwrap();
+    let owner = Uuid::new_v4();
+    pools.ipv4("demo").unwrap().pin(owner, ip).unwrap();
 
     // acquire_for should return the pinned ip.
-    let ip2 = pools.ipv4("demo").unwrap().acquire_for("comp-a").unwrap();
+    let ip2 = pools.ipv4("demo").unwrap().acquire_for(&owner).unwrap();
     assert_eq!(ip2, ip);
     assert!(pools.ipv4("demo").unwrap().release(ip2));
 
@@ -87,7 +90,7 @@ port:
         assert_ne!(other, ip);
     }
 
-    assert!(pools.ipv4("demo").unwrap().unpin_owner("comp-a"));
+    assert!(pools.ipv4("demo").unwrap().unpin_owner(&owner));
     // Now it can be acquired normally again.
     assert!(pools.ipv4("demo").unwrap().acquire().is_some());
 }
@@ -127,20 +130,22 @@ udp_port:
     let cfg: ResourcePoolsConfig = serde_yaml::from_str(yaml).unwrap();
     let mut pools = cfg.build().unwrap();
 
+    let owner = Uuid::new_v4();
+
     // Pin one IPv4 and multiple UDP ports for the same owner.
     let ip = pools.ipv4("demo").unwrap().acquire().unwrap();
     pools.ipv4("demo").unwrap().release(ip);
-    pools.ipv4("demo").unwrap().pin("comp-a", ip).unwrap();
+    pools.ipv4("demo").unwrap().pin(owner, ip).unwrap();
 
     let p1 = pools.udp_port("demo").unwrap().acquire().unwrap();
     let p2 = pools.udp_port("demo").unwrap().acquire().unwrap();
     pools.udp_port("demo").unwrap().release(p1);
     pools.udp_port("demo").unwrap().release(p2);
-    pools.udp_port("demo").unwrap().pin("comp-a", p1).unwrap();
-    pools.udp_port("demo").unwrap().pin("comp-a", p2).unwrap();
+    pools.udp_port("demo").unwrap().pin(owner, p1).unwrap();
+    pools.udp_port("demo").unwrap().pin(owner, p2).unwrap();
 
     let mut store = abr::BindingStore::default();
-    pools.publish_abr_for_owner(&mut store, "comp-a", abr::BindingOwner::Process { pid: 1 });
+    pools.publish_abr_for_owner(&mut store, &owner, abr::BindingOwner::Process { pid: 1 });
     let view = abr::load_view();
 
     let ip_be = u32::from_be_bytes(ip.octets());
@@ -162,6 +167,8 @@ udp_port:
     let mut pools = cfg.build().unwrap();
     let pool = pools.udp_port("demo").unwrap();
 
+    let owner = Uuid::new_v4();
+
     // Pin three ports for the same owner.
     let a = pool.acquire().unwrap();
     let b = pool.acquire().unwrap();
@@ -169,20 +176,195 @@ udp_port:
     pool.release(a);
     pool.release(b);
     pool.release(c);
-    pool.pin("comp-a", a).unwrap();
-    pool.pin("comp-a", b).unwrap();
-    pool.pin("comp-a", c).unwrap();
+    pool.pin(owner, a).unwrap();
+    pool.pin(owner, b).unwrap();
+    pool.pin(owner, c).unwrap();
 
     // Should cycle through pinned ports.
-    let p1 = pool.acquire_for("comp-a").unwrap();
-    let p2 = pool.acquire_for("comp-a").unwrap();
-    let p3 = pool.acquire_for("comp-a").unwrap();
+    let p1 = pool.acquire_for(&owner).unwrap();
+    let p2 = pool.acquire_for(&owner).unwrap();
+    let p3 = pool.acquire_for(&owner).unwrap();
     assert_ne!(p1, p2);
     assert_ne!(p2, p3);
     assert_ne!(p1, p3);
 
     // Release one and ensure it can be returned again on subsequent acquire_for calls.
     pool.release(p2);
-    let p4 = pool.acquire_for("comp-a").unwrap();
+    let p4 = pool.acquire_for(&owner).unwrap();
     assert_eq!(p4, p2);
+}
+
+#[test]
+fn alloc_udp_port_for_registers_resource_id() {
+    let yaml = r#"
+udp_port:
+  - name: demo
+  start: 47000
+  end: 47000
+"#;
+
+    let cfg: ResourcePoolsConfig = serde_yaml::from_str(yaml).unwrap();
+    let mut pools = cfg.build().unwrap();
+
+    let owner = Uuid::new_v4();
+    let using_sock_id: SockId = 123;
+    let (rid, port) = pools
+        .alloc_udp_port_for("demo", owner, Some(using_sock_id))
+        .expect("alloc udp port");
+
+    assert_eq!(port, 47000);
+    assert_eq!(pools.registry().kind_of(&rid), Some(ResourceKind::UdpPort));
+    assert_eq!(pools.registry().owner_of(&rid), Some(owner));
+    assert_eq!(pools.registry().using_sock_id_of(&rid), Some(using_sock_id));
+
+    // Owner should be able to enumerate resources.
+    let owned = pools.registry().resources_of_owner(&owner);
+    assert_eq!(owned, vec![rid]);
+}
+
+#[test]
+fn alloc_ipv4_for_registers_resource_id() {
+    let yaml = r#"
+ipv4:
+  - name: demo
+  cidr: "10.10.0.0/30"
+"#;
+
+    let cfg: ResourcePoolsConfig = serde_yaml::from_str(yaml).unwrap();
+    let mut pools = cfg.build().unwrap();
+
+    let owner = Uuid::new_v4();
+    let using_sock_id: SockId = 7;
+    let (rid, ip) = pools
+        .alloc_ipv4_for("demo", owner, Some(using_sock_id))
+        .expect("alloc ipv4");
+
+    assert!(ip == "10.10.0.1".parse().unwrap() || ip == "10.10.0.2".parse().unwrap());
+    assert_eq!(pools.registry().kind_of(&rid), Some(ResourceKind::Ipv4));
+    assert_eq!(pools.registry().owner_of(&rid), Some(owner));
+    assert_eq!(pools.registry().using_sock_id_of(&rid), Some(using_sock_id));
+}
+
+#[test]
+fn alloc_mac_for_registers_resource_id() {
+    let yaml = r#"
+mac:
+  - name: demo
+  start: "02:00:00:00:00:01"
+  end:   "02:00:00:00:00:01"
+"#;
+
+    let cfg: ResourcePoolsConfig = serde_yaml::from_str(yaml).unwrap();
+    let mut pools = cfg.build().unwrap();
+
+    let owner = Uuid::new_v4();
+    let using_sock_id: SockId = 8;
+    let (rid, mac) = pools
+        .alloc_mac_for("demo", owner, Some(using_sock_id))
+        .expect("alloc mac");
+
+    assert_eq!(mac.to_string(), "02:00:00:00:00:01");
+    assert_eq!(pools.registry().kind_of(&rid), Some(ResourceKind::Mac));
+    assert_eq!(pools.registry().owner_of(&rid), Some(owner));
+    assert_eq!(pools.registry().using_sock_id_of(&rid), Some(using_sock_id));
+}
+
+#[test]
+fn alloc_tcp_port_for_registers_resource_id() {
+    let yaml = r#"
+tcp_port:
+  - name: demo
+  start: 48000
+  end: 48000
+"#;
+
+    let cfg: ResourcePoolsConfig = serde_yaml::from_str(yaml).unwrap();
+    let mut pools = cfg.build().unwrap();
+
+    let owner = Uuid::new_v4();
+    let using_sock_id: SockId = 9;
+    let (rid, port) = pools
+        .alloc_tcp_port_for("demo", owner, Some(using_sock_id))
+        .expect("alloc tcp port");
+
+    assert_eq!(port, 48000);
+    assert_eq!(pools.registry().kind_of(&rid), Some(ResourceKind::TcpPort));
+    assert_eq!(pools.registry().owner_of(&rid), Some(owner));
+    assert_eq!(pools.registry().using_sock_id_of(&rid), Some(using_sock_id));
+}
+
+#[test]
+fn alloc_socket_owner_registers_socket_info() {
+    let cfg: ResourcePoolsConfig = serde_yaml::from_str("{}").unwrap();
+    let mut pools = cfg.build().unwrap();
+
+    let owner = pools.alloc_socket_owner("sock-a");
+    assert_eq!(pools.registry().kind_of(&owner), Some(ResourceKind::Socket));
+    assert_eq!(
+        pools.registry().socket_info(&owner).unwrap().name,
+        "sock-a".to_string()
+    );
+}
+
+#[test]
+fn pin_with_id_registers_resource() {
+    let yaml = r#"
+ipv4:
+    - name: demo
+        cidr: "10.11.0.0/30"
+udp_port:
+    - name: demo
+        start: 49000
+        end: 49000
+tcp_port:
+    - name: demo
+        start: 49100
+        end: 49100
+mac:
+    - name: demo
+        start: "02:00:00:00:00:02"
+        end:   "02:00:00:00:00:02"
+"#;
+
+    let cfg: ResourcePoolsConfig = serde_yaml::from_str(yaml).unwrap();
+    let mut pools = cfg.build().unwrap();
+
+    let owner = pools.alloc_socket_owner("sock-pin");
+    let using_sock_id: SockId = 42;
+
+    let ip: std::net::Ipv4Addr = "10.11.0.2".parse().unwrap();
+    let ip_rid = pools
+        .pin_ipv4_with_id("demo", owner, ip, Some(using_sock_id))
+        .expect("pin ipv4");
+    assert_eq!(pools.registry().kind_of(&ip_rid), Some(ResourceKind::Ipv4));
+    assert_eq!(pools.registry().owner_of(&ip_rid), Some(owner));
+    assert_eq!(
+        pools.registry().using_sock_id_of(&ip_rid),
+        Some(using_sock_id)
+    );
+
+    let udp_rid = pools
+        .pin_udp_port_with_id("demo", owner, 49000, Some(using_sock_id))
+        .expect("pin udp");
+    assert_eq!(
+        pools.registry().kind_of(&udp_rid),
+        Some(ResourceKind::UdpPort)
+    );
+    assert_eq!(pools.registry().owner_of(&udp_rid), Some(owner));
+
+    let tcp_rid = pools
+        .pin_tcp_port_with_id("demo", owner, 49100, Some(using_sock_id))
+        .expect("pin tcp");
+    assert_eq!(
+        pools.registry().kind_of(&tcp_rid),
+        Some(ResourceKind::TcpPort)
+    );
+    assert_eq!(pools.registry().owner_of(&tcp_rid), Some(owner));
+
+    let mac = ntx_network::MacAddr([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
+    let mac_rid = pools
+        .pin_mac_with_id("demo", owner, mac, Some(using_sock_id))
+        .expect("pin mac");
+    assert_eq!(pools.registry().kind_of(&mac_rid), Some(ResourceKind::Mac));
+    assert_eq!(pools.registry().owner_of(&mac_rid), Some(owner));
 }
