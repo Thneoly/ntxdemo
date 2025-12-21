@@ -8,6 +8,7 @@ use super::shared_mem;
 use crate::event_bus::Bytes;
 use ntx_network::resources::ResourcePools;
 use ntx_network::socket::udp::UdpSocketBinder;
+use ntx_network::socket::udp::create_udp_socket;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -24,6 +25,12 @@ mod packet_engine_bindings {
     });
 }
 
+use packet_engine_bindings::ntx::hostnet::resources::{
+    Host as ResourceHost, Ipv4Addr, MacAddr, ResourceError,
+};
+use packet_engine_bindings::ntx::hostnet::udp_socket_control::{
+    FrameHandle, Host as UdpHost, SocketError, UdpSocket,
+};
 /// Host-managed TX frame arena (region=2).
 ///
 /// This is a deliberately simple bump allocator for MVP:
@@ -155,12 +162,8 @@ fn fmt_uuid(id: &Uuid) -> String {
     id.to_string()
 }
 
-impl packet_engine_bindings::ntx::hostnet::resources::Host for State {
-    fn create_socket_owner(
-        &mut self,
-        name: String,
-    ) -> wasmtime::Result<String, packet_engine_bindings::ntx::hostnet::resources::ResourceError>
-    {
+impl ResourceHost for State {
+    fn create_socket_owner(&mut self, name: String) -> wasmtime::Result<String, ResourceError> {
         let mut pools = self.pools.lock();
         let owner = pools.alloc_socket_owner(name);
         Ok(fmt_uuid(&owner))
@@ -170,16 +173,12 @@ impl packet_engine_bindings::ntx::hostnet::resources::Host for State {
         &mut self,
         pool: String,
         owner: String,
-    ) -> wasmtime::Result<String, packet_engine_bindings::ntx::hostnet::resources::ResourceError>
-    {
-        let owner = parse_uuid(&owner).map_err(|e| {
-            packet_engine_bindings::ntx::hostnet::resources::ResourceError::Other(e)
-        })?;
-
+    ) -> wasmtime::Result<String, ResourceError> {
+        let owner = parse_uuid(&owner).map_err(|e| ResourceError::Other(e))?;
         let mut pools = self.pools.lock();
-        let (rid, _ip) = pools.alloc_ipv4_for_socket(&pool, owner).map_err(|e| {
-            packet_engine_bindings::ntx::hostnet::resources::ResourceError::Other(e.to_string())
-        })?;
+        let (rid, _ip) = pools
+            .alloc_ipv4_for_socket(&pool, owner)
+            .map_err(|e| ResourceError::Other(e.to_string()))?;
         Ok(fmt_uuid(&rid))
     }
 
@@ -187,16 +186,12 @@ impl packet_engine_bindings::ntx::hostnet::resources::Host for State {
         &mut self,
         pool: String,
         owner: String,
-    ) -> wasmtime::Result<String, packet_engine_bindings::ntx::hostnet::resources::ResourceError>
-    {
-        let owner = parse_uuid(&owner).map_err(|e| {
-            packet_engine_bindings::ntx::hostnet::resources::ResourceError::Other(e)
-        })?;
-
+    ) -> wasmtime::Result<String, ResourceError> {
+        let owner = parse_uuid(&owner).map_err(|e| ResourceError::Other(e))?;
         let mut pools = self.pools.lock();
-        let (rid, _mac) = pools.alloc_mac_for_socket(&pool, owner).map_err(|e| {
-            packet_engine_bindings::ntx::hostnet::resources::ResourceError::Other(e.to_string())
-        })?;
+        let (rid, _mac) = pools
+            .alloc_mac_for_socket(&pool, owner)
+            .map_err(|e| ResourceError::Other(e.to_string()))?;
         Ok(fmt_uuid(&rid))
     }
 
@@ -204,33 +199,20 @@ impl packet_engine_bindings::ntx::hostnet::resources::Host for State {
         &mut self,
         pool: String,
         owner: String,
-    ) -> wasmtime::Result<String, packet_engine_bindings::ntx::hostnet::resources::ResourceError>
-    {
-        let owner = parse_uuid(&owner).map_err(|e| {
-            packet_engine_bindings::ntx::hostnet::resources::ResourceError::Other(e)
-        })?;
-
+    ) -> wasmtime::Result<String, ResourceError> {
+        let owner = parse_uuid(&owner).map_err(|e| ResourceError::Other(e))?;
         let mut pools = self.pools.lock();
-        let (rid, _port) = pools.alloc_udp_port_for_socket(&pool, owner).map_err(|e| {
-            packet_engine_bindings::ntx::hostnet::resources::ResourceError::Other(e.to_string())
-        })?;
+        let (rid, _port) = pools
+            .alloc_udp_port_for_socket(&pool, owner)
+            .map_err(|e| ResourceError::Other(e.to_string()))?;
         Ok(fmt_uuid(&rid))
     }
 
-    fn resolve_ipv4(
-        &mut self,
-        rid: String,
-    ) -> wasmtime::Result<
-        packet_engine_bindings::ntx::hostnet::resources::Ipv4Addr,
-        packet_engine_bindings::ntx::hostnet::resources::ResourceError,
-    > {
-        let rid = parse_uuid(&rid)
-            .map_err(packet_engine_bindings::ntx::hostnet::resources::ResourceError::Other)?;
+    fn resolve_ipv4(&mut self, rid: String) -> wasmtime::Result<Ipv4Addr, ResourceError> {
+        let rid = parse_uuid(&rid).map_err(ResourceError::Other)?;
         let pools = self.pools.lock();
-        let ip = pools
-            .resolve_ipv4(&rid)
-            .ok_or(packet_engine_bindings::ntx::hostnet::resources::ResourceError::NotFound)?;
-        Ok(packet_engine_bindings::ntx::hostnet::resources::Ipv4Addr {
+        let ip = pools.resolve_ipv4(&rid).ok_or(ResourceError::NotFound)?;
+        Ok(Ipv4Addr {
             a: ip.octets()[0],
             b: ip.octets()[1],
             c: ip.octets()[2],
@@ -238,20 +220,11 @@ impl packet_engine_bindings::ntx::hostnet::resources::Host for State {
         })
     }
 
-    fn resolve_mac(
-        &mut self,
-        rid: String,
-    ) -> wasmtime::Result<
-        packet_engine_bindings::ntx::hostnet::resources::MacAddr,
-        packet_engine_bindings::ntx::hostnet::resources::ResourceError,
-    > {
-        let rid = parse_uuid(&rid)
-            .map_err(packet_engine_bindings::ntx::hostnet::resources::ResourceError::Other)?;
+    fn resolve_mac(&mut self, rid: String) -> wasmtime::Result<MacAddr, ResourceError> {
+        let rid = parse_uuid(&rid).map_err(ResourceError::Other)?;
         let pools = self.pools.lock();
-        let mac = pools
-            .resolve_mac(&rid)
-            .ok_or(packet_engine_bindings::ntx::hostnet::resources::ResourceError::NotFound)?;
-        Ok(packet_engine_bindings::ntx::hostnet::resources::MacAddr {
+        let mac = pools.resolve_mac(&rid).ok_or(ResourceError::NotFound)?;
+        Ok(MacAddr {
             a: mac.0[0],
             b: mac.0[1],
             c: mac.0[2],
@@ -261,51 +234,36 @@ impl packet_engine_bindings::ntx::hostnet::resources::Host for State {
         })
     }
 
-    fn resolve_udp_port(
-        &mut self,
-        rid: String,
-    ) -> wasmtime::Result<u16, packet_engine_bindings::ntx::hostnet::resources::ResourceError> {
-        let rid = parse_uuid(&rid)
-            .map_err(packet_engine_bindings::ntx::hostnet::resources::ResourceError::Other)?;
+    fn resolve_udp_port(&mut self, rid: String) -> wasmtime::Result<u16, ResourceError> {
+        let rid = parse_uuid(&rid).map_err(ResourceError::Other)?;
         let pools = self.pools.lock();
         let port = pools
             .resolve_udp_port(&rid)
-            .ok_or(packet_engine_bindings::ntx::hostnet::resources::ResourceError::NotFound)?;
+            .ok_or(ResourceError::NotFound)?;
         Ok(port)
     }
 }
 
-impl packet_engine_bindings::ntx::hostnet::udp_socket_control::Host for State {
-    fn create(
-        &mut self,
-        name: String,
-    ) -> wasmtime::Result<
-        packet_engine_bindings::ntx::hostnet::udp_socket_control::UdpSocket,
-        packet_engine_bindings::ntx::hostnet::udp_socket_control::SocketError,
-    > {
+impl UdpHost for State {
+    fn create(&mut self, name: String) -> wasmtime::Result<UdpSocket, SocketError> {
         let mut pools = self.pools.lock();
         let table = self.udp_table.lock();
-        let (owner, sock) = ntx_network::socket::udp::create_udp_socket(&mut pools, &table, name);
+        let (owner, sock) = create_udp_socket(&mut pools, &table, name);
         drop(table);
 
         self.hostnet.lock().sock_owner.insert(sock, owner);
-        Ok(
-            packet_engine_bindings::ntx::hostnet::udp_socket_control::UdpSocket {
-                owner: fmt_uuid(&owner),
-                sock,
-            },
-        )
+        Ok(UdpSocket {
+            owner: fmt_uuid(&owner),
+            sock,
+        })
     }
 
     fn bind_local_ipv4(
         &mut self,
         sock: u64,
         local_ipv4: String,
-    ) -> wasmtime::Result<(), packet_engine_bindings::ntx::hostnet::udp_socket_control::SocketError>
-    {
-        let rid = parse_uuid(&local_ipv4).map_err(
-            packet_engine_bindings::ntx::hostnet::udp_socket_control::SocketError::Other,
-        )?;
+    ) -> wasmtime::Result<(), SocketError> {
+        let rid = parse_uuid(&local_ipv4).map_err(SocketError::Other)?;
         self.hostnet.lock().binder.bind_local_ipv4_rid(sock, rid);
         Ok(())
     }
@@ -314,11 +272,8 @@ impl packet_engine_bindings::ntx::hostnet::udp_socket_control::Host for State {
         &mut self,
         sock: u64,
         local_mac: String,
-    ) -> wasmtime::Result<(), packet_engine_bindings::ntx::hostnet::udp_socket_control::SocketError>
-    {
-        let rid = parse_uuid(&local_mac).map_err(
-            packet_engine_bindings::ntx::hostnet::udp_socket_control::SocketError::Other,
-        )?;
+    ) -> wasmtime::Result<(), SocketError> {
+        let rid = parse_uuid(&local_mac).map_err(SocketError::Other)?;
         self.hostnet.lock().binder.bind_local_mac_rid(sock, rid);
         Ok(())
     }
@@ -327,11 +282,8 @@ impl packet_engine_bindings::ntx::hostnet::udp_socket_control::Host for State {
         &mut self,
         sock: u64,
         local_udp_port: String,
-    ) -> wasmtime::Result<(), packet_engine_bindings::ntx::hostnet::udp_socket_control::SocketError>
-    {
-        let rid = parse_uuid(&local_udp_port).map_err(
-            packet_engine_bindings::ntx::hostnet::udp_socket_control::SocketError::Other,
-        )?;
+    ) -> wasmtime::Result<(), SocketError> {
+        let rid = parse_uuid(&local_udp_port).map_err(SocketError::Other)?;
         self.hostnet
             .lock()
             .binder
@@ -358,32 +310,19 @@ impl packet_engine_bindings::ntx::hostnet::udp_socket_control::Host for State {
         Ok(())
     }
 
-    fn bind_ttl(
-        &mut self,
-        sock: u64,
-        ttl: u8,
-    ) -> wasmtime::Result<(), packet_engine_bindings::ntx::hostnet::udp_socket_control::SocketError>
-    {
+    fn bind_ttl(&mut self, sock: u64, ttl: u8) -> wasmtime::Result<(), SocketError> {
         self.hostnet.lock().binder.bind_ttl(sock, ttl);
         Ok(())
     }
 
-    fn finalize(
-        &mut self,
-        sock: u64,
-    ) -> wasmtime::Result<(), packet_engine_bindings::ntx::hostnet::udp_socket_control::SocketError>
-    {
+    fn finalize(&mut self, sock: u64) -> wasmtime::Result<(), SocketError> {
         let pools = self.pools.lock();
         let mut table = self.udp_table.lock();
         self.hostnet
             .lock()
             .binder
             .finalize_into_table(&pools, &mut table, sock)
-            .map_err(|e| {
-                packet_engine_bindings::ntx::hostnet::udp_socket_control::SocketError::Other(
-                    e.to_string(),
-                )
-            })?;
+            .map_err(|e| SocketError::Other(e.to_string()))?;
         Ok(())
     }
 
@@ -391,31 +330,22 @@ impl packet_engine_bindings::ntx::hostnet::udp_socket_control::Host for State {
         &mut self,
         sock: u64,
         payload: Vec<u8>,
-    ) -> wasmtime::Result<
-        packet_engine_bindings::ntx::hostnet::udp_socket_control::FrameHandle,
-        packet_engine_bindings::ntx::hostnet::udp_socket_control::SocketError,
-    > {
+    ) -> wasmtime::Result<FrameHandle, SocketError> {
         let mut table = self.udp_table.lock();
-        let frame = table.build_reply_for_sock_id(sock, &payload).map_err(|e| {
-            packet_engine_bindings::ntx::hostnet::udp_socket_control::SocketError::Other(
-                e.to_string(),
-            )
-        })?;
+        let frame = table
+            .build_reply_for_sock_id(sock, &payload)
+            .map_err(|e| SocketError::Other(e.to_string()))?;
 
         let mut hostnet = self.hostnet.lock();
         let Some((region, offset, len)) = hostnet.tx_arena.write(&frame.bytes) else {
-            return Err(
-                packet_engine_bindings::ntx::hostnet::udp_socket_control::SocketError::NoSpace,
-            );
+            return Err(SocketError::NoSpace);
         };
 
-        Ok(
-            packet_engine_bindings::ntx::hostnet::udp_socket_control::FrameHandle {
-                region,
-                offset,
-                len,
-            },
-        )
+        Ok(FrameHandle {
+            region,
+            offset,
+            len,
+        })
     }
 }
 
