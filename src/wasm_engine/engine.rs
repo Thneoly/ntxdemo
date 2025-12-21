@@ -6,12 +6,8 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView, p2::add_to_l
 
 use super::shared_mem;
 use crate::event_bus::Bytes;
-use ntx_network::resources::ResourcePools;
-use ntx_network::socket::udp::UdpSocketBinder;
-use ntx_network::socket::udp::create_udp_socket;
-use parking_lot::Mutex;
-use std::collections::HashMap;
-use uuid::Uuid;
+use crate::kernel;
+use ntx_network;
 
 // Strongly-typed host bindings for our guest packet-engine component.
 //
@@ -30,61 +26,6 @@ use packet_engine_bindings::ntx::hostnet::types::{Ipv4Addr, MacAddr};
 use packet_engine_bindings::ntx::hostnet::udp_socket_control::{
     FrameHandle, Host as UdpHost, SocketError, UdpSocket,
 };
-/// Host-managed TX frame arena (region=2).
-///
-/// This is a deliberately simple bump allocator for MVP:
-/// - Fast write path
-/// - Returns (region=2, offset, len)
-/// - No free/reuse; wraps to 0 if out of space
-#[derive(Debug)]
-struct TxFrameArena {
-    buf: Vec<u8>,
-    head: usize,
-}
-
-impl TxFrameArena {
-    const REGION: u32 = 2;
-
-    fn new(capacity: usize) -> Self {
-        Self {
-            buf: vec![0u8; capacity],
-            head: 0,
-        }
-    }
-
-    fn write(&mut self, bytes: &[u8]) -> Option<(u32, u32, u32)> {
-        if bytes.len() > self.buf.len() {
-            return None;
-        }
-        if self.head + bytes.len() > self.buf.len() {
-            // Wrap to 0 (MVP). In the future we can make this a ring with fencing.
-            self.head = 0;
-        }
-        let off = self.head;
-        self.buf[off..off + bytes.len()].copy_from_slice(bytes);
-        self.head += bytes.len();
-        Some((Self::REGION, off as u32, bytes.len() as u32))
-    }
-}
-
-#[derive(Debug)]
-struct HostNetState {
-    binder: UdpSocketBinder,
-    /// Track sock_id -> owning socket ResourceId.
-    sock_owner: HashMap<u64, Uuid>,
-    tx_arena: TxFrameArena,
-}
-
-impl HostNetState {
-    fn new() -> Self {
-        // 1 MiB MVP arena.
-        Self {
-            binder: UdpSocketBinder::new(),
-            sock_owner: HashMap::new(),
-            tx_arena: TxFrameArena::new(1024 * 1024),
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -137,11 +78,6 @@ pub struct EngineResult {
 pub struct State {
     wasi: WasiCtx,
     table: wasmtime::component::ResourceTable,
-
-    /// Host-controlled network control-plane state for guest imports.
-    pools: Mutex<ResourcePools>,
-    udp_table: Mutex<ntx_network::socket::udp::Table>,
-    hostnet: Mutex<HostNetState>,
 }
 
 impl WasiView for State {
@@ -153,19 +89,12 @@ impl WasiView for State {
     }
 }
 
-fn parse_uuid(s: &str) -> Result<Uuid, String> {
-    Uuid::parse_str(s).map_err(|e| format!("invalid uuid `{s}`: {e}"))
-}
-
-fn fmt_uuid(id: &Uuid) -> String {
-    id.to_string()
-}
 impl TypesHost for State {}
 impl ResourceHost for State {
     fn create_socket_owner(&mut self, name: String) -> wasmtime::Result<String, ResourceError> {
-        let mut pools = self.pools.lock();
-        let owner = pools.alloc_socket_owner(name);
-        Ok(fmt_uuid(&owner))
+        // Delegate to kernel control-plane (which wraps `ntx_network::resources`).
+        // NOTE: kernel expects to own the pools; wasm_engine shouldn't maintain a parallel copy.
+        kernel::hostnet_create_socket_owner(&name).map_err(|e| ResourceError::Other(e.to_string()))
     }
 
     fn alloc_ipv4(
@@ -173,12 +102,7 @@ impl ResourceHost for State {
         pool: String,
         owner: String,
     ) -> wasmtime::Result<String, ResourceError> {
-        let owner = parse_uuid(&owner).map_err(|e| ResourceError::Other(e))?;
-        let mut pools = self.pools.lock();
-        let (rid, _ip) = pools
-            .alloc_ipv4_for_socket(&pool, owner)
-            .map_err(|e| ResourceError::Other(e.to_string()))?;
-        Ok(fmt_uuid(&rid))
+        kernel::hostnet_alloc_ipv4(&pool, &owner).map_err(|e| ResourceError::Other(e.to_string()))
     }
 
     fn alloc_mac(
@@ -186,12 +110,7 @@ impl ResourceHost for State {
         pool: String,
         owner: String,
     ) -> wasmtime::Result<String, ResourceError> {
-        let owner = parse_uuid(&owner).map_err(|e| ResourceError::Other(e))?;
-        let mut pools = self.pools.lock();
-        let (rid, _mac) = pools
-            .alloc_mac_for_socket(&pool, owner)
-            .map_err(|e| ResourceError::Other(e.to_string()))?;
-        Ok(fmt_uuid(&rid))
+        kernel::hostnet_alloc_mac(&pool, &owner).map_err(|e| ResourceError::Other(e.to_string()))
     }
 
     fn alloc_udp_port(
@@ -199,18 +118,15 @@ impl ResourceHost for State {
         pool: String,
         owner: String,
     ) -> wasmtime::Result<String, ResourceError> {
-        let owner = parse_uuid(&owner).map_err(|e| ResourceError::Other(e))?;
-        let mut pools = self.pools.lock();
-        let (rid, _port) = pools
-            .alloc_udp_port_for_socket(&pool, owner)
-            .map_err(|e| ResourceError::Other(e.to_string()))?;
-        Ok(fmt_uuid(&rid))
+        kernel::hostnet_alloc_udp_port(&pool, &owner)
+            .map_err(|e| ResourceError::Other(e.to_string()))
     }
 
     fn resolve_ipv4(&mut self, rid: String) -> wasmtime::Result<Ipv4Addr, ResourceError> {
-        let rid = parse_uuid(&rid).map_err(ResourceError::Other)?;
-        let pools = self.pools.lock();
-        let ip = pools.resolve_ipv4(&rid).ok_or(ResourceError::NotFound)?;
+        let ip = kernel::hostnet_resolve_ipv4(&rid).map_err(|e| match e {
+            kernel::HostnetError::NotFound => ResourceError::NotFound,
+            other => ResourceError::Other(other.to_string()),
+        })?;
         Ok(Ipv4Addr {
             a: ip.octets()[0],
             b: ip.octets()[1],
@@ -220,9 +136,10 @@ impl ResourceHost for State {
     }
 
     fn resolve_mac(&mut self, rid: String) -> wasmtime::Result<MacAddr, ResourceError> {
-        let rid = parse_uuid(&rid).map_err(ResourceError::Other)?;
-        let pools = self.pools.lock();
-        let mac = pools.resolve_mac(&rid).ok_or(ResourceError::NotFound)?;
+        let mac = kernel::hostnet_resolve_mac(&rid).map_err(|e| match e {
+            kernel::HostnetError::NotFound => ResourceError::NotFound,
+            other => ResourceError::Other(other.to_string()),
+        })?;
         Ok(MacAddr {
             a: mac.0[0],
             b: mac.0[1],
@@ -234,26 +151,21 @@ impl ResourceHost for State {
     }
 
     fn resolve_udp_port(&mut self, rid: String) -> wasmtime::Result<u16, ResourceError> {
-        let rid = parse_uuid(&rid).map_err(ResourceError::Other)?;
-        let pools = self.pools.lock();
-        let port = pools
-            .resolve_udp_port(&rid)
-            .ok_or(ResourceError::NotFound)?;
-        Ok(port)
+        kernel::hostnet_resolve_udp_port(&rid).map_err(|e| match e {
+            kernel::HostnetError::NotFound => ResourceError::NotFound,
+            other => ResourceError::Other(other.to_string()),
+        })
     }
 }
 
 impl UdpHost for State {
     fn create(&mut self, name: String) -> wasmtime::Result<UdpSocket, SocketError> {
-        let mut pools = self.pools.lock();
-        let table = self.udp_table.lock();
-        let (owner, sock) = create_udp_socket(&mut pools, &table, name);
-        drop(table);
+        let created =
+            kernel::hostnet_udp_create(&name).map_err(|e| SocketError::Other(e.to_string()))?;
 
-        self.hostnet.lock().sock_owner.insert(sock, owner);
         Ok(UdpSocket {
-            owner: fmt_uuid(&owner),
-            sock,
+            owner: created.owner,
+            sock: created.sock_id,
         })
     }
 
@@ -262,9 +174,8 @@ impl UdpHost for State {
         sock: u64,
         local_ipv4: String,
     ) -> wasmtime::Result<(), SocketError> {
-        let rid = parse_uuid(&local_ipv4).map_err(SocketError::Other)?;
-        self.hostnet.lock().binder.bind_local_ipv4_rid(sock, rid);
-        Ok(())
+        kernel::hostnet_udp_bind_local_ipv4(sock, &local_ipv4)
+            .map_err(|e| SocketError::Other(e.to_string()))
     }
 
     fn bind_local_mac(
@@ -272,9 +183,8 @@ impl UdpHost for State {
         sock: u64,
         local_mac: String,
     ) -> wasmtime::Result<(), SocketError> {
-        let rid = parse_uuid(&local_mac).map_err(SocketError::Other)?;
-        self.hostnet.lock().binder.bind_local_mac_rid(sock, rid);
-        Ok(())
+        kernel::hostnet_udp_bind_local_mac(sock, &local_mac)
+            .map_err(|e| SocketError::Other(e.to_string()))
     }
 
     fn bind_local_udp_port(
@@ -282,12 +192,8 @@ impl UdpHost for State {
         sock: u64,
         local_udp_port: String,
     ) -> wasmtime::Result<(), SocketError> {
-        let rid = parse_uuid(&local_udp_port).map_err(SocketError::Other)?;
-        self.hostnet
-            .lock()
-            .binder
-            .bind_local_udp_port_rid(sock, rid);
-        Ok(())
+        kernel::hostnet_udp_bind_local_udp_port(sock, &local_udp_port)
+            .map_err(|e| SocketError::Other(e.to_string()))
     }
 
     fn bind_peer(
@@ -297,31 +203,23 @@ impl UdpHost for State {
         peer_port: u16,
         peer_mac: MacAddr,
     ) -> wasmtime::Result<(), SocketError> {
-        self.hostnet.lock().binder.bind_peer(
+        kernel::hostnet_udp_bind_peer(
             sock,
             ntx_network::Ipv4Addr([peer_ipv4.a, peer_ipv4.b, peer_ipv4.c, peer_ipv4.d]),
             peer_port,
             ntx_network::MacAddr([
                 peer_mac.a, peer_mac.b, peer_mac.c, peer_mac.d, peer_mac.e, peer_mac.f,
             ]),
-        );
-        Ok(())
+        )
+        .map_err(|e| SocketError::Other(e.to_string()))
     }
 
     fn bind_ttl(&mut self, sock: u64, ttl: u8) -> wasmtime::Result<(), SocketError> {
-        self.hostnet.lock().binder.bind_ttl(sock, ttl);
-        Ok(())
+        kernel::hostnet_udp_bind_ttl(sock, ttl).map_err(|e| SocketError::Other(e.to_string()))
     }
 
     fn finalize(&mut self, sock: u64) -> wasmtime::Result<(), SocketError> {
-        let pools = self.pools.lock();
-        let mut table = self.udp_table.lock();
-        self.hostnet
-            .lock()
-            .binder
-            .finalize_into_table(&pools, &mut table, sock)
-            .map_err(|e| SocketError::Other(e.to_string()))?;
-        Ok(())
+        kernel::hostnet_udp_finalize(sock).map_err(|e| SocketError::Other(e.to_string()))
     }
 
     fn build_reply(
@@ -329,20 +227,14 @@ impl UdpHost for State {
         sock: u64,
         payload: Vec<u8>,
     ) -> wasmtime::Result<FrameHandle, SocketError> {
-        let mut table = self.udp_table.lock();
-        let frame = table
-            .build_reply_for_sock_id(sock, &payload)
-            .map_err(|e| SocketError::Other(e.to_string()))?;
-
-        let mut hostnet = self.hostnet.lock();
-        let Some((region, offset, len)) = hostnet.tx_arena.write(&frame.bytes) else {
-            return Err(SocketError::NoSpace);
-        };
-
+        let handle = kernel::hostnet_udp_build_reply(sock, &payload).map_err(|e| match e {
+            kernel::HostnetError::NoSpace => SocketError::NoSpace,
+            other => SocketError::Other(other.to_string()),
+        })?;
         Ok(FrameHandle {
-            region,
-            offset,
-            len,
+            region: handle.region,
+            offset: handle.offset,
+            len: handle.len,
         })
     }
 }
@@ -383,14 +275,6 @@ impl ComponentEngine {
                     .inherit_network()
                     .build(),
                 table: wasmtime::component::ResourceTable::default(),
-                pools: Mutex::new(ResourcePools::empty()),
-                udp_table: Mutex::new(ntx_network::socket::udp::Table::new(
-                    ntx_network::ConnTableConfig {
-                        max_entries: 4096,
-                        ttl: None,
-                    },
-                )),
-                hostnet: Mutex::new(HostNetState::new()),
             },
         );
 

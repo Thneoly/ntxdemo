@@ -23,6 +23,200 @@ use tracing::error;
 
 use crate::audit_registry;
 
+/// Minimal error type for hostnet/WIT adapters.
+///
+/// This lives in `kernel` so `wasm_engine` can delegate WIT host calls here,
+/// and `kernel` can remain the single owner of control-plane state.
+#[derive(thiserror::Error, Debug)]
+pub enum HostnetError {
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
+    #[error("not found")]
+    NotFound,
+    #[error("no space")]
+    NoSpace,
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+/// Frame handle used by hostnet build-reply path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostnetFrameHandle {
+    pub region: u32,
+    pub offset: u32,
+    pub len: u32,
+}
+
+/// Result of hostnet UDP create.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostnetUdpSocket {
+    pub owner: String,
+    pub sock_id: u64,
+}
+
+fn parse_uuid_str(s: &str) -> Result<uuid::Uuid, HostnetError> {
+    uuid::Uuid::parse_str(s)
+        .map_err(|e| HostnetError::InvalidArgument(format!("invalid uuid `{s}`: {e}")))
+}
+
+fn fmt_uuid(id: &uuid::Uuid) -> String {
+    id.to_string()
+}
+
+/// Allocate a new socket owner id and register it (hostnet WIT adapter).
+pub fn hostnet_create_socket_owner(name: &str) -> Result<String, HostnetError> {
+    let mut pools = KERNEL.pools.lock();
+    let owner = pools.alloc_socket_owner(name.to_string());
+    Ok(fmt_uuid(&owner))
+}
+
+/// Allocate+pin an IPv4 for this owner from pool (hostnet WIT adapter).
+pub fn hostnet_alloc_ipv4(pool: &str, owner: &str) -> Result<String, HostnetError> {
+    let owner = parse_uuid_str(owner)?;
+    let mut pools = KERNEL.pools.lock();
+    let (rid, _ip) = pools
+        .alloc_ipv4_for_socket(pool, owner)
+        .map_err(anyhow::Error::from)?;
+    Ok(fmt_uuid(&rid))
+}
+
+/// Allocate+pin a MAC for this owner from pool (hostnet WIT adapter).
+pub fn hostnet_alloc_mac(pool: &str, owner: &str) -> Result<String, HostnetError> {
+    let owner = parse_uuid_str(owner)?;
+    let mut pools = KERNEL.pools.lock();
+    let (rid, _mac) = pools
+        .alloc_mac_for_socket(pool, owner)
+        .map_err(anyhow::Error::from)?;
+    Ok(fmt_uuid(&rid))
+}
+
+/// Allocate+pin a UDP port for this owner from pool (hostnet WIT adapter).
+pub fn hostnet_alloc_udp_port(pool: &str, owner: &str) -> Result<String, HostnetError> {
+    let owner = parse_uuid_str(owner)?;
+    let mut pools = KERNEL.pools.lock();
+    let (rid, _port) = pools
+        .alloc_udp_port_for_socket(pool, owner)
+        .map_err(anyhow::Error::from)?;
+    Ok(fmt_uuid(&rid))
+}
+
+pub fn hostnet_resolve_ipv4(rid: &str) -> Result<std::net::Ipv4Addr, HostnetError> {
+    let rid = parse_uuid_str(rid)?;
+    let pools = KERNEL.pools.lock();
+    pools.resolve_ipv4(&rid).ok_or(HostnetError::NotFound)
+}
+
+pub fn hostnet_resolve_mac(rid: &str) -> Result<ntx_network::MacAddr, HostnetError> {
+    let rid = parse_uuid_str(rid)?;
+    let pools = KERNEL.pools.lock();
+    pools.resolve_mac(&rid).ok_or(HostnetError::NotFound)
+}
+
+pub fn hostnet_resolve_udp_port(rid: &str) -> Result<u16, HostnetError> {
+    let rid = parse_uuid_str(rid)?;
+    let pools = KERNEL.pools.lock();
+    pools.resolve_udp_port(&rid).ok_or(HostnetError::NotFound)
+}
+
+// ---- UDP socket control wrappers (binder + table live in kernel) ----
+
+static HOSTNET_UDP_BINDER: Lazy<Mutex<UdpSocketBinder>> =
+    Lazy::new(|| Mutex::new(UdpSocketBinder::new()));
+
+/// Create a UDP socket (owner + sock_id) using the kernel's conn table.
+///
+/// Note: this mirrors the WIT `udp-socket-control.create` semantics.
+pub fn hostnet_udp_create(name: &str) -> Result<HostnetUdpSocket, HostnetError> {
+    let mut pools = KERNEL.pools.lock();
+    let table = KERNEL.udp_sockets.lock();
+    let (owner, sock_id) = udp::create_udp_socket(&mut pools, &table, name.to_string());
+    Ok(HostnetUdpSocket {
+        owner: fmt_uuid(&owner),
+        sock_id,
+    })
+}
+
+pub fn hostnet_udp_bind_local_ipv4(sock: u64, local_ipv4_rid: &str) -> Result<(), HostnetError> {
+    let rid = parse_uuid_str(local_ipv4_rid)?;
+    HOSTNET_UDP_BINDER.lock().bind_local_ipv4_rid(sock, rid);
+    Ok(())
+}
+
+pub fn hostnet_udp_bind_local_mac(sock: u64, local_mac_rid: &str) -> Result<(), HostnetError> {
+    let rid = parse_uuid_str(local_mac_rid)?;
+    HOSTNET_UDP_BINDER.lock().bind_local_mac_rid(sock, rid);
+    Ok(())
+}
+
+pub fn hostnet_udp_bind_local_udp_port(
+    sock: u64,
+    local_udp_port_rid: &str,
+) -> Result<(), HostnetError> {
+    let rid = parse_uuid_str(local_udp_port_rid)?;
+    HOSTNET_UDP_BINDER.lock().bind_local_udp_port_rid(sock, rid);
+    Ok(())
+}
+
+pub fn hostnet_udp_bind_peer(
+    sock: u64,
+    peer_ipv4: ntx_network::Ipv4Addr,
+    peer_port: u16,
+    peer_mac: ntx_network::MacAddr,
+) -> Result<(), HostnetError> {
+    HOSTNET_UDP_BINDER
+        .lock()
+        .bind_peer(sock, peer_ipv4, peer_port, peer_mac);
+    Ok(())
+}
+
+pub fn hostnet_udp_bind_ttl(sock: u64, ttl: u8) -> Result<(), HostnetError> {
+    HOSTNET_UDP_BINDER.lock().bind_ttl(sock, ttl);
+    Ok(())
+}
+
+pub fn hostnet_udp_finalize(sock: u64) -> Result<(), HostnetError> {
+    let pools = KERNEL.pools.lock();
+    let mut table = KERNEL.udp_sockets.lock();
+    HOSTNET_UDP_BINDER
+        .lock()
+        .finalize_into_table(&pools, &mut table, sock)
+        .map_err(anyhow::Error::from)?;
+    Ok(())
+}
+
+// 1 MiB MVP arena for build-reply outputs.
+static HOSTNET_TX_ARENA: Lazy<Mutex<Vec<u8>>> = Lazy::new(|| Mutex::new(vec![0u8; 1024 * 1024]));
+static HOSTNET_TX_HEAD: Lazy<Mutex<usize>> = Lazy::new(|| Mutex::new(0usize));
+
+pub fn hostnet_udp_build_reply(
+    sock: u64,
+    payload: &[u8],
+) -> Result<HostnetFrameHandle, HostnetError> {
+    let mut table = KERNEL.udp_sockets.lock();
+    let frame = table
+        .build_reply_for_sock_id(sock, payload)
+        .map_err(anyhow::Error::from)?;
+
+    let mut arena = HOSTNET_TX_ARENA.lock();
+    let mut head = HOSTNET_TX_HEAD.lock();
+
+    if frame.bytes.len() > arena.len() {
+        return Err(HostnetError::NoSpace);
+    }
+    if *head + frame.bytes.len() > arena.len() {
+        *head = 0;
+    }
+    let off = *head;
+    arena[off..off + frame.bytes.len()].copy_from_slice(&frame.bytes);
+    *head += frame.bytes.len();
+
+    Ok(HostnetFrameHandle {
+        region: 2,
+        offset: off as u32,
+        len: frame.bytes.len() as u32,
+    })
+}
+
 /// Resource request options.
 ///
 /// Kernel doesn't currently distinguish client/server; this interface is intended as a

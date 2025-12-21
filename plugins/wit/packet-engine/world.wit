@@ -13,6 +13,7 @@ use ntx:hostnet/resources;
 world packet-engine {
     import udp-socket-control;
     import resources;
+    import types;
     /// Returns the current contents of the descriptor buffer.
     export desc-get: func() -> list<u8>;
     /// Overwrite a slice of the descriptor buffer at `off`.

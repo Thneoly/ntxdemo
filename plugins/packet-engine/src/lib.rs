@@ -11,7 +11,6 @@ const NTX_VERSION: u16 = 1;
 
 const CONTROL_LEN: usize = 48;
 const DESC_LEN: usize = 32;
-
 fn le_u32(b: &[u8]) -> u32 {
     u32::from_le_bytes([b[0], b[1], b[2], b[3]])
 }
