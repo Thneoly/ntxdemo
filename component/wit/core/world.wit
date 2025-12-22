@@ -1,0 +1,33 @@
+package scheduler:core-libs@0.2.0;
+
+/// socket 抽象（供 wasm 组件使用，host 侧提供实现）
+interface socket {
+    enum address-family { ipv4, ipv6 }
+    enum socket-protocol { tcp, udp }
+
+    record socket-address {
+        host: string,
+        port: u16,
+    }
+
+    variant socket-error {
+        invalid-argument,
+        invalid-state,
+        not-found,
+        no-space,
+        other,
+    }
+
+    /// 创建 socket，返回句柄（host 管理）
+    create-socket: func(family: address-family, protocol: socket-protocol) -> result<u32, socket-error>;
+    connect: func(socket: u32, address: socket-address) -> result<_, socket-error>;
+    bind: func(socket: u32, address: socket-address) -> result<_, socket-error>;
+    send: func(socket: u32, data: list<u8>) -> result<u64, socket-error>;
+    receive: func(socket: u32, max-length: u64) -> result<list<u8>, socket-error>;
+    close: func(socket: u32) -> result<_, socket-error>;
+}
+
+world core-libs {
+    export socket;
+}
+

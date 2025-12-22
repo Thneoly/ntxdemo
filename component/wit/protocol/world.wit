@@ -18,9 +18,6 @@ interface action-component {
 world action-executor-component {
     /// scheduler/eventbus 供执行器上报结果或日志
     import scheduler:event-bus/event-bus@0.2.0;
-    /// 主机侧 UDP 能力，支持立即发包
-    import ntx:hostnet/udp-socket-control@0.1.0;
-    import ntx:hostnet/resources@0.1.0;
 
     export action-component;
 }

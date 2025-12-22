@@ -2,11 +2,23 @@ package scheduler:main@0.2.0;
 
 use scheduler:actions-executor/action-component@0.2.0;
 use scheduler:event-bus/event-bus@0.2.0;
+use ntx:hostnet/udp-socket-control@0.1.0;
 
 /// Scheduler 主循环入口
 interface scheduler-component {
     /// config-dir 指向 workflow/workbook/load 的所在目录
     run: func(config-dir: string) -> result<_, string>;
+}
+
+/// 接收 host 共享内存中的 RX ring 通知（参考 packet-engine 的 drain_rx_ring）。
+interface packet-ingest {
+    /// 解析 desc/payload buffer，返回消费的条目数。
+    notify-rx: func(desc-mem: list<u8>, payload-mem: list<u8>) -> result<u32, string>;
+}
+
+/// 处理 executor 发出的发包请求事件（packet.tx-request），由 scheduler 调用 host 发送。
+interface packet-tx {
+    process-tx-request: func(payload-json: string) -> result<_, string>;
 }
 
 interface send-scheduler {
@@ -79,7 +91,10 @@ interface send-scheduler {
 world scheduler-main {
     import action-component;
     import event-bus;
+    import ntx:hostnet/udp-socket-control@0.1.0;
     export scheduler-component;
+    export packet-ingest;
+    export packet-tx;
     export send-scheduler;
 }
 
