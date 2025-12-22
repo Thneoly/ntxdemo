@@ -210,17 +210,17 @@ impl Guest for Component {
 
     fn run() -> Result<(), String> {
         // Minimal closed-loop TX demo driven from the guest.
-        // We keep values explicit to avoid depending on environment variables.
-        let owner = ntx::hostnet::resources::create_socket_owner("packet-engine")
-            .map_err(|e| format!("create_socket_owner failed: {e:?}"))?;
-
-        // Acquire+pin local ipv4/mac/udp-port (host chooses actual values).
-        ntx::hostnet::resources::acquire_udp_port("default", &owner)
-            .map_err(|e| format!("acquire_udp_port failed: {e:?}"))?;
+        // // We keep values explicit to avoid depending on environment variables.
+        // let owner = ntx::hostnet::resources::create_socket_owner("packet-engine")
+        //     .map_err(|e| format!("create_socket_owner failed: {e:?}"))?;
 
         // Create UDP socket id.
         let sock = ntx::hostnet::udp_socket_control::create("echo")
             .map_err(|e| format!("udp.create failed: {e:?}"))?;
+
+        // Acquire+pin local ipv4/mac/udp-port (host chooses actual values).
+        ntx::hostnet::resources::acquire_udp_port("client", &sock.owner)
+            .map_err(|e| format!("acquire_udp_port failed: {e:?}"))?;
 
         // Demo peer tuple.
         // NOTE: This assumes your host test topology has a reachable peer at 10.0.0.2.
@@ -246,7 +246,7 @@ impl Guest for Component {
             a: 10,
             b: 0,
             c: 0,
-            d: 1,
+            d: 4,
         };
         let local_mac = ntx::hostnet::types::MacAddr {
             a: 2,
@@ -254,14 +254,14 @@ impl Guest for Component {
             c: 0,
             d: 0,
             e: 0,
-            f: 1,
+            f: 16,
         };
 
         // Pick a local UDP port by resolving a rid from the acquired pool.
         // The minimal host resource API currently only provides `resolve_udp_port(rid)`;
         // since `acquire_udp_port` doesn't return the rid, we use a conventional demo port.
         // Host will map it to the pinned resource for this owner.
-        let local_udp_port: u16 = 10000;
+        let local_udp_port: u16 = 40000;
 
         let bind = ntx::hostnet::udp_socket_control::UdpBind {
             local_ipv4,

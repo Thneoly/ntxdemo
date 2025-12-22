@@ -108,7 +108,7 @@ impl ResourceHost for State {
 
     fn resolve_udp_port(&mut self, rid: String) -> wasmtime::Result<u16, ResourceError> {
         kernel::hostnet_resolve_udp_port(&rid).map_err(|e| match e {
-            kernel::HostnetError::NotFound => ResourceError::NotFound,
+            kernel::HostnetError::NotFound(_) => ResourceError::NotFound,
             other => ResourceError::Other(other.to_string()),
         })
     }
@@ -182,7 +182,7 @@ impl UdpHost for State {
         })
         .map_err(|e| match e {
             kernel::HostnetError::InvalidArgument(_) => SocketError::InvalidArgument,
-            kernel::HostnetError::NotFound => SocketError::NotFound,
+            kernel::HostnetError::NotFound(_) => SocketError::NotFound,
             kernel::HostnetError::NoSpace => SocketError::NoSpace,
             other => SocketError::Other(other.to_string()),
         })

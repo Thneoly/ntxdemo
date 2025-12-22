@@ -8,7 +8,7 @@ scheduler:
   wasm:
     # Optional: Wasmtime component path to auto-load.
     # If unset, wasm tasks (like `run`) won't execute.
-    component_path: "./target/wasm32-wasip2/debug/packet_engine.wasm"
+    component_path: "./plugins/target/wasm32-wasip2/debug/packet_engine.wasm"
 
     # Candidate export entrypoints.
     entry_candidates:

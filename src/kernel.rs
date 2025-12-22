@@ -33,8 +33,8 @@ use crate::audit_registry;
 pub enum HostnetError {
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
-    #[error("not found")]
-    NotFound,
+    #[error("not found: {0}")]
+    NotFound(String),
     #[error("no space")]
     NoSpace,
     #[error(transparent)]
@@ -80,10 +80,20 @@ pub fn hostnet_acquire_udp_port(pool: &str, owner: &str) -> Result<(), HostnetEr
     let NonSocketResourceValue::Ipv4(_ip) = v else {
         unreachable!("resource kind/value mismatch")
     };
+    info!(
+        target: "ntx::kernel",
+        "acquired ipv4 resource: {:?}",
+        v
+    );
     let (_, v) = pools.acquire_and_pin_non_socket(resources::ResourceKind::Mac, pool, owner)?;
     let NonSocketResourceValue::Mac(_mac) = v else {
         unreachable!("resource kind/value mismatch")
     };
+    info!(
+        target: "ntx::kernel",
+        "acquired mac resource: {:?}",
+        v
+    );
     let (_, v) = pools.acquire_and_pin_non_socket(resources::ResourceKind::UdpPort, pool, owner)?;
     let NonSocketResourceValue::UdpPort(_port) = v else {
         unreachable!("resource kind/value mismatch")
@@ -99,7 +109,7 @@ pub fn hostnet_resolve_udp_port(rid: &str) -> Result<u16, HostnetError> {
             NonSocketResourceValue::UdpPort(p) => Some(p),
             _ => None,
         })
-        .ok_or(HostnetError::NotFound)
+        .ok_or(HostnetError::NotFound(format!("udp port not found: {rid}")))
 }
 
 // ---- UDP socket control wrappers (binder + table live in kernel) ----
@@ -154,21 +164,29 @@ pub fn hostnet_udp_bind_all(
     let owner = pools
         .registry()
         .socket_id_for_sock_id(sock)
-        .ok_or(HostnetError::NotFound)?;
+        .ok_or(HostnetError::NotFound(format!(
+            "socket owner not found: {sock}"
+        )))?;
 
     // Defensive: this API is value-based, so we must ensure the local resources we resolve
     // are owned by *this* socket owner (to prevent cross-socket hijacking).
     let ensure_owned_by_sock =
         |value: NonSocketResourceValue| -> Result<resources::ResourceId, HostnetError> {
-            let rid = pools
-                .rid_for_non_socket_value(&owner, &value)
-                .ok_or(HostnetError::NotFound)?;
+            let rid =
+                pools
+                    .rid_for_non_socket_value(&owner, &value)
+                    .ok_or(HostnetError::NotFound(format!(
+                        "resource not found: {:?}",
+                        value
+                    )))?;
             match pools.registry().owner_of(&rid) {
                 Some(o) if o == owner => Ok(rid),
                 Some(_) => Err(HostnetError::InvalidArgument(
                     "local resource is not owned by this socket".to_string(),
                 )),
-                None => Err(HostnetError::NotFound),
+                None => Err(HostnetError::NotFound(format!(
+                    "resource owner not found: {rid}"
+                ))),
             }
         };
 
