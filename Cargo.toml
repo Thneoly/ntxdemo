@@ -8,6 +8,8 @@ members = [
 	".",
 	"network",
 	"plugins/packet-engine",
+	"component/scheduler",
+	"component/actions-executor",
 ]
 
 [lib]

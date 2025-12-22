@@ -1,0 +1,23 @@
+package scheduler:event-bus@0.2.0;
+
+/// 事件总线是状态变更的唯一入口/出口。
+interface event-bus {
+    record event {
+        id: string,
+        kind: string,
+        user-id: option<string>,
+        task-id: option<string>,
+        action-id: option<string>,
+        payload: string,
+        timestamp-ms: u64,
+        correlation-id: option<string>,
+    }
+
+    /// 发布事件到 eventbus（实现可异步）
+    publish: func(event: event) -> result<_, string>;
+}
+
+world event-bus-world {
+    export event-bus;
+}
+

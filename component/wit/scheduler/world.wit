@@ -1,0 +1,85 @@
+package scheduler:main@0.2.0;
+
+use scheduler:actions-executor/action-component@0.2.0;
+use scheduler:event-bus/event-bus@0.2.0;
+
+/// Scheduler 主循环入口
+interface scheduler-component {
+    /// config-dir 指向 workflow/workbook/load 的所在目录
+    run: func(config-dir: string) -> result<_, string>;
+}
+
+interface send-scheduler {
+    /// 发包调度接口（actions-executor 可委托 scheduler 周期/限速发送）
+    record periodic {
+        interval-ms: u64,
+        start-delay-ms: option<u64>,
+    }
+
+    record timetable {
+        timestamps: list<u64>,
+    }
+
+    record rate-limit {
+        pps: u32,
+        burst-size: option<u32>,
+    }
+
+    record sequence-payload {
+        template: list<u8>,
+        start-seq: u32,
+    }
+
+    variant send-schedule {
+        once,
+        periodic(periodic),
+        timetable(timetable),
+        rate-limited(rate-limit),
+    }
+
+    variant payload-generator {
+        fixed(list<u8>),
+        sequence(sequence-payload),
+        timestamp(list<u8>),
+    }
+
+    record send-request {
+        request-id: string,
+        task-id: string,
+        user-id: string,
+        socket-id: u64,
+        schedule: send-schedule,
+        payload-generator: option<payload-generator>,
+        max-count: option<u32>,
+        timeout-ms: option<u64>,
+    }
+
+    variant send-request-state {
+        pending,
+        active,
+        paused,
+        completed,
+        cancelled,
+        error,
+    }
+
+    record send-status {
+        request-id: string,
+        state: send-request-state,
+        total-sent: u32,
+        last-sent-time: option<u64>,
+        next-send-time: option<u64>,
+    }
+
+    schedule-send: func(request: send-request) -> result<string, string>;
+    cancel-send: func(request-id: string) -> result<_, string>;
+    query-send-status: func(request-id: string) -> result<send-status, string>;
+}
+
+world scheduler-main {
+    import action-component;
+    import event-bus;
+    export scheduler-component;
+    export send-scheduler;
+}
+

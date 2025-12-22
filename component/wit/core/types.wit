@@ -1,0 +1,34 @@
+package scheduler:core-types@0.2.0;
+
+/// 调度器与执行器之间传递的基础数据模型。
+interface types {
+    /// Action 定义（经过模板展开后的具体调用参数）。
+    record action-def {
+        /// 唯一标识
+        id: string,
+        /// 调用类型，如 http.get / udp.send-recv / custom.xxx
+        call: string,
+        /// 已展开的参数（JSON/YAML 字符串）
+        with-params: string,
+        /// 所属 user/task，便于关联状态机
+        user-id: option<string>,
+        task-id: option<string>,
+    }
+
+    /// Action 执行状态
+    variant action-status {
+        success,
+        failed,
+        timeout,
+        skipped,
+    }
+
+    /// Action 执行结果
+    record action-outcome {
+        status: action-status,
+        detail: option<string>,
+        /// 观测指标：粗粒度延迟（毫秒）
+        latency-ms: option<u64>,
+    }
+}
+
