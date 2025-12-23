@@ -2,11 +2,11 @@
 //! 当前仅回显输入，便于后续接入真实协议执行。
 
 wit_bindgen::generate!({
-    world: "scheduler:actions-executor/action-executor-component@0.2.0",
+    world: "ntx:scenario-actions-executor/action-executor-component@0.1.0",
     path: [
         "../wit/core-types",
         "../wit/eventbus",
-        "../wit/protocol",
+        "../wit/actions-executor",
     ],
     generate_all,
     debug: true,
@@ -24,15 +24,15 @@ fn next_event_id() -> String {
     format!("ae-{}", n)
 }
 
-impl exports::scheduler::actions_executor::action_component::Guest for ActionExecutorImpl {
+impl exports::ntx::scenario_actions_executor::action_component::Guest for ActionExecutorImpl {
     fn init_component() -> Result<(), String> {
         println!("[actions-executor] init-component");
         Ok(())
     }
 
     fn execute_action(
-        action: scheduler::core_types::types::ActionDef,
-    ) -> Result<scheduler::core_types::types::ActionOutcome, String> {
+        action: ntx::scenario_types::types::ActionDef,
+    ) -> Result<ntx::scenario_types::types::ActionOutcome, String> {
         println!(
             "[actions-executor] execute action id={} call={} user={:?} task={:?}",
             action.id, action.call, action.user_id, action.task_id
@@ -63,20 +63,22 @@ impl exports::scheduler::actions_executor::action_component::Guest for ActionExe
                     "user_id": action.user_id,
                 })
                 .to_string();
-                scheduler::event_bus::event_bus::publish(&scheduler::event_bus::event_bus::Event {
-                    id: event_id,
-                    kind: "packet.tx-request".to_string(),
-                    user_id: action.user_id.clone(),
-                    task_id: action.task_id.clone(),
-                    action_id: Some(action.id.clone()),
-                    payload: payload_json,
-                    correlation_id: None,
-                    timestamp_ms: 0,
-                })
+                ntx::scenario_eventbus::event_bus::publish(
+                    &ntx::scenario_eventbus::event_bus::Event {
+                        id: event_id,
+                        kind: "packet.tx-request".to_string(),
+                        user_id: action.user_id.clone(),
+                        task_id: action.task_id.clone(),
+                        action_id: Some(action.id.clone()),
+                        payload: payload_json,
+                        correlation_id: None,
+                        timestamp_ms: 0,
+                    },
+                )
                 .map_err(|e| format!("publish tx-request failed: {e}"))?;
 
-                Ok(scheduler::core_types::types::ActionOutcome {
-                    status: scheduler::core_types::types::ActionStatus::Success,
+                Ok(ntx::scenario_types::types::ActionOutcome {
+                    status: ntx::scenario_types::types::ActionStatus::Success,
                     detail: Some(format!(
                         "udp.send-reply delegated socket_id={} len={}",
                         sock_id,
@@ -85,8 +87,8 @@ impl exports::scheduler::actions_executor::action_component::Guest for ActionExe
                     latency_ms: None,
                 })
             }
-            _ => Ok(scheduler::core_types::types::ActionOutcome {
-                status: scheduler::core_types::types::ActionStatus::Success,
+            _ => Ok(ntx::scenario_types::types::ActionOutcome {
+                status: ntx::scenario_types::types::ActionStatus::Success,
                 detail: Some("stub executed".to_string()),
                 latency_ms: None,
             }),

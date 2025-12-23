@@ -1,0 +1,26 @@
+// WAC composition that wires eventbus, scheduler, and actions-executor together.
+// 使用方式示例（在仓库根目录执行）：
+//   wac compose component/wac/scheduler-composition.wac \
+//     --deps-dir component/wac/deps \
+//     -o component/wac/scheduler-composed.wasm
+// 
+package ntx:scenario-scheduler-composition@0.1.0;
+
+// 事件总线组件：实现 `ntx:scenario-eventbus/event-bus@0.1.0`
+let eventbus = new component:eventbus{...};
+
+// actions-executor：导入 event-bus
+let executor = new component:action-executor {
+    "ntx:scenario-eventbus/event-bus@0.1.0":
+        eventbus["ntx:scenario-eventbus/event-bus@0.1.0"],
+    ...
+};
+
+// scheduler-main：导入 action-component + event-bus，其余（hostnet）由宿主提供
+let scheduler = new component:scheduler {
+    "ntx:scenario-eventbus/event-bus@0.1.0":
+        eventbus["ntx:scenario-eventbus/event-bus@0.1.0"],
+    ...
+};
+
+export scheduler["demo"];

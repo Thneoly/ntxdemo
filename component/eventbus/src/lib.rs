@@ -1,15 +1,16 @@
+use crate::exports::ntx::scenario_eventbus::event_bus::Guest;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 
 wit_bindgen::generate!({
-    world: "scheduler:event-bus/event-bus-world@0.2.0",
+    world: "ntx:scenario-eventbus/event-bus-world@0.1.0",
     path: ["../wit/eventbus"],
     generate_all,
     debug: true,
 });
 
-type WitEvent = exports::scheduler::event_bus::event_bus::Event;
+type WitEvent = exports::ntx::scenario_eventbus::event_bus::Event;
 
 /// 简单内存事件队列（stub），满足 publish 接口，便于后续替换为真实总线。
 #[derive(Default)]
@@ -21,7 +22,7 @@ static STORE: Lazy<Mutex<EventStore>> = Lazy::new(|| Mutex::new(EventStore::defa
 
 struct EventBusComponent;
 
-impl exports::scheduler::event_bus::event_bus::Guest for EventBusComponent {
+impl exports::ntx::scenario_eventbus::event_bus::Guest for EventBusComponent {
     fn publish(event: WitEvent) -> Result<(), String> {
         {
             let mut store = STORE.lock();

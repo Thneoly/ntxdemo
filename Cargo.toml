@@ -10,6 +10,7 @@ members = [
 	"plugins/packet-engine",
 	"component/scheduler",
 	"component/actions-executor",
+	"component/eventbus",
 ]
 
 [lib]

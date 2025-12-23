@@ -1,4 +1,4 @@
-package scheduler:event-bus@0.2.0;
+package ntx:scenario-eventbus@0.1.0;
 
 /// 事件总线是状态变更的唯一入口/出口。
 interface event-bus {

@@ -1,7 +1,7 @@
-package scheduler:main@0.2.0;
+package ntx:scenario-scheduler@0.1.0;
 
-use scheduler:actions-executor/action-component@0.2.0;
-use scheduler:event-bus/event-bus@0.2.0;
+use ntx:scenario-actions-executor/action-component@0.1.0;
+use ntx:scenario-eventbus/event-bus@0.1.0;
 use ntx:hostnet/udp-socket-control@0.1.0;
 
 /// Scheduler 主循环入口
@@ -21,8 +21,8 @@ interface packet-tx {
     process-tx-request: func(payload-json: string) -> result<_, string>;
 }
 
+/// 发包调度接口（actions-executor 可委托 scheduler 周期/限速发送）
 interface send-scheduler {
-    /// 发包调度接口（actions-executor 可委托 scheduler 周期/限速发送）
     record periodic {
         interval-ms: u64,
         start-delay-ms: option<u64>,

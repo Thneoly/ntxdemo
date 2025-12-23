@@ -413,6 +413,70 @@ user_resources:
     release_on: "user_exit"  # task-end / user-exit
 ```
 
+### 1.1 UDP Echo 最小场景示例（结合当前实现）
+
+在当前实现下，可以以一个极简的 UDP Echo Client 场景验证事件与状态机链路是否闭环：
+
+```yaml
+version: "v1"
+name: "udp-echo-minimal"
+
+workbook:
+  resources:
+    - id: "udp-target"
+      type: "udp-endpoint"
+      properties:
+        peer_ip: "10.0.0.2"
+        peer_port: 8080
+
+actions:
+  actions:
+    - id: "udp-send-reply"
+      call: "udp.send-reply"
+      with:
+        # 由 scheduler/host 侧维护 sock_id 绑定，这里仅描述 payload 语义
+        payload: "hello-ntx"
+
+workflows:
+  nodes:
+    - id: "start"
+      type: "action"
+      action: "udp-send-reply"
+      edges:
+        - to: "wait-echo"
+          label: "sent"
+
+    - id: "wait-echo"
+      type: "wait"
+      # 该节点对应一个处于 Waiting 状态的 task，等待对应的 packet.rx
+      on:
+        event: "packet.rx"
+        match:
+          action_id: "udp-send-reply"
+          # 可选：根据 payload_hex / len 做更精细的过滤
+      edges:
+        - to: "end"
+          label: "echo-ok"
+
+    - id: "end"
+      type: "end"
+
+load:
+  ramp_up:
+    phases:
+      - at_second: 0
+        spawn_users: 1
+  user_lifetime:
+    mode: "once"
+```
+
+对应执行过程（与前文状态机示例一致）：
+
+1. user 进入 workflow 的 `start` 节点，scheduler 调度 `udp-send-reply`，actions-executor 执行并发布 `packet.tx-request`。
+2. scheduler 解析 `packet.tx-request`，调用 host 发包，并在 `sock_ctx` 中记录 `{sock_id, user_id, task_id, action_id}`。
+3. host 收到 echo 回复后，通过共享内存 + `packet-ingest.notify-rx` 通知 scheduler，scheduler 解析 RX ring，生成 `packet.rx` 事件并携带 user/task/action 上下文。
+4. 状态机在 `wait-echo` 节点上收到与该 task 匹配的 `packet.rx` 事件，将 task 从 `Waiting` 迁移到 `Completed`，并沿 workflow 边进入 `end` 节点，整个场景完成。
+
 ### 2. 校验要求（静态）
 
 在 scheduler 加载配置时需要进行：

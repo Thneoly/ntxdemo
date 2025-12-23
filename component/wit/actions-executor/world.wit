@@ -2,28 +2,20 @@ package ntx:scenario-actions-executor@0.1.0;
 
 use ntx:scenario-types/types@0.1.0 as t;
 use ntx:scenario-eventbus/event-bus@0.1.0;
-use ntx:scenario-scheduler/send-scheduler@0.1.0;
 
 /// actions-executor：只负责执行 action，不负责调度。
 interface action-component {
-    init-component: func() -> result<_, string>;
-    execute-action: func(action: t.action-def, ctx: t.action-context) -> result<t.action-outcome, string>;
-    release-component: func() -> result<_, string>;
-}
+    use t.{action-def, action-outcome};
 
-/// Mode-B：host 收到 UDP 包后，直接调用 guest 处理并返回可选响应 payload（host 负责封装回包）。
-interface udp-packet-handler {
-    on-udp: func(meta: t.udp-meta, payload: list<u8>) -> result<option<list<u8>>, string>;
+    init-component: func() -> result<_, string>;
+    /// 暂时只传递 action-def，ctx 由 scheduler 侧维护。
+    execute-action: func(action: action-def) -> result<action-outcome, string>;
+    release-component: func() -> result<_, string>;
 }
 
 world action-executor-component {
     import event-bus;
-    import send-scheduler;
-    import ntx:hostnet/udp-socket-control@0.1.0;
-    import ntx:hostnet/resources@0.1.0;
-
     export action-component;
-    export udp-packet-handler;
 }
 
 

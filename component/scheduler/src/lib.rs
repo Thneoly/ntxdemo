@@ -2,12 +2,12 @@
 //! 仅提供占位实现，便于后续对接状态机与负载控制逻辑。
 
 wit_bindgen::generate!({
-    world: "scheduler:main/scheduler-main@0.2.0",
+    world: "ntx:scenario-scheduler/scheduler-main@0.1.0",
     path: [
         "../wit/core-types",
         "../wit/eventbus",
         "../wit/host",
-        "../wit/protocol",
+        "../wit/actions-executor",
         "../wit/scheduler",
     ],
     generate_all,
@@ -16,7 +16,7 @@ wit_bindgen::generate!({
 
 struct SchedulerExports;
 
-impl exports::scheduler::main::scheduler_component::Guest for SchedulerExports {
+impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerExports {
     fn run(config_dir: String) -> Result<(), String> {
         // 占位：真实实现应在此加载 workflow/workbook/load 配置并进入事件循环。
         println!("[scheduler] run with config dir: {config_dir}");
@@ -24,9 +24,9 @@ impl exports::scheduler::main::scheduler_component::Guest for SchedulerExports {
     }
 }
 
-impl exports::scheduler::main::send_scheduler::Guest for SchedulerExports {
+impl exports::ntx::scenario_scheduler::send_scheduler::Guest for SchedulerExports {
     fn schedule_send(
-        request: exports::scheduler::main::send_scheduler::SendRequest,
+        request: exports::ntx::scenario_scheduler::send_scheduler::SendRequest,
     ) -> Result<String, String> {
         // 直接回显 request-id，后续可接入计时器/速率控制。
         Ok(request.request_id.clone())
@@ -38,24 +38,26 @@ impl exports::scheduler::main::send_scheduler::Guest for SchedulerExports {
 
     fn query_send_status(
         request_id: String,
-    ) -> Result<exports::scheduler::main::send_scheduler::SendStatus, String> {
-        Ok(exports::scheduler::main::send_scheduler::SendStatus {
-            request_id,
-            state: exports::scheduler::main::send_scheduler::SendRequestState::Pending,
-            total_sent: 0,
-            last_sent_time: None,
-            next_send_time: None,
-        })
+    ) -> Result<exports::ntx::scenario_scheduler::send_scheduler::SendStatus, String> {
+        Ok(
+            exports::ntx::scenario_scheduler::send_scheduler::SendStatus {
+                request_id,
+                state: exports::ntx::scenario_scheduler::send_scheduler::SendRequestState::Pending,
+                total_sent: 0,
+                last_sent_time: None,
+                next_send_time: None,
+            },
+        )
     }
 }
 
-impl exports::scheduler::main::packet_ingest::Guest for SchedulerExports {
+impl exports::ntx::scenario_scheduler::packet_ingest::Guest for SchedulerExports {
     fn notify_rx(desc_mem: Vec<u8>, payload_mem: Vec<u8>) -> Result<u32, String> {
         Ok(drain_rx_ring(desc_mem, payload_mem))
     }
 }
 
-impl exports::scheduler::main::packet_tx::Guest for SchedulerExports {
+impl exports::ntx::scenario_scheduler::packet_tx::Guest for SchedulerExports {
     fn process_tx_request(payload_json: String) -> Result<(), String> {
         handle_tx_request(&payload_json)
     }
@@ -65,8 +67,8 @@ export!(SchedulerExports);
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const NTX_MAGIC: u32 = 0x4E54_5830; // "NTX0"
@@ -87,8 +89,24 @@ struct SockCtx {
     last_seen_ms: u64,
 }
 
-static SOCK_CTX: Lazy<Mutex<HashMap<u64, SockCtx>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TaskState {
+    Created,
+    Ready,
+    Running,
+    Waiting,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+struct TaskMeta {
+    state: TaskState,
+    last_update_ms: u64,
+}
+
+static SOCK_CTX: Lazy<Mutex<HashMap<u64, SockCtx>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static TASKS: Lazy<Mutex<HashMap<String, TaskMeta>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 fn le_u32(b: &[u8]) -> u32 {
     u32::from_le_bytes([b[0], b[1], b[2], b[3]])
@@ -190,7 +208,32 @@ fn publish_packet_event(sock_id: u64, payload: &[u8], ctx: Option<&SockCtx>, now
     })
     .to_string();
 
-    let _ = scheduler::event_bus::event_bus::publish(&scheduler::event_bus::event_bus::Event {
+    // 如果有 task 上下文，这里做一个最小的状态迁移：收到回包即视为 Completed。
+    if let Some(ctx) = ctx {
+        if let Some(ref task_id) = ctx.task_id {
+            if let Ok(mut tasks) = TASKS.lock() {
+                tasks
+                    .entry(task_id.clone())
+                    .and_modify(|m| {
+                        m.state = TaskState::Completed;
+                        m.last_update_ms = now_ms;
+                    })
+                    .or_insert(TaskMeta {
+                        state: TaskState::Completed,
+                        last_update_ms: now_ms,
+                    });
+            }
+            println!(
+                "[scheduler] task {} received packet (sock={}, seq={}, len={}) → Completed",
+                task_id,
+                sock_id,
+                seq,
+                payload.len()
+            );
+        }
+    }
+
+    let _ = ntx::scenario_eventbus::event_bus::publish(&ntx::scenario_eventbus::event_bus::Event {
         id,
         kind: "packet.rx".to_string(),
         user_id: ctx.and_then(|c| c.user_id.clone()),
@@ -216,6 +259,10 @@ fn handle_tx_request(payload_json: &str) -> Result<(), String> {
         .map_err(|e| format!("parse tx-request payload json: {e}"))?;
 
     // 记录 sock 上下文用于后续 packet.rx 关联
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
     {
         if let Ok(mut map) = SOCK_CTX.lock() {
             map.insert(
@@ -224,16 +271,34 @@ fn handle_tx_request(payload_json: &str) -> Result<(), String> {
                     user_id: req.user_id.clone(),
                     task_id: req.task_id.clone(),
                     action_id: req.action_id.clone(),
-                    last_seen_ms: 0,
+                    last_seen_ms: now_ms,
                 },
             );
         }
     }
+    // 最小状态机：发送请求后，将对应 task 标记为 Waiting，等待 packet.rx。
+    if let Some(ref task_id) = req.task_id {
+        if let Ok(mut tasks) = TASKS.lock() {
+            tasks
+                .entry(task_id.clone())
+                .and_modify(|m| {
+                    m.state = TaskState::Waiting;
+                    m.last_update_ms = now_ms;
+                })
+                .or_insert(TaskMeta {
+                    state: TaskState::Waiting,
+                    last_update_ms: now_ms,
+                });
+        }
+        println!(
+            "[scheduler] task {} send-request on sock {} → Waiting",
+            task_id, req.sock_id
+        );
+    }
 
     let frame = ntx::hostnet::udp_socket_control::build_reply(req.sock_id, req.payload.as_bytes())
         .map_err(|e| format!("build_reply failed: {:?}", e))?;
-    ntx::hostnet::udp_socket_control::tx(frame)
-        .map_err(|e| format!("tx failed: {:?}", e))?;
+    ntx::hostnet::udp_socket_control::tx(frame).map_err(|e| format!("tx failed: {:?}", e))?;
     Ok(())
 }
 

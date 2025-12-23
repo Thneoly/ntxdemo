@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [lib]
-crate-type = ["rlib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 bytes = "1"
@@ -17,3 +17,10 @@ wit-bindgen = { version = "0.49.0", features = ["realloc"] }
 
 [features]
 hot_reload = []
+
+[package.metadata.component]
+package = "ntx:scenario-eventbus@0.1.0"
+
+[package.metadata.component.target]
+path = "../wit"
+world = "event-bus-world"
