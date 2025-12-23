@@ -3,7 +3,7 @@
 //   wac compose component/wac/scheduler-composition.wac \
 //     --deps-dir component/wac/deps \
 //     -o component/wac/scheduler-composed.wasm
-// 
+// wac compose component/wac/scheduler-composition.wac   --deps-dir component/wac/deps   -o component/wac/scheduler-composed.wasm
 package ntx:scenario-scheduler-composition@0.1.0;
 
 // 事件总线组件：实现 `ntx:scenario-eventbus/event-bus@0.1.0`
@@ -23,4 +23,4 @@ let scheduler = new component:scheduler {
     ...
 };
 
-export scheduler["demo"];
+export scheduler as escheduler;
