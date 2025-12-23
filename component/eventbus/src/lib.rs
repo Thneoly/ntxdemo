@@ -42,4 +42,43 @@ pub fn drain_events() -> Vec<WitEvent> {
     store.queue.drain(..).collect()
 }
 
+/// 辅助函数：将 scheduler 的 Action 结果事件编码为统一的 Event 并入队。
+///
+/// 该函数不会改变 WIT 接口，只是为需要以 `"scheduler.action-result"` 形式
+/// 观察 action 结果的调用方提供一个简化入口。
+pub fn emit_scheduler_action_result(
+    user_id: Option<String>,
+    task_id: Option<String>,
+    action_id: Option<String>,
+    status: String,
+    detail: Option<String>,
+) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    let payload = serde_json::json!({
+        "status": status,
+        "detail": detail,
+    })
+    .to_string();
+
+    let event = WitEvent {
+        id: format!("ar-{}", now_ms),
+        kind: "scheduler.action-result".to_string(),
+        user_id,
+        task_id,
+        action_id,
+        payload,
+        correlation_id: None,
+        timestamp_ms: now_ms,
+    };
+
+    // 复用与 publish 相同的入队与打印逻辑
+    let _ = EventBusComponent::publish(event);
+}
+
 export!(EventBusComponent);

@@ -212,6 +212,35 @@ loop {
 - `ActionResult(success=false)` → `Running` → `Failed`
 - `TimerFired(retry_deadline)` → `Failed` → `Ready`（重试）
 
+在引入网络事件后，`packet.rx` 也会作为状态机的输入之一，例如 UDP Echo Client 场景：
+
+```text
+// 假设某个 workflow 节点 N 代表 “发送 UDP 请求并等待 Echo 回复”
+
+// 1. 初始：task 处于 Ready，被 scheduler 派发执行
+Event: SchedulerDispatch(user_id, task_id, action_id="udp-echo-client")
+State: Ready → Running
+
+// 2. actions-executor 执行 udp.send-reply，构造 packet.tx-request 并由 scheduler/host 发包，
+//    然后将该 task 标记为 Waiting（等待网络回复）
+Event: ActionResult(success=true, call="udp.send-reply")
+State: Running → Waiting
+
+// 3. host 收到 echo 回复，写入 RX ring，scheduler 通过 packet-ingest.notify-rx 解析出数据包，
+//    按 sock_ctx 映射到对应 user/task/action，生成 PacketRx 事件
+Event: PacketRx(user_id, task_id, action_id="udp-echo-client", payload=...)
+State: Waiting → Completed （若 payload 校验通过）
+
+// 4. 若 payload 校验失败或超时，则可进入 Failed/Retry 等分支
+Event: PacketRx(payload_mismatch) → Waiting → Failed
+Event: TimerFired(retry_deadline) → Failed → Ready （重试）
+```
+
+通过这种方式，可以把「纯网络字节流」转化为「状态机上的显式事件」，保证：
+
+- 收包与 task lifecycle 紧密耦合（哪一个 user 的哪一个 task 收到了哪一条包）
+- 所有网络行为都可通过事件重放来还原状态机演化过程。
+
 ### 4. 动态拓扑修改
 
 调度器需要支持 **在运行时动态修改状态机拓扑**：
@@ -276,6 +305,39 @@ scheduler 接收到这些事件后，在 **静态拓扑层** 更新 workflow 视
     - 统计/告警事件
 
 actions-executor 同样可以通过 eventbus（或通过 scheduler 暴露的简化接口）上报执行结果和观测数据。
+
+### 4. 事件 schema 规范与关键事件类型
+
+为统一后续观测、审计与回放，这里约定所有跨组件事件在语义上遵守统一 schema（具体序列化格式可以是 JSON / WIT record 等）：
+
+- **统一字段（逻辑层面）**：
+  - `kind: string`：事件类型标识，例如：
+    - `"scheduler.action-result"`
+    - `"packet.tx-request"`
+    - `"packet.rx"`
+    - `"scheduler.state-changed"`
+  - `user_id: option<string>`：可选，归属的 user
+  - `task_id: option<string>`：可选，归属的 task
+  - `action_id: option<string>`：可选，归属的 action
+  - `timestamp_ms: u64`：事件产生时间（毫秒）
+  - `correlation_id: option<string>`：关联一次调用链路或会话的 ID，便于 end-to-end tracing
+  - `payload: string`：业务负载或控制信息，推荐使用 JSON 编码，内部结构由具体事件类型解释
+
+- **关键事件类型一览（示例，不限于此）**：
+  - `scheduler.action-result`：
+    - 在当前实现中可通过 `eventbus.emit_scheduler_action_result(...)` 辅助函数生成，或由 scheduler 在处理 WIT `ActionOutcome` 后手动构造并 `publish`
+    - `kind = "scheduler.action-result"`
+    - `payload` 中包含 `status` / `detail` 等（可按需扩展 metrics/exports）
+  - `packet.tx-request`：actions-executor 发起一次 UDP 发包意图：
+    - `payload` 中至少包含：`sock_id`、`payload`、`user_id?`、`task_id?`、`action_id?`
+    - scheduler 解析后调用 host `udp-socket-control` 实际发包，并建立 `sock_id -> 上下文` 映射
+  - `packet.rx`：scheduler 从共享内存 RX ring 中解析出一条 UDP 包后生成：
+    - `payload` 中至少包含：`sock_id`、`payload_hex` 或 `payload`、`len`
+    - 同时在事件顶层字段或 payload 中携带 `user_id?`、`task_id?`、`action_id?`，用于驱动状态机
+  - `scheduler.state-changed`：scheduler 自身状态变化（`Idle/Running/Degraded/Error/Completed`）时上报
+  - `topology.changed`：workflow / workbook 发生拓扑变更时上报，payload 携带变更 diff
+
+> 注：以上事件类型不强制绑定具体字符串前缀，但建议在实现中统一使用 `"scheduler.*"` / `"packet.*"` / `"topology.*"` 命名空间，便于过滤与订阅。
 
 ---
 
@@ -666,33 +728,23 @@ execute_action(action: ActionDef) -> ActionOutcome:
     local_port = action.with["local-port"]  // 从 user 资源获取
     payload = action.with["payload"]
     
-    // 2. 通过 host resources 接口获取/分配资源
-    owner_id = resources.create-socket-owner(user_id)
-    resources.acquire-udp-port("default-pool", owner_id)
+    // 2. 通过 scheduler/host 已建立的资源绑定拿到 socket 上下文（此处简化为已有 sock_id）
+    sock_id = resolve_user_socket(user_id, peer_ip, peer_port)
     
-    // 3. 创建 UDP socket（通过 host udp-socket-control）
-    socket = udp-socket-control.create("udp-echo-client")
-    
-    // 4. 绑定 socket（配置本地和对端地址）
-    bind_config = udp-bind {
-        local-ipv4: local_ip,
-        local-mac: <从资源获取>,
-        local-udp-port: local_port,
-        peer-ipv4: peer_ip,
-        peer-port: peer_port,
-        peer-mac: <从资源获取或默认>,
+    // 3. 构造发包意图（不直接调用 host）
+    tx_req = {
+        sock_id: sock_id,
+        payload: payload,
+        user_id: user_id,
+        task_id: current_task_id,
+        action_id: action.id,
     }
-    udp-socket-control.bind(socket.sock, bind_config)
     
-    // 5. 构建 UDP 帧（但不立即发送）
-    frame_handle = udp-socket-control.build-reply(socket.sock, payload)
-    
-    // 6. 委托 scheduler 发送（支持立即发送或周期性发送）
-    //    方式 A：立即发送（同步）
-    bytes_sent = udp-socket-control.tx(frame_handle)
-    
-    //    方式 B：委托 scheduler 周期性发送（异步）
-    //    scheduler.schedule-send(send-request)
+    // 4. 通过 eventbus / scheduler WIT 将发包请求交给 scheduler/host 执行
+    publish_event(PacketTxRequestEvent {
+        kind: "packet.tx-request",
+        payload: json_encode(tx_req),
+    })
     
     // 7. 等待接收 echo 回复（通过 eventbus 或轮询机制）
     // 注意：在 wasm-wasip2 单线程下，需要通过事件驱动接收
@@ -752,62 +804,36 @@ execute_action(action: ActionDef) -> ActionOutcome:
    - 通过 `udp-socket-control.build-reply` 和 `tx`，host 负责封装完整的 UDP/IP/Ethernet 帧
    - actions-executor 只需提供 **UDP payload** 数据
 
-2. **资源管理分离**：
+2. **资源管理与 host 能力隔离**：
    - IP 地址、MAC 地址、UDP 端口等资源由 host 的 `resources` 接口管理
-   - scheduler 在创建 user 时，通过 resource-manager 分配资源
-   - actions-executor 通过 `resource-id` 引用已分配的资源
+   - scheduler 在创建 user 时，通过 resource-manager / host WIT 分配资源，并维护与 user/task 的绑定关系
+   - **actions-executor 不直接导入 host 接口**（如 `udp-socket-control`、`resources`），只通过：
+     - scheduler 暴露的 WIT 接口（如发包调度、packet-tx），以及
+     - eventbus 上的业务/控制事件
+     
+     来间接驱动 host 行为；所有对 host 的副作用都需经过 scheduler 的编排与审计
+   - 对于 UDP socket，scheduler 维护一张运行时映射表：`sock_id -> { user_id, task_id, action_id, last_seen_ms }`：
+     - 在处理发包请求（如 `packet.tx-request`）时写入/刷新此映射
+     - 在收包时根据 `sock_id` 查表，将网络事件映射回具体 user/task
+     - 在 **socket 关闭** 或 **user 生命周期结束** 时，从映射表中清理对应条目，避免内存泄漏和上下文“脏挂载”
 
-3. **UDP 收包通知机制（两种模式）**：
+3. **UDP 收包通知机制（统一经由 scheduler）**：
 
-   **模式 A：事件轮询模式（推荐用于高并发场景）**
-   
-   - host 在收到 UDP 包后，将数据包放入共享内存，并通过 **事件通知机制** 唤醒 guest
-   - guest（scheduler 或 actions-executor）在主循环中调用 `poll_oneoff([EventKind::Packet])` 获取事件
-   - 收到 `Packet` 事件后，调用 `poll_packet()` 从共享内存中读取数据包描述符
-   - 根据描述符从共享内存中获取 payload，然后处理
-   
-   **流程示例**：
-   ```text
-   // Host 侧（收到 UDP 包）
-   NIC.recv() → 解析 UDP → 写入共享内存 → 发送 Packet 事件通知
-   
-   // Guest 侧（scheduler 主循环）
-   loop {
-       events = poll_oneoff([EventKind::Packet, EventKind::Timer])
-       for event in events {
-           if event.kind == Packet {
-               while let Some(desc) = poll_packet() {
-                   payload = read_from_shared_memory(desc)
-                   // 处理数据包：调用 actions-executor 或更新状态机
-                   handle_udp_packet(payload)
-               }
-           }
-       }
-       // ... 其他事件处理
-   }
-   ```
-   
-   **模式 B：直接调用模式（适用于简单场景）**
-   
-   - host 在收到 UDP 包后，直接调用 guest 组件导出的函数（如 `on_packet_received`）
-   - 这种方式更简单，但要求 host 知道 guest 的导出函数签名
-   - 适合 server 场景：host 收到包 → 直接调用 `actions-executor.on_packet_received(meta, payload)`
-   
-   **流程示例**：
-   ```text
-   // Host 侧
-   NIC.recv() → 解析 UDP → 直接调用 wasm_instance.call_on_packet_received(meta, payload)
-   
-   // Guest 侧（actions-executor 导出）
-   export on_packet_received: func(meta: packet-meta, payload: list<u8>) -> result<list<u8>, string>
-   ```
-   
-   **设计建议**：
-   - **UDP Echo Server**：推荐使用 **模式 B**（直接调用），因为 server 是响应式处理，host 知道何时调用
-   - **UDP Echo Client**：推荐使用 **模式 A**（事件轮询），因为 client 需要主动轮询接收回复，且可能同时处理多个并发请求
-   - **与 scheduler 集成**：
-     - 如果使用模式 A：scheduler 在主循环中处理 `Packet` 事件，然后根据 socket_id 或 flow_key 找到对应的 task，更新状态机
-     - 如果使用模式 B：host 直接调用 actions-executor，actions-executor 执行完成后通过 eventbus 发送 `action-result` 事件给 scheduler
+   - host 在收到 UDP 包后，将数据包放入共享内存，并通过 **事件/回调机制** 唤醒 scheduler 组件
+   - scheduler 导出 `packet-ingest.notify-rx(desc-mem, payload-mem)` 接口，host 调用该接口：
+     - scheduler 内部参考 packet-engine 的 `drain_rx_ring` 逻辑解析 RX ring：
+       - 校验 `MAGIC` / `VERSION` / `head` / `tail` / `desc_capacity`
+       - 批量读取若干描述符（每轮最多 N 条），解析出 `(sock_id, payload_off, payload_len)`
+       - 从 payload buffer 切片出 UDP payload
+     - 依据 `sock_id` 在运行时映射表中查找到对应的 `{user_id, task_id, action_id}` 上下文，并刷新该 sock 的 `last_seen_ms`（便于后续资源清理与观测）
+     - 为每个数据包构造 `packet.rx` 事件并通过 eventbus 发布，用于驱动状态机中对应 task 的状态转移（例如 `Waiting → Ready`）
+       - `packet.rx` 的 payload 中包含：
+         - `sock_id`: 触发该事件的 socket
+         - `seq`: 单调递增的包序号（per-process），便于调试排序
+         - `len`: UDP payload 长度
+         - `payload_hex`: UDP payload 的十六进制编码（避免二进制污染日志）
+         - `ts_ms`: scheduler 解析该包时的时间戳
+   - actions-executor 不直接参与收包轮询，只消费由 scheduler 转译后的事件或由 scheduler 再次调度的 action。
 
 4. **action 参数模板化**：
    - action 定义中的 `with` 字段支持变量模板（如 `{{ user.resources.ip }}`）
@@ -1257,7 +1283,7 @@ actions-executor (component)
 十、小结
 --------
 
-- scheduler：**事件驱动 + 状态机 + 负载控制 + 资源绑定** 的中枢，运行在 wasm-wasip2 组件中，单线程，通过 eventbus 与外界交互。
-- actions-executor：**专注于执行 action 的 wasm-wasip2 组件**，对 scheduler 提供统一的执行接口与结果模型。
+- scheduler：**事件驱动 + 状态机 + 负载控制 + 资源绑定** 的中枢，运行在 wasm-wasip2 组件中，单线程，通过 eventbus 与外界交互，并作为 host 能力的统一入口（包括 UDP 收包的 ring 解析、`packet.rx` 事件生成，以及对 `packet.tx-request` 的实际发包执行）。
+- actions-executor：**专注于执行 action 的 wasm-wasip2 组件**，不能直接与 host 通信，只能通过 scheduler 暴露的 WIT 接口与 eventbus 事件间接驱动 host，对 scheduler 提供统一的执行接口与结果模型。
 - 配置层：通过 **workflow + workbook + actions + load + user_resources**，在不修改二进制的前提下描述复杂场景。
-- 后续实现时，可以以本设计为约束，针对 WIT 接口与内部数据结构做进一步细化与代码化。
+- 以上所有数据与行为，均满足「事件是唯一合法动态入口」这一约束，后续实现时可以以本设计为约束，针对 WIT 接口与内部数据结构做进一步细化与代码化。

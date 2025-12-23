@@ -67,6 +67,7 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const NTX_MAGIC: u32 = 0x4E54_5830; // "NTX0"
 const NTX_VERSION: u16 = 1;
@@ -76,11 +77,14 @@ const DESCS_OFF: usize = 0x1000;
 const MAX_CONSUME: u32 = 64;
 
 static EVENT_COUNTER: AtomicU64 = AtomicU64::new(1);
+static PACKET_RX_SEQ: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Clone)]
 struct SockCtx {
     user_id: Option<String>,
     task_id: Option<String>,
     action_id: Option<String>,
+    last_seen_ms: u64,
 }
 
 static SOCK_CTX: Lazy<Mutex<HashMap<u64, SockCtx>>> =
@@ -144,12 +148,23 @@ fn drain_rx_ring(desc_mem: Vec<u8>, payload_mem: Vec<u8>) -> u32 {
         if payload_off + payload_len <= payload_mem.len() {
             let payload = &payload_mem[payload_off..payload_off + payload_len];
 
-            // 根据 sock_id 查找 user/task/action 关联
-            let ctx = SOCK_CTX
-                .lock()
-                .ok()
-                .and_then(|map| map.get(&sock_id).cloned());
-            publish_packet_event(sock_id, payload, ctx.as_ref());
+            // 根据 sock_id 查找 user/task/action 关联，并刷新 last_seen_ms
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let ctx = {
+                let mut guard = SOCK_CTX.lock().ok();
+                guard
+                    .as_mut()
+                    .and_then(|map| map.get_mut(&sock_id))
+                    .map(|c| {
+                        c.last_seen_ms = now_ms;
+                        c.clone()
+                    })
+            };
+
+            publish_packet_event(sock_id, payload, ctx.as_ref(), now_ms);
         }
 
         head = head.wrapping_add(1);
@@ -162,15 +177,18 @@ fn drain_rx_ring(desc_mem: Vec<u8>, payload_mem: Vec<u8>) -> u32 {
     consumed
 }
 
-fn publish_packet_event(sock_id: u64, payload: &[u8], ctx: Option<&SockCtx>) {
+fn publish_packet_event(sock_id: u64, payload: &[u8], ctx: Option<&SockCtx>, now_ms: u64) {
     let id = format!("rx-{}", EVENT_COUNTER.fetch_add(1, Ordering::Relaxed));
-    let payload_hex = to_hex(payload);
-    let json_payload = format!(
-        "{{\"sock_id\":{},\"payload_hex\":\"{}\",\"len\":{}}}",
-        sock_id,
-        payload_hex,
-        payload.len()
-    );
+    let seq = PACKET_RX_SEQ.fetch_add(1, Ordering::Relaxed);
+
+    let json_payload = serde_json::json!({
+        "sock_id": sock_id,
+        "seq": seq,
+        "len": payload.len(),
+        "payload_hex": to_hex(payload),
+        "ts_ms": now_ms,
+    })
+    .to_string();
 
     let _ = scheduler::event_bus::event_bus::publish(&scheduler::event_bus::event_bus::Event {
         id,
@@ -180,7 +198,7 @@ fn publish_packet_event(sock_id: u64, payload: &[u8], ctx: Option<&SockCtx>) {
         action_id: ctx.and_then(|c| c.action_id.clone()),
         payload: json_payload,
         correlation_id: None,
-        timestamp_ms: 0,
+        timestamp_ms: now_ms,
     });
 }
 
@@ -206,6 +224,7 @@ fn handle_tx_request(payload_json: &str) -> Result<(), String> {
                     user_id: req.user_id.clone(),
                     task_id: req.task_id.clone(),
                     action_id: req.action_id.clone(),
+                    last_seen_ms: 0,
                 },
             );
         }
@@ -216,4 +235,18 @@ fn handle_tx_request(payload_json: &str) -> Result<(), String> {
     ntx::hostnet::udp_socket_control::tx(frame)
         .map_err(|e| format!("tx failed: {:?}", e))?;
     Ok(())
+}
+
+/// 在 socket 关闭时清理 sock_id 对应的上下文映射。
+pub fn clear_sock_ctx_for_socket(sock_id: u64) {
+    if let Ok(mut map) = SOCK_CTX.lock() {
+        map.remove(&sock_id);
+    }
+}
+
+/// 在 user 结束时清理该 user 相关的所有 sock 上下文。
+pub fn clear_sock_ctx_for_user(user_id: &str) {
+    if let Ok(mut map) = SOCK_CTX.lock() {
+        map.retain(|_, ctx| ctx.user_id.as_deref() != Some(user_id));
+    }
 }
