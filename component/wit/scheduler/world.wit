@@ -2,6 +2,7 @@ package ntx:scenario-scheduler@0.1.0;
 
 use ntx:scenario-actions-executor/action-component@0.1.0;
 use ntx:scenario-eventbus/event-bus@0.1.0;
+use ntx:hostnet/resources;
 use ntx:hostnet/udp-socket-control;
 use ntx:scenario-types/types@0.1.0 as t;
 
@@ -35,6 +36,7 @@ interface send-scheduler {
 world scheduler-main {
     import action-component;
     import event-bus;
+    import ntx:hostnet/resources;
     import ntx:hostnet/udp-socket-control;
     export scheduler-component;
     export packet-ingest;

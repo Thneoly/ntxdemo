@@ -13,6 +13,13 @@ interface resources {
     type resource-id = string;
     type owner-id = resource-id;
 
+    /// UDP “身份”资源：由 host 从资源池动态分配 local ip/mac/udp-port。
+    record udp-identity {
+        local-ipv4: ipv4-addr,
+        local-mac: mac-addr,
+        local-udp-port: u16,
+    }
+
     variant resource-error {
         invalid-argument,
         not-found,
@@ -22,6 +29,10 @@ interface resources {
 
     create-socket-owner: func(name: string) -> result<owner-id, resource-error>;
     acquire-udp-port: func(pool: string, owner: owner-id) -> result<_, resource-error>;
+    acquire-udp-identity: func(pool: string, owner: owner-id) -> result<udp-identity, resource-error>;
+    /// Best-effort resolve peer MAC from IPv4 (e.g. ARP cache lookup).
+    /// Returns not-found if the host has no neighbor/ARP entry.
+    resolve-peer-mac: func(peer-ipv4: ipv4-addr) -> result<mac-addr, resource-error>;
     release-resource: func(rid: resource-id) -> result<_, resource-error>;
     resolve-udp-port: func(rid: resource-id) -> result<u16, resource-error>;
 }

@@ -415,7 +415,8 @@ load:
 user_resources:
   ip_binding:
     enabled: true
-    pool_id: "pool-1"
+    # pool_id 对应 host resources 的 pool 名称（示例：default），用于动态分配 local_ip/local_mac/local_port
+    pool_id: "default"
     strategy: "per_user"     # per-user / per-task / shared
     release_on: "user_exit"  # task-end / user-exit
 ```
@@ -435,13 +436,16 @@ workbook:
       properties:
         peer_ip: "10.0.0.2"
         peer_port: 8080
+        # peer_mac 可选：如果不提供，scheduler 可调用 host resources.resolve-peer-mac(peer_ip) 做 best-effort 解析
+        # 若 host 没有邻居/ARP 缓存条目，则仍会报 not-found（这时可以在配置里显式提供 peer_mac）
+        # peer_mac: "aa:bb:cc:dd:ee:ff"
 
 actions:
   actions:
     - id: "udp-send-reply"
       call: "udp.send-reply"
       with:
-        # 由 scheduler/host 侧维护 sock_id 绑定，这里仅描述 payload 语义
+        # 由 scheduler/host 侧维护 sock_id 绑定（并从 host resources 池分配本地 ip/mac/port），这里仅描述 payload 语义
         payload: "hello-ntx"
 
 workflows:
@@ -755,8 +759,13 @@ interface resources {
     /// 创建 socket owner（通常对应一个 user）
     create-socket-owner: func(name: string) -> result<owner-id, resource-error>;
     
-    /// 从资源池分配 UDP 端口
-    acquire-udp-port: func(pool: string, owner: owner-id) -> result<_, resource-error>;
+    /// 从资源池分配 UDP “身份”：local IPv4 + MAC + UDP port（供 scheduler 绑定 socket）
+    record udp-identity {
+        local-ipv4: ipv4-addr,
+        local-mac: mac-addr,
+        local-udp-port: u16,
+    }
+    acquire-udp-identity: func(pool: string, owner: owner-id) -> result<udp-identity, resource-error>;
     
     /// 解析资源 ID 对应的 UDP 端口
     resolve-udp-port: func(rid: resource-id) -> result<u16, resource-error>;

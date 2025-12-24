@@ -108,6 +108,67 @@ impl ResourceHost for State {
         Ok(())
     }
 
+    fn acquire_udp_identity(
+        &mut self,
+        pool: String,
+        owner: String,
+    ) -> wasmtime::Result<
+        packet_engine_bindings::exports::ntx::hostnet::resources::UdpIdentity,
+        ResourceError,
+    > {
+        let (ip, mac, port) = kernel::hostnet_acquire_udp_identity(&pool, &owner)
+            .map_err(|e| ResourceError::Other(e.to_string()))?;
+        Ok(
+            packet_engine_bindings::exports::ntx::hostnet::resources::UdpIdentity {
+                local_ipv4: packet_engine_bindings::exports::ntx::hostnet::types::Ipv4Addr {
+                    a: ip.octets()[0],
+                    b: ip.octets()[1],
+                    c: ip.octets()[2],
+                    d: ip.octets()[3],
+                },
+                local_mac: packet_engine_bindings::exports::ntx::hostnet::types::MacAddr {
+                    a: mac.0[0],
+                    b: mac.0[1],
+                    c: mac.0[2],
+                    d: mac.0[3],
+                    e: mac.0[4],
+                    f: mac.0[5],
+                },
+                local_udp_port: port,
+            },
+        )
+    }
+
+    fn resolve_peer_mac(
+        &mut self,
+        peer_ipv4: packet_engine_bindings::exports::ntx::hostnet::types::Ipv4Addr,
+    ) -> wasmtime::Result<
+        packet_engine_bindings::exports::ntx::hostnet::types::MacAddr,
+        ResourceError,
+    > {
+        let mac = kernel::hostnet_resolve_peer_mac(ntx_network::Ipv4Addr([
+            peer_ipv4.a,
+            peer_ipv4.b,
+            peer_ipv4.c,
+            peer_ipv4.d,
+        ]))
+        .map_err(|e| match e {
+            kernel::HostnetError::NotFound(_) => ResourceError::NotFound,
+            kernel::HostnetError::InvalidArgument(_) => ResourceError::InvalidArgument,
+            other => ResourceError::Other(other.to_string()),
+        })?;
+        Ok(
+            packet_engine_bindings::exports::ntx::hostnet::types::MacAddr {
+                a: mac.0[0],
+                b: mac.0[1],
+                c: mac.0[2],
+                d: mac.0[3],
+                e: mac.0[4],
+                f: mac.0[5],
+            },
+        )
+    }
+
     fn resolve_udp_port(&mut self, rid: String) -> wasmtime::Result<u16, ResourceError> {
         kernel::hostnet_resolve_udp_port(&rid).map_err(|e| match e {
             kernel::HostnetError::NotFound(_) => ResourceError::NotFound,

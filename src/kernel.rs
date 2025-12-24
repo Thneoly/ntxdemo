@@ -100,6 +100,32 @@ pub fn hostnet_acquire_udp_port(pool: &str, owner: &str) -> Result<(), HostnetEr
     };
     Ok(())
 }
+
+/// Allocate+pin a UDP identity (local ip/mac/udp-port) for this owner from the given pool.
+pub fn hostnet_acquire_udp_identity(
+    pool: &str,
+    owner: &str,
+) -> Result<(std::net::Ipv4Addr, ntx_network::MacAddr, u16), HostnetError> {
+    let owner = parse_uuid_str(owner)?;
+    let mut pools = KERNEL.pools.lock();
+
+    let (_, v) = pools.acquire_and_pin_non_socket(resources::ResourceKind::Ipv4, pool, owner)?;
+    let NonSocketResourceValue::Ipv4(ip) = v else {
+        unreachable!("resource kind/value mismatch")
+    };
+
+    let (_, v) = pools.acquire_and_pin_non_socket(resources::ResourceKind::Mac, pool, owner)?;
+    let NonSocketResourceValue::Mac(mac) = v else {
+        unreachable!("resource kind/value mismatch")
+    };
+
+    let (_, v) = pools.acquire_and_pin_non_socket(resources::ResourceKind::UdpPort, pool, owner)?;
+    let NonSocketResourceValue::UdpPort(port) = v else {
+        unreachable!("resource kind/value mismatch")
+    };
+
+    Ok((ip, mac, port))
+}
 pub fn hostnet_resolve_udp_port(rid: &str) -> Result<u16, HostnetError> {
     let rid = parse_uuid_str(rid)?;
     let pools = KERNEL.pools.lock();
@@ -376,7 +402,7 @@ struct Kernel {
     reg: LayerRegistry,
     pools: Mutex<ResourcePools>,
     store: Mutex<abr::BindingStore>,
-    arp_cache: ArpCache,
+    arp_cache: Mutex<ArpCache>,
     udp_sockets: Mutex<Table>,
     nic: Mutex<Box<dyn Nic + Send + Sync>>,
 
@@ -417,7 +443,7 @@ impl Kernel {
         ));
 
         let reg: LayerRegistry = default_registry();
-        let arp_cache = ArpCache::new(std::time::Duration::from_secs(60));
+        let arp_cache = Mutex::new(ArpCache::new(std::time::Duration::from_secs(60)));
         let udp_sockets = Table::new(ConnTableConfig {
             max_entries: 4096,
             ttl: None,
@@ -467,6 +493,19 @@ impl Kernel {
     fn udp_sockets(&self) -> parking_lot::MutexGuard<'_, Table> {
         self.udp_sockets.lock()
     }
+}
+
+/// Best-effort resolve peer MAC from IPv4 using kernel ARP cache.
+pub fn hostnet_resolve_peer_mac(
+    peer_ipv4: ntx_network::Ipv4Addr,
+) -> Result<ntx_network::MacAddr, HostnetError> {
+    let mut arp = KERNEL.arp_cache.lock();
+    arp.get(peer_ipv4).ok_or_else(|| {
+        HostnetError::NotFound(format!(
+            "arp cache miss for peer ipv4: {}.{}.{}.{}",
+            peer_ipv4.0[0], peer_ipv4.0[1], peer_ipv4.0[2], peer_ipv4.0[3]
+        ))
+    })
 }
 
 impl Config {
