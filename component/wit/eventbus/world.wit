@@ -15,6 +15,20 @@ interface event-bus {
 
     /// 发布事件到 eventbus（实现可异步）
     publish: func(event: event) -> result<_, string>;
+
+    /// 订阅事件（通过 topic 过滤，支持通配符如 "scheduler.control.*"）
+    /// - topic-filter: 事件类型过滤模式，支持通配符 "*" 后缀匹配
+    /// - 返回: 订阅 ID，可用于后续取消订阅
+    subscribe: func(topic-filter: string) -> result<string, string>;
+
+    /// 取消订阅
+    unsubscribe: func(subscription-id: string) -> result<_, string>;
+
+    /// 轮询获取订阅的事件（非阻塞，返回已就绪的事件列表）
+    /// - subscription-id: 订阅 ID
+    /// - max-events: 本次最多返回的事件数量
+    /// - 返回: 事件列表（可能为空）
+    poll-events: func(subscription-id: string, max-events: u32) -> result<list<event>, string>;
 }
 
 world event-bus-world {

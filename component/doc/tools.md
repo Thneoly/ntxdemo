@@ -35,5 +35,12 @@ wac规则：
     ...
 };
 4. export cmp2 as cmp2-name; 
-5. 给 host 用的导出：export scheduler as escheduler; 现在是正确的，组合后的 wasm 已经能被宿主按 escheduler 这个实例加载使用。
-6. 给 wasm-tools component wit 看 WIT：当前这条 export 形式，本质是「导出一个 instance」，wasm-tools component wit 目前只会尝试把「函数 / 类型导出」还原为 WIT，对 instance 导出支持很差，所以才会报你看到的错误。
+4-1. 给 host 用的导出：export scheduler as escheduler; 现在是正确的，组合后的 wasm 已经能被宿主按 escheduler 这个实例加载使用。
+4-2. 给 wasm-tools component wit 看 WIT：当前这条 export 形式，本质是「导出一个 instance」，wasm-tools component wit 目前只会尝试把「函数 / 类型导出」还原为 WIT，对 instance 导出支持很差，所以才会报你看到的错误。
+5. export cmp2["some"]; # some 是 cmp2 对应的world中的一个export;
+6. export 可以有多个。
+
+
+
+wasmtime bindgen::
+1. 对于world中的import 需要实现Host？ export 实现Guest？

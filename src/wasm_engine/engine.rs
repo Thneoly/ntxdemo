@@ -16,12 +16,14 @@ use ntx_network;
 mod packet_engine_bindings {
     wasmtime::component::bindgen!({
         world: "ntx:packet/packet-engine",
-        path: ["plugins/wit/host","plugins/wit/packet-engine"],
+        path: ["component/wit/host"],
         debug:true,
     });
 }
-use packet_engine_bindings::ntx::hostnet::resources::{Host as ResourceHost, ResourceError};
-use packet_engine_bindings::ntx::hostnet::types::Host as TypesHost;
+use packet_engine_bindings::exports::ntx::hostnet::resources::{
+    Host as ResourceHost, ResourceError,
+};
+use packet_engine_bindings::exports::ntx::hostnet::types::Host as TypesHost;
 // (types imported via WIT bindings in signatures; concrete conversions use ntx_network types)
 use packet_engine_bindings::ntx::hostnet::udp_socket_control::{
     FrameHandle, Host as UdpHost, SocketError, UdpBind, UdpSocket,

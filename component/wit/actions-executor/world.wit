@@ -5,11 +5,17 @@ use ntx:scenario-eventbus/event-bus@0.1.0;
 
 /// actions-executor：只负责执行 action，不负责调度。
 interface action-component {
-    use t.{action-def, action-outcome};
+    use t.{action-def, action-outcome, action-context};
 
     init-component: func() -> result<_, string>;
-    /// 暂时只传递 action-def，ctx 由 scheduler 侧维护。
-    execute-action: func(action: action-def) -> result<action-outcome, string>;
+    
+    /// 执行一个 action
+    /// - action: 来自配置的 action 定义，包含 call 类型和参数（已由 scheduler 进行模板展开）
+    /// - ctx: 运行时上下文（user/task/action 关联信息、资源绑定、变量等）
+    /// - 返回: action 执行结果（成功/失败状态 + 详情）
+    /// - 注意：执行过程中如需发包，应通过 eventbus 发布 packet.tx-request 事件，由 scheduler 处理
+    execute-action: func(action: action-def, ctx: option<action-context>) -> result<action-outcome, string>;
+    
     release-component: func() -> result<_, string>;
 }
 

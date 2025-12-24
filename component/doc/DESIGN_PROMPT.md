@@ -294,11 +294,18 @@ scheduler 接收到这些事件后，在 **静态拓扑层** 更新 workflow 视
 
 调度器需要通过 WIT 接口与 eventbus 进行交互，约束如下（仅示意接口形态，不限制实现细节）：
 
-- `eventbus.subscribe(topic_or_filter) -> stream<Event>`
+- `eventbus.subscribe(topic_filter: string) -> result<string, string>`
   - scheduler 在初始化时订阅其关注的事件类别，例如：
     - 调度控制事件：`"scheduler.control.*"`
     - actions-executor 结果：`"actions.result.*"`
-- `eventbus.publish(event: Event)`
+  - 返回订阅 ID，可用于后续取消订阅和轮询事件
+  - 支持通配符 `"*"` 后缀匹配（如 `"scheduler.control.*"`）
+- `eventbus.unsubscribe(subscription_id: string) -> result<_, string>`
+  - 取消订阅
+- `eventbus.poll-events(subscription_id: string, max_events: u32) -> result<list<event>, string>`
+  - 轮询获取订阅的事件（非阻塞，返回已就绪的事件列表）
+  - 注意：由于 WIT 不支持真正的 stream，使用轮询模式实现事件订阅
+- `eventbus.publish(event: Event) -> result<_, string>`
   - scheduler 向外部发布：
     - 状态变更事件（user/task/action）
     - 拓扑变更结果
@@ -600,21 +607,28 @@ on_tick(now):
   - 不关心 workflow 拓扑，也不关心 user 生命周期
   - 只接收「要执行的 action（或 task 内 action 集合）」和必要上下文（资源绑定、变量等）
 - **组件内部抽象**：
-  - 不暴露底层 socket / HTTP 实现细节给 scheduler
-  - 对 scheduler 提供统一的执行结果模型 `ActionOutcome`：
+  - **不直接与 host 交互**：actions-executor 不能直接导入或调用 host 提供的接口（如 `ntx:hostnet/udp-socket-control`、`ntx:hostnet/resources`）
+  - **通过 eventbus 和 scheduler 间接与 host 通信**：
+    - 需要发包时，通过 `eventbus.publish()` 发布 `packet.tx-request` 事件，由 scheduler 处理并调用 host 的 `udp-socket-control.tx()`
+    - 需要资源时，通过 scheduler 暴露的 WIT 接口（如 `send-scheduler.schedule-send()`）间接获取
+    - 收包通知通过 eventbus 的 `packet.rx` 事件接收，由 scheduler 从 host 的共享内存解析后发布
+  - **对 scheduler 提供统一的执行结果模型 `ActionOutcome`**：
     - `status`：Success / Failed / Timeout / Skipped …
     - `detail`：可读字符串（用于日志）
     - （可选）metric 字段：如 `latency_ms`、`bytes_sent/received` 等
+  - **不暴露底层 socket / HTTP 实现细节给 scheduler**：scheduler 只关心 action 的执行结果，不关心具体的网络协议实现
 
 ### 2. 建议的接口能力（WIT 抽象）
 
 仅列出功能，不限制具体签名：
 
 - `init_component() -> Result<()>`
-  - 组件生命周期初始化，准备 socket / 连接池等（如有）
-- `execute_action(action_def, context) -> Result<ActionOutcome>`
-  - `action_def`：来自 `actions` 配置的定义（method、url 模板、headers、body 模板等）
-  - `context`：由 scheduler 传入的运行时上下文（user_id、task_id、绑定 IP、变量展开结果等）
+  - 组件生命周期初始化，准备内部状态（如有）
+- `execute_action(action_def) -> Result<ActionOutcome>`
+  - `action_def`：来自 `actions` 配置的定义（method、url 模板、headers、body 模板等），已由 scheduler 进行模板展开
+  - 执行过程中如需发包，通过 `eventbus.publish(packet.tx-request)` 委托给 scheduler
+  - 执行过程中如需等待收包，通过订阅 `eventbus` 的 `packet.rx` 事件获取
+  - 返回执行结果 `ActionOutcome`
 - `release_component() -> Result<()>`
   - 在场景结束或不再需要时释放资源
 
@@ -630,22 +644,25 @@ on_tick(now):
 
 ### 1. scheduler → actions-executor 接口
 
-**接口位置**：`plugins/wit/protocol/world.wit`
+**接口位置**：`component/wit/actions-executor/world.wit`
 
 ```wit
-package scheduler:actions-executor@0.1.0;
-use scheduler:core-libs/types@0.1.0 as core-types;
+package ntx:scenario-actions-executor@0.1.0;
+use ntx:scenario-types/types@0.1.0 as t;
+use ntx:scenario-eventbus/event-bus@0.1.0;
 
 interface action-component {
-    use core-types.{action-def, action-outcome};
+    use t.{action-def, action-outcome, action-context};
 
     /// 初始化组件（生命周期管理）
     init-component: func() -> result<_, string>;
     
     /// 执行一个 action
-    /// - action: 来自配置的 action 定义，包含 call 类型和参数
+    /// - action: 来自配置的 action 定义，包含 call 类型和参数（已由 scheduler 进行模板展开）
+    /// - ctx: 运行时上下文（user/task/action 关联信息、资源绑定、变量等）
     /// - 返回: action 执行结果（成功/失败状态 + 详情）
-    execute-action: func(action: action-def) -> result<action-outcome, string>;
+    /// - 注意：执行过程中如需发包，应通过 eventbus 发布 packet.tx-request 事件，由 scheduler 处理
+    execute-action: func(action: action-def, ctx: option<action-context>) -> result<action-outcome, string>;
     
     /// 释放组件资源
     release-component: func() -> result<_, string>;
@@ -653,22 +670,26 @@ interface action-component {
 
 world action-executor-component {
     // actions-executor 需要导入的能力：
-    // 1. socket API（用于 UDP/TCP 等网络操作）
-    import scheduler:core-libs/socket@0.1.0;
-    // 2. eventbus（用于上报执行结果和事件）
-    import scheduler:event-bus/event-bus@0.1.0;
-    // 3. host 提供的 UDP socket 控制接口（L4 及以下）
-    import ntx:hostnet/udp-socket-control;
-    import ntx:hostnet/resources;
+    // 1. eventbus（用于发布 packet.tx-request 事件和接收 packet.rx 事件）
+    import ntx:scenario-eventbus/event-bus@0.1.0;
+    
+    // 注意：actions-executor 不直接导入 host 接口（如 ntx:hostnet/udp-socket-control、ntx:hostnet/resources）
+    // 所有与 host 的交互都通过 eventbus 事件和 scheduler 的 WIT 接口间接完成
     
     // actions-executor 对外暴露的能力：
     export action-component;
 }
 ```
 
-### 2. actions-executor → host 的 UDP Socket 接口
+### 2. scheduler → host 的 UDP Socket 接口（actions-executor 间接使用）
 
-**接口位置**：`plugins/wit/host/udp-socket-control.wit`（已存在，actions-executor 通过 import 使用）
+**接口位置**：`component/wit/host/udp-socket-control.wit`（由 scheduler 导入，actions-executor 通过 scheduler 间接使用）
+
+**重要说明**：
+- 这些接口由 **scheduler 直接导入**，用于与 host 通信
+- **actions-executor 不能直接导入或调用这些接口**
+- actions-executor 如需发包，应通过 `eventbus.publish(packet.tx-request)` 事件委托给 scheduler
+- scheduler 接收到 `packet.tx-request` 事件后，调用这些接口完成实际的网络操作
 
 **核心接口说明**：
 
@@ -721,7 +742,7 @@ interface udp-socket-control {
 }
 ```
 
-**资源管理接口**（`plugins/wit/host/resources.wit`）：
+**资源管理接口**（`component/wit/host/resources.wit`，由 scheduler 导入）：
 
 ```wit
 package ntx:hostnet;
@@ -784,44 +805,65 @@ actions:
 **伪代码流程**：
 
 ```text
-execute_action(action: ActionDef) -> ActionOutcome:
-    // 1. 解析 action 参数
-    peer_ip = action.with["peer-ip"]
-    peer_port = action.with["peer-port"]
-    local_ip = action.with["local-ip"]  // 从 user 资源获取
-    local_port = action.with["local-port"]  // 从 user 资源获取
-    payload = action.with["payload"]
+execute_action(action: ActionDef, ctx: Option<ActionContext>) -> ActionOutcome:
+    // 1. 从 ctx 获取上下文信息
+    user_id = ctx.user_id
+    task_id = ctx.task_id
+    action_id = ctx.action_id
     
-    // 2. 通过 scheduler/host 已建立的资源绑定拿到 socket 上下文（此处简化为已有 sock_id）
+    // 2. 解析 action 参数（params 是 JSON 字符串）
+    params = parse_json(action.params)
+    peer_ip = params["peer-ip"]
+    peer_port = params["peer-port"]
+    local_ip = params["local-ip"]  // 从 user 资源获取
+    local_port = params["local-port"]  // 从 user 资源获取
+    payload = params["payload"]
+    
+    // 3. 通过 scheduler/host 已建立的资源绑定拿到 socket 上下文（此处简化为已有 sock_id）
     sock_id = resolve_user_socket(user_id, peer_ip, peer_port)
     
-    // 3. 构造发包意图（不直接调用 host）
+    // 4. 构造发包意图（不直接调用 host）
     tx_req = {
         sock_id: sock_id,
         payload: payload,
         user_id: user_id,
-        task_id: current_task_id,
-        action_id: action.id,
+        task_id: task_id,
+        action_id: action_id,
     }
     
-    // 4. 通过 eventbus / scheduler WIT 将发包请求交给 scheduler/host 执行
+    // 5. 通过 eventbus / scheduler WIT 将发包请求交给 scheduler/host 执行
     publish_event(PacketTxRequestEvent {
         kind: "packet.tx-request",
         payload: json_encode(tx_req),
     })
     
-    // 7. 等待接收 echo 回复（通过 eventbus 或轮询机制）
+    // 6. 等待接收 echo 回复（通过 eventbus 或轮询机制）
     // 注意：在 wasm-wasip2 单线程下，需要通过事件驱动接收
     // 这里简化描述，实际需要通过 host 的事件机制接收
     
     // 7. 验证回复（如果是 echo client）
     if expect_echo:
         if received_payload == payload:
-            return ActionOutcome { status: Success, detail: "echo matched" }
+            return ActionOutcome { 
+                status: Success, 
+                detail: Some("echo matched"),
+                metrics: None,
+                exports: None,
+            }
         else:
-            return ActionOutcome { status: Failed, detail: "echo mismatch" }
+            return ActionOutcome { 
+                status: Failed, 
+                detail: Some("echo mismatch"),
+                metrics: None,
+                exports: None,
+            }
     
-    return ActionOutcome { status: Success }
+    return ActionOutcome { 
+        status: Success,
+        detail: None,
+        metrics: None,
+        exports: None,
+    }
 ```
 
 ### 5. actions-executor 内部实现流程（UDP Echo Server）
@@ -829,11 +871,12 @@ execute_action(action: ActionDef) -> ActionOutcome:
 **伪代码流程**：
 
 ```text
-execute_action(action: ActionDef) -> ActionOutcome:
-    // 1. 解析 action 参数
-    bind_ip = action.with["bind-ip"]
-    bind_port = action.with["bind-port"]
-    mode = action.with["mode"]  // "echo" 或其他
+execute_action(action: ActionDef, ctx: Option<ActionContext>) -> ActionOutcome:
+    // 1. 解析 action 参数（params 是 JSON 字符串）
+    params = parse_json(action.params)
+    bind_ip = params["bind-ip"]
+    bind_port = params["bind-port"]
+    mode = params["mode"]  // "echo" 或其他
     
     // 2. 创建 socket owner 和分配端口
     owner_id = resources.create-socket-owner("udp-echo-server")
@@ -858,7 +901,12 @@ execute_action(action: ActionDef) -> ActionOutcome:
     //   - 构建回复帧并发送
     
     // 5. 返回执行结果
-    return ActionOutcome { status: Success, detail: "server started" }
+    return ActionOutcome { 
+        status: Success, 
+        detail: Some("server started"),
+        metrics: None,
+        exports: None,
+    }
 ```
 
 ### 6. 关键设计要点
@@ -904,18 +952,18 @@ execute_action(action: ActionDef) -> ActionOutcome:
    - scheduler 在调用 `execute-action` 前，先进行模板展开
    - actions-executor 接收到的 `action-def` 已经是展开后的具体值
 
-5. **发包机制：立即发送 vs 委托 scheduler 周期性发送**：
+5. **发包机制：统一通过 eventbus 委托 scheduler 发送**：
 
-   **方式 A：立即发送（同步）**
-   
-   - actions-executor 直接调用 `udp-socket-control.tx(frame_handle)` 立即发送
-   - 适用于：单次发送、不需要周期性重复的场景
-   
-   **方式 B：委托 scheduler 周期性发送（异步）**
-   
-   - actions-executor 构造发包委托（send request），通过 eventbus 或 WIT 接口提交给 scheduler
-   - scheduler 维护发包调度队列，按照时间/周期发送
-   - 适用于：周期性发包、速率控制（PPS）、批量发送等场景
+   - **actions-executor 不直接调用 host 接口**，所有发包请求都通过 `eventbus.publish(packet.tx-request)` 事件委托给 scheduler
+   - `packet.tx-request` 事件包含：
+     - `sock_id`：目标 socket ID（由 scheduler 在创建 socket 时分配）
+     - `payload`：UDP payload 数据（JSON 编码）
+     - `user_id`、`task_id`、`action_id`：上下文信息（用于 scheduler 更新 `SockCtx` 映射）
+   - scheduler 接收到 `packet.tx-request` 事件后：
+     - 调用 host 的 `udp-socket-control.build-reply()` 构建回复帧
+     - 调用 host 的 `udp-socket-control.tx()` 发送数据包
+     - 更新 `SockCtx` 映射表（`sock_id -> {user_id, task_id, action_id, last_seen_ms}`）
+   - 对于周期性发包、速率控制（PPS）、批量发送等场景，scheduler 可以通过 `send-scheduler.schedule-send()` 接口维护发包调度队列
    
    **发包委托数据结构**：
    ```wit
@@ -930,6 +978,9 @@ execute_action(action: ActionDef) -> ActionOutcome:
        
        // 发送策略
        schedule: send-schedule,      // 发送时间表
+       
+       // Payload 配置（payload 和 payload-generator 二选一，两者同时存在时 host/scheduler 自行裁决）
+       payload: option<list<u8>>,     // 固定 payload（可选）
        payload-generator: option<payload-generator>,  // 动态生成 payload（可选）
        
        // 生命周期控制
@@ -942,42 +993,52 @@ execute_action(action: ActionDef) -> ActionOutcome:
        once,
        
        // 固定间隔周期性发送
-       periodic {
-           interval-ms: u64,         // 发送间隔（毫秒）
-           start-delay-ms: option<u64>,  // 首次发送延迟（可选）
-       },
+       periodic(periodic-schedule),
        
        // 按时间表发送（支持复杂调度）
-       timetable {
-           timestamps: list<u64>,     // 发送时间戳列表（毫秒，相对于请求创建时间）
-       },
+       timetable(timetable-schedule),
        
        // 速率控制发送（PPS：packets per second）
-       rate-limited {
-           pps: u32,                  // 每秒包数
-           burst-size: option<u32>,   // 突发大小（可选，用于令牌桶）
-       },
+       rate-limited(rate-limited-schedule),
+   }
+   
+   record periodic-schedule {
+       interval-ms: u64,         // 发送间隔（毫秒）
+       start-delay-ms: option<u64>,  // 首次发送延迟（可选）
+   }
+   
+   record timetable-schedule {
+       timestamps-ms: list<u64>,     // 发送时间戳列表（毫秒，相对于请求创建时间）
+   }
+   
+   record rate-limited-schedule {
+       pps: u32,                  // 每秒包数
+       burst-size: option<u32>,   // 突发大小（可选，用于令牌桶）
    }
    
    // Payload 生成器（支持动态 payload）
    variant payload-generator {
        // 固定 payload
-       fixed {
-           payload: list<u8>,
-       },
+       fixed(fixed-payload),
        
        // 序列号 payload（每次发送递增）
-       sequence {
-           template: list<u8>,        // payload 模板（可包含 {{seq}} 占位符）
-           start-seq: u32,            // 起始序列号
-           format: sequence-format,   // 序列号格式（binary/hex/text）
-       },
+       sequence(sequence-payload),
        
        // 时间戳 payload
-       timestamp {
-           template: list<u8>,         // payload 模板（可包含 {{timestamp}} 占位符）
-           format: timestamp-format,   // 时间戳格式
-       },
+       timestamp(timestamp-payload),
+   }
+   
+   record fixed-payload {
+       payload: list<u8>,
+   }
+   
+   record sequence-payload {
+       template: list<u8>,        // payload 模板（可包含 {{seq}} 占位符）
+       start-seq: u32,            // 起始序列号
+   }
+   
+   record timestamp-payload {
+       template: list<u8>,         // payload 模板（可包含 {{timestamp}} 占位符）
    }
    ```
    
@@ -1055,8 +1116,9 @@ execute_action(action: ActionDef) -> ActionOutcome:
        request-id: string,
        state: send-request-state,
        total-sent: u32,
-       last-sent-time: option<u64>,
-       next-send-time: option<u64>,
+       last-sent-time-ms: option<u64>,    // 上次发送时间（毫秒）
+       next-send-time-ms: option<u64>,    // 下次发送时间（毫秒）
+       last-error: option<string>,         // 最后一次错误信息（如果有）
    }
    
    enum send-request-state {
@@ -1073,28 +1135,32 @@ execute_action(action: ActionDef) -> ActionOutcome:
    
    ```text
    // 在 execute_action 中委托周期性发包
-   execute_action(action: ActionDef) -> ActionOutcome:
-       // 1. 创建 socket（同之前）
-       socket = udp-socket-control.create(...)
-       udp-socket-control.bind(...)
+   execute_action(action: ActionDef, ctx: Option<ActionContext>) -> ActionOutcome:
+       // 1. 从 ctx 获取上下文信息
+       user_id = ctx.user_id
+       task_id = ctx.task_id
        
-       // 2. 构造发包委托
+       // 2. 构造发包委托（支持固定 payload 或动态生成）
        send_req = send-request {
            request-id: generate_id(),
-           task-id: context.task_id,
-           user-id: context.user_id,
+           task-id: task_id,
+           user-id: user_id,
            socket-id: socket.sock,
-           schedule: send-schedule.rate-limited {
+           schedule: send-schedule.rate-limited(rate-limited-schedule {
                pps: 100,  // 每秒 100 包
-               burst-size: 10,
-           },
-           payload-generator: payload-generator.sequence {
-               template: b"echo-seq-{{seq}}",
-               start-seq: 0,
-               format: text,
-           },
-           max-count: 1000,  // 发送 1000 次
-           timeout-ms: 30000,  // 30 秒超时
+               burst-size: Some(10),
+           }),
+           // 方式1：使用固定 payload
+           payload: Some(b"hello-ntx"),
+           payload-generator: None,
+           // 或方式2：使用动态生成 payload
+           // payload: None,
+           // payload-generator: Some(payload-generator.sequence(sequence-payload {
+           //     template: b"echo-seq-{{seq}}",
+           //     start-seq: 0,
+           // })),
+           max-count: Some(1000),  // 发送 1000 次
+           timeout-ms: Some(30000),  // 30 秒超时
        }
        
        // 3. 委托 scheduler 发送
@@ -1103,7 +1169,9 @@ execute_action(action: ActionDef) -> ActionOutcome:
        // 4. 返回（action 执行完成，实际发包由 scheduler 异步进行）
        return ActionOutcome {
            status: Success,
-           detail: format!("scheduled send request: {}", request_id)
+           detail: format!("scheduled send request: {}", request_id),
+           metrics: None,
+           exports: None,
        }
    ```
    
@@ -1232,7 +1300,7 @@ execute_action(action: ActionDef) -> ActionOutcome:
 scheduler (component)
     │
     ├─→ import action-component (from actions-executor)
-    │       └─→ execute-action(action-def) → action-outcome
+    │       └─→ execute-action(action-def, ctx: option<action-context>) → action-outcome
     │
     ├─→ export send-scheduler (新增：发包调度接口)
     │       ├─→ schedule-send(send-request) → request-id
@@ -1240,7 +1308,9 @@ scheduler (component)
     │       └─→ query-send-status(request-id) → send-status
     │
     ├─→ import event-bus
-    │       └─→ 订阅/发布事件（接收 action-result 事件）
+    │       ├─→ subscribe(topic-filter) → subscription-id
+    │       ├─→ poll-events(subscription-id, max-events) → list<event>
+    │       └─→ publish(event)  // 订阅/发布事件（接收 action-result 事件）
     │
     ├─→ import host packet polling (模式 A)
     │       ├─→ poll_oneoff([EventKind::Packet])
@@ -1253,49 +1323,55 @@ scheduler (component)
 actions-executor (component)
     │
     ├─→ export action-component
-    │       └─→ execute-action()
+    │       └─→ execute-action(action-def, ctx: option<action-context>) → action-outcome
     │
-    ├─→ export on_packet_received (模式 B，可选)
-    │       └─→ on_packet_received(meta, payload) → response
-    │
-    ├─→ import scheduler:send-scheduler (新增：委托发包)
-    │       └─→ schedule-send(send-request)
-    │
-    ├─→ import ntx:hostnet/udp-socket-control
-    │       ├─→ create()
-    │       ├─→ bind()
-    │       └─→ build-reply()  // 仅用于立即发送模式
-    │       └─→ tx()          // 仅用于立即发送模式
-    │
-    ├─→ import ntx:hostnet/resources
-    │       ├─→ create-socket-owner()
-    │       └─→ acquire-udp-port()
-    │
-    └─→ import scheduler:event-bus/event-bus
-            └─→ 发布 action 执行结果事件
+    └─→ import ntx:scenario-eventbus/event-bus@0.1.0
+            ├─→ publish(packet.tx-request)  // 委托发包给 scheduler
+            ├─→ subscribe(packet.rx)        // 接收收包事件（可选）
+            └─→ poll-events(subscription-id, max-events)  // 轮询订阅的事件
+    
+    // 注意：actions-executor 不直接导入 host 接口（如 ntx:hostnet/udp-socket-control、ntx:hostnet/resources）
+    // 所有与 host 的交互都通过 eventbus 事件和 scheduler 的 WIT 接口间接完成
 ```
 
-**发包流程对比**：
+**发包流程（统一通过 eventbus 委托 scheduler）**：
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ 方式 A：立即发送（actions-executor 直接调用）                │
+│ actions-executor 发包流程（通过 eventbus）                    │
 ├─────────────────────────────────────────────────────────────┤
 │ actions-executor.execute_action()                           │
-│   ├─→ udp-socket-control.build-reply(socket, payload)      │
-│   └─→ udp-socket-control.tx(frame_handle)  ← 立即发送     │
+│   ├─→ 构造 packet.tx-request 事件 {                        │
+│   │      sock_id: <socket-id>,                              │
+│   │      payload: <udp-payload>,                            │
+│   │      user_id: <user-id>,                               │
+│   │      task_id: <task-id>,                                │
+│   │      action_id: <action-id>,                            │
+│   │   }                                                      │
+│   └─→ eventbus.publish(packet.tx-request)  ← 委托给 scheduler│
+└─────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────┐
+│ scheduler 处理 packet.tx-request 事件                       │
+├─────────────────────────────────────────────────────────────┤
+│ scheduler 主循环（从 eventbus 接收事件）                     │
+│   ├─→ 接收 packet.tx-request 事件                          │
+│   ├─→ 更新 SockCtx 映射表 (sock_id -> {user_id, task_id, ...})│
+│   ├─→ udp-socket-control.build-reply(sock_id, payload)   │
+│   └─→ udp-socket-control.tx(frame_handle)  ← 实际发送       │
 └─────────────────────────────────────────────────────────────┘
 
+对于周期性发包、速率控制（PPS）、批量发送等场景：
 ┌─────────────────────────────────────────────────────────────┐
-│ 方式 B：委托 scheduler 周期性发送                            │
-├─────────────────────────────────────────────────────────────┤
 │ actions-executor.execute_action()                           │
-│   ├─→ 构造 send-request {                                   │
-│   │      schedule: rate-limited { pps: 100 },               │
-│   │      payload-generator: sequence { ... },              │
-│   │      max-count: 1000,                                   │
-│   │   }                                                      │
-│   └─→ scheduler.schedule-send(send-request)  ← 委托发送     │
+│   └─→ 构造 send-request {                                   │
+│          schedule: rate-limited { pps: 100 },               │
+│          payload-generator: sequence { ... },              │
+│          max-count: 1000,                                   │
+│       }                                                      │
+│   └─→ eventbus.publish(packet.tx-request) 或               │
+│   └─→ scheduler.send-scheduler.schedule-send(send-request) │
 │                                                              │
 │ scheduler 主循环                                             │
 │   ├─→ 检查发送队列（按时间排序）                            │

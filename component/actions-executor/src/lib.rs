@@ -4,6 +4,7 @@
 wit_bindgen::generate!({
     world: "ntx:scenario-actions-executor/action-executor-component@0.1.0",
     path: [
+        "../wit/host",
         "../wit/core-types",
         "../wit/eventbus",
         "../wit/actions-executor",
@@ -32,17 +33,22 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
 
     fn execute_action(
         action: ntx::scenario_types::types::ActionDef,
+        ctx: Option<ntx::scenario_types::types::ActionContext>,
     ) -> Result<ntx::scenario_types::types::ActionOutcome, String> {
+        let user_id = ctx.as_ref().and_then(|c| c.user_id.clone());
+        let task_id = ctx.as_ref().and_then(|c| c.task_id.clone());
+        let action_id = ctx.as_ref().and_then(|c| c.action_id.clone());
+
         println!(
             "[actions-executor] execute action id={} call={} user={:?} task={:?}",
-            action.id, action.call, action.user_id, action.task_id
+            action.id, action.call, user_id, task_id
         );
 
         match action.call.as_str() {
             // 对齐 packet-engine，但不直接调用 host：发布事件让 scheduler/host 侧处理。
             "udp.send-reply" => {
-                let params: serde_json::Value = serde_json::from_str(&action.with_params)
-                    .map_err(|e| format!("parse with_params as json: {e}"))?;
+                let params: serde_json::Value = serde_json::from_str(&action.params)
+                    .map_err(|e| format!("parse params as json: {e}"))?;
                 let sock_id = params
                     .get("socket_id")
                     .and_then(serde_json::Value::as_u64)
@@ -59,16 +65,16 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
                     "sock_id": sock_id,
                     "payload": payload,
                     "action_id": action.id,
-                    "task_id": action.task_id,
-                    "user_id": action.user_id,
+                    "task_id": task_id,
+                    "user_id": user_id,
                 })
                 .to_string();
                 ntx::scenario_eventbus::event_bus::publish(
                     &ntx::scenario_eventbus::event_bus::Event {
                         id: event_id,
                         kind: "packet.tx-request".to_string(),
-                        user_id: action.user_id.clone(),
-                        task_id: action.task_id.clone(),
+                        user_id: user_id.clone(),
+                        task_id: task_id.clone(),
                         action_id: Some(action.id.clone()),
                         payload: payload_json,
                         correlation_id: None,
@@ -78,19 +84,21 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
                 .map_err(|e| format!("publish tx-request failed: {e}"))?;
 
                 Ok(ntx::scenario_types::types::ActionOutcome {
-                    status: ntx::scenario_types::types::ActionStatus::Success,
+                    status: ntx::scenario_types::types::OutcomeStatus::Success,
                     detail: Some(format!(
                         "udp.send-reply delegated socket_id={} len={}",
                         sock_id,
                         payload.len()
                     )),
-                    latency_ms: None,
+                    metrics: None,
+                    exports: None,
                 })
             }
             _ => Ok(ntx::scenario_types::types::ActionOutcome {
-                status: ntx::scenario_types::types::ActionStatus::Success,
+                status: ntx::scenario_types::types::OutcomeStatus::Success,
                 detail: Some("stub executed".to_string()),
-                latency_ms: None,
+                metrics: None,
+                exports: None,
             }),
         }
     }

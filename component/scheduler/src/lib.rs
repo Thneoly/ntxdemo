@@ -4,9 +4,9 @@
 wit_bindgen::generate!({
     world: "ntx:scenario-scheduler/scheduler-main@0.1.0",
     path: [
+        "../wit/host",
         "../wit/core-types",
         "../wit/eventbus",
-        "../wit/host",
         "../wit/actions-executor",
         "../wit/scheduler",
     ],
@@ -25,9 +25,7 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
 }
 
 impl exports::ntx::scenario_scheduler::send_scheduler::Guest for SchedulerExports {
-    fn schedule_send(
-        request: exports::ntx::scenario_scheduler::send_scheduler::SendRequest,
-    ) -> Result<String, String> {
+    fn schedule_send(request: ntx::scenario_types::types::SendRequest) -> Result<String, String> {
         // 直接回显 request-id，后续可接入计时器/速率控制。
         Ok(request.request_id.clone())
     }
@@ -38,16 +36,15 @@ impl exports::ntx::scenario_scheduler::send_scheduler::Guest for SchedulerExport
 
     fn query_send_status(
         request_id: String,
-    ) -> Result<exports::ntx::scenario_scheduler::send_scheduler::SendStatus, String> {
-        Ok(
-            exports::ntx::scenario_scheduler::send_scheduler::SendStatus {
-                request_id,
-                state: exports::ntx::scenario_scheduler::send_scheduler::SendRequestState::Pending,
-                total_sent: 0,
-                last_sent_time: None,
-                next_send_time: None,
-            },
-        )
+    ) -> Result<ntx::scenario_types::types::SendStatus, String> {
+        Ok(ntx::scenario_types::types::SendStatus {
+            request_id,
+            state: ntx::scenario_types::types::SendRequestState::Pending,
+            total_sent: 0,
+            last_sent_time_ms: None,
+            next_send_time_ms: None,
+            last_error: None,
+        })
     }
 }
 
@@ -67,8 +64,8 @@ export!(SchedulerExports);
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const NTX_MAGIC: u32 = 0x4E54_5830; // "NTX0"
