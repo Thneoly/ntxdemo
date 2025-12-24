@@ -1,12 +1,25 @@
 package ntx:scenario-types@0.1.0;
 
-use ntx:hostnet/types as host-types;
-
 /// scheduler / actions-executor 之间共享的数据结构（与配置/运行态相关）。
 ///
 /// 设计来源：`component/doc/DESIGN_PROMPT.md`
 interface types {
-    use host-types.{ipv4-addr, mac-addr};
+    /// 基础网络类型（不依赖 host，保持 core-types 独立性）
+    record ipv4-addr {
+        a: u8,
+        b: u8,
+        c: u8,
+        d: u8,
+    }
+
+    record mac-addr {
+        a: u8,
+        b: u8,
+        c: u8,
+        d: u8,
+        e: u8,
+        f: u8,
+    }
     /// 以 JSON string 作为跨组件 payload（避免频繁引入复杂 WIT 类型，后续可替换为更强类型）。
     type json = string;
 
