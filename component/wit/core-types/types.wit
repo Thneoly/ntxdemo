@@ -159,17 +159,4 @@ interface types {
         next-send-time-ms: option<u64>,
         last-error: option<string>,
     }
-
-    /// Mode-B（server）路径：host 直接将 UDP datagram 上送给 guest 处理。
-    record udp-meta {
-        src-mac: mac-addr,
-        dst-mac: mac-addr,
-        src-ip: ipv4-addr,
-        dst-ip: ipv4-addr,
-        src-port: u16,
-        dst-port: u16,
-        rx-ifindex: u32,
-        /// 可选 socket-id（如果 host 能解析到具体 socket/flow）。
-        socket-id: option<u64>,
-    }
 }

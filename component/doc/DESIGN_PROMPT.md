@@ -664,6 +664,38 @@ on_tick(now):
     - （可选）metric 字段：如 `latency_ms`、`bytes_sent/received` 等
   - **不暴露底层 socket / HTTP 实现细节给 scheduler**：scheduler 只关心 action 的执行结果，不关心具体的网络协议实现
 
+### 1.1 强约束：非阻塞 / 等待 / 超时 / 重试 的推荐范式（必须遵守）
+
+> 本系统在 wasm32-wasip2 下以**单线程事件驱动**为第一原则；因此“等待”不应发生在 actions-executor 内部。
+
+#### 核心原则
+
+- **executor 不做自旋等待**：禁止在 `execute-action()` 内部通过 loop/poll 的方式等待 `packet.rx` / 外部回调 / 定时器等（包括忙等、重复 poll-events、sleep 等）。
+- **等待由 scheduler 的状态机节点推进**：
+  - action 负责“发起副作用”（发布 `packet.tx-request`、提交 `send-scheduler` 等）并**立即返回**
+  - workflow 中使用 `wait` 节点（或等价机制）消费 `packet.rx` 等事件，推动 task 从 `Waiting -> Completed/Failed`
+- **超时由 scheduler 的 timer event 驱动**：超时/重试/think-time 统一由 scheduler 的 TimerManager 生成 `timer-fired`（或等价事件）注入事件队列，由状态机决定迁移与重试，而不是 executor 内部计时与循环。
+
+#### 推荐流程（以 UDP Echo client 为例）
+
+```text
+execute-action(udp.send)  -> publish(packet.tx-request) -> return Success
+                          scheduler 处理 tx 并建立 sock_ctx
+host 收到包 -> notify-rx -> scheduler 解析 ring -> publish(packet.rx)
+workflow wait 节点消费 packet.rx -> 状态机迁移 Waiting -> Completed
+若超时：TimerFired -> 状态机迁移 Waiting -> Failed/Ready(重试)
+```
+
+#### 允许与不允许（实践口径）
+
+- **允许**
+  - executor：构造事件/委托请求（`packet.tx-request` / `send-scheduler.schedule-send`）并返回 `ActionOutcome`
+  - scheduler：订阅/轮询 eventbus、解析 RX ring、投递 `packet.rx`、发出 timer event、驱动状态机
+- **不允许**
+  - executor：在一次 `execute-action` 中“等到某个事件发生”为止（即便有 deadline），这会导致单线程被占用并放大尾延迟
+
+> 现状提示：如果仓库里存在 `udp.send-recv` 这类在 executor 内部订阅并轮询 `packet.rx` 的实现，它应视为**过渡方案**，优先按上述范式迁移到“wait 节点 + timer event”模型。
+
 ### 2. 建议的接口能力（WIT 抽象）
 
 仅列出功能，不限制具体签名：
@@ -673,7 +705,7 @@ on_tick(now):
 - `execute_action(action_def) -> Result<ActionOutcome>`
   - `action_def`：来自 `actions` 配置的定义（method、url 模板、headers、body 模板等），已由 scheduler 进行模板展开
   - 执行过程中如需发包，通过 `eventbus.publish(packet.tx-request)` 委托给 scheduler
-  - 执行过程中如需等待收包，通过订阅 `eventbus` 的 `packet.rx` 事件获取
+  - **不在 executor 内等待收包**：等待/超时/重试由 scheduler 的状态机（`wait` 节点 + timer event）推进；executor 仅负责发起副作用并返回
   - 返回执行结果 `ActionOutcome`
 - `release_component() -> Result<()>`
   - 在场景结束或不再需要时释放资源
@@ -694,13 +726,15 @@ on_tick(now):
 
 ```wit
 package ntx:scenario-actions-executor@0.1.0;
+
 use ntx:scenario-types/types@0.1.0 as t;
 use ntx:scenario-eventbus/event-bus@0.1.0;
+use ntx:scenario-send-scheduler/send-scheduler@0.1.0;
 
+/// actions-executor：只负责执行 action，不负责调度。
 interface action-component {
     use t.{action-def, action-outcome, action-context};
 
-    /// 初始化组件（生命周期管理）
     init-component: func() -> result<_, string>;
     
     /// 执行一个 action
@@ -710,26 +744,19 @@ interface action-component {
     /// - 注意：执行过程中如需发包，应通过 eventbus 发布 packet.tx-request 事件，由 scheduler 处理
     execute-action: func(action: action-def, ctx: option<action-context>) -> result<action-outcome, string>;
     
-    /// 释放组件资源
     release-component: func() -> result<_, string>;
 }
 
 world action-executor-component {
-    // actions-executor 需要导入的能力：
-    // 1. eventbus（用于发布 packet.tx-request 事件和接收 packet.rx 事件）
-    import ntx:scenario-eventbus/event-bus@0.1.0;
-    
-    // 注意：actions-executor 不直接导入 host 接口（如 ntx:hostnet/udp-socket-control、ntx:hostnet/resources）
-    // 所有与 host 的交互都通过 eventbus 事件和 scheduler 的 WIT 接口间接完成
-    
-    // actions-executor 对外暴露的能力：
+    import event-bus;
+    import send-scheduler;
     export action-component;
 }
 ```
 
 ### 2. scheduler → host 的 UDP Socket 接口（actions-executor 间接使用）
 
-**接口位置**：`component/wit/host/udp-socket-control.wit`（由 scheduler 导入，actions-executor 通过 scheduler 间接使用）
+**接口位置**：`component/wit/host/world.wit`（由 scheduler 导入；该文件内包含 `udp-socket-control` 与 `resources` 两个 interface）
 
 **重要说明**：
 - 这些接口由 **scheduler 直接导入**，用于与 host 通信
@@ -788,7 +815,7 @@ interface udp-socket-control {
 }
 ```
 
-**资源管理接口**（`component/wit/host/resources.wit`，由 scheduler 导入）：
+**资源管理接口**（同样位于 `component/wit/host/world.wit`，由 scheduler 导入）：
 
 ```wit
 package ntx:hostnet;
@@ -1292,6 +1319,8 @@ execute_action(action: ActionDef, ctx: Option<ActionContext>) -> ActionOutcome:
 
 > 说明：本系统**不支持 Mode-B（host 直接调用 actions-executor 导出函数）**。收包永远先进入 scheduler，
 > 由 scheduler 统一转译为 `packet.rx` 事件，再驱动状态机与后续 action 执行。
+>
+> 备注：为避免口径冲突，`ntx:scenario-types` 的核心类型（`component/wit/core-types/types.wit`）不再包含任何 Mode-B 相关结构；如需研究 host→guest 直调的实验性方案，请参考独立的插件协议（例如 `plugins/wit/net/packet.wit`）。
 
 ##### 为什么不支持 Mode-B（host 直调 guest）
 
@@ -1441,3 +1470,29 @@ actions-executor (component)
 - actions-executor：**专注于执行 action 的 wasm-wasip2 组件**，不能直接与 host 通信，只能通过 scheduler 暴露的 WIT 接口与 eventbus 事件间接驱动 host，对 scheduler 提供统一的执行接口与结果模型。
 - 配置层：通过 **workflow + workbook + actions + load + user_resources**，在不修改二进制的前提下描述复杂场景。
 - 以上所有数据与行为，均满足「事件是唯一合法动态入口」这一约束，后续实现时可以以本设计为约束，针对 WIT 接口与内部数据结构做进一步细化与代码化。
+
+---
+
+十一、现状完成度 & 里程碑（与实现对齐）
+--------------------------------------
+
+> 目的：避免“设计看起来都支持，但实现还没做”的落差。本节以仓库当前代码为准，标注已实现/部分实现/未实现，并给出下一步里程碑。
+
+### 1) actions-executor（`component/actions-executor`）
+
+- **已实现**
+  - `init-component / execute-action / release-component` 基本骨架已完成（WIT 对齐 `component/wit/actions-executor/world.wit`）
+  - `udp.send` / `udp.send-reply`：通过 `eventbus.publish(kind="packet.tx-request")` 委托 scheduler/host 侧实际发包
+  - `udp.schedule-send`：可调用 `send-scheduler.schedule-send()` 提交发送调度（**固定 payload**）
+- **部分实现（存在待优化点）**
+  - `udp.send-recv`：当前在 executor 内部 `subscribe("packet.rx") + poll-events` 轮询等待（有自旋风险）；更推荐按本文档的主口径，改为“只发 tx 并返回”，由 workflow 的 `wait` 节点消费 `packet.rx` 推进状态机
+- **未实现**
+  - `http.*` / `tcp.*` 等通用 action（目前返回 `Failed(not implemented)`）
+  - `payload-generator`（sequence/timestamp 等）在 `udp.schedule-send` 中尚未实现
+  - 更完善的 metrics 填充与 correlation-id 透传（当前为 best-effort/缺省）
+
+### 2) 下一步里程碑（建议）
+
+- **M1（对齐事件驱动语义）**：移除 executor 内自旋等待（`udp.send-recv`），统一由 scheduler+状态机处理等待/超时/重试
+- **M2（完善发包调度能力）**：补齐 `payload-generator`（sequence/timestamp），并完善 `send-scheduler` 的状态回报与事件
+- **M3（扩展 action 类型）**：落地最小 `http.*` / `tcp.*` action（先保证接口闭环与可观测性，再逐步增强能力）

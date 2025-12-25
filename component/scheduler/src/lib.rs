@@ -102,7 +102,8 @@ impl exports::ntx::scenario_scheduler::packet_ingest::Guest for SchedulerExports
 
 impl exports::ntx::scenario_scheduler::packet_tx::Guest for SchedulerExports {
     fn process_tx_request(payload_json: String) -> Result<(), String> {
-        handle_tx_request(&payload_json)
+        // host direct call: no correlation_id available
+        handle_tx_request(&payload_json, None)
     }
 }
 
@@ -572,6 +573,7 @@ struct SockCtx {
     user_id: Option<String>,
     task_id: Option<String>,
     action_id: Option<String>,
+    correlation_id: Option<String>,
     last_seen_ms: u64,
 }
 
@@ -1435,7 +1437,7 @@ fn run_event_loop(
             }
             for ev in events {
                 if ev.kind == "packet.tx-request" {
-                    if let Err(e) = handle_tx_request(&ev.payload) {
+                    if let Err(e) = handle_tx_request(&ev.payload, ev.correlation_id.as_deref()) {
                         println!("[scheduler] process tx-request failed: {e}");
                     }
                 }
@@ -3016,7 +3018,13 @@ fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, Stri
                 .map_err(|e| format!("execute_action failed: {e}"))?;
 
         // 结果事件化：发布 action-result，由事件处理器更新状态/重试/超时（兼容 future async）
-        publish_action_result_event(&user_id, &node_id, &def.id, &outcome)?;
+        publish_action_result_event(
+            &user_id,
+            &node_id,
+            &def.id,
+            act_ctx.correlation_id.as_deref(),
+            &outcome,
+        )?;
         did = true;
     }
     Ok(did)
@@ -3026,12 +3034,22 @@ fn publish_action_result_event(
     user_id: &str,
     task_id: &str,
     action_id: &str,
+    correlation_id: Option<&str>,
     outcome: &ntx::scenario_types::types::ActionOutcome,
 ) -> Result<(), String> {
     let now = now_ms();
+    let metrics = outcome.metrics.as_ref().map(|m| {
+        serde_json::json!({
+            "latency_ms": m.latency_ms,
+            "bytes_sent": m.bytes_sent,
+            "bytes_received": m.bytes_received,
+            "response_code": m.response_code,
+        })
+    });
     let payload = serde_json::json!({
         "status": format!("{:?}", outcome.status),
         "detail": outcome.detail,
+        "metrics": metrics,
         "exports": outcome.exports,
     })
     .to_string();
@@ -3044,7 +3062,7 @@ fn publish_action_result_event(
         task_id: Some(task_id.to_string()),
         action_id: Some(action_id.to_string()),
         payload,
-        correlation_id: None,
+        correlation_id: correlation_id.map(|s| s.to_string()),
         timestamp_ms: now,
     })
     .map_err(|e| format!("publish scheduler.action-result: {e}"))?;
@@ -3616,7 +3634,11 @@ fn build_action_def_with_ctx(
         user_id: user_id.map(|s| s.to_string()),
         task_id: task_id.map(|s| s.to_string()),
         action_id: Some(action.id.clone()),
-        correlation_id: None,
+        // Correlate: one id per action invocation for tracing across tx/rx/action-result.
+        correlation_id: Some(format!(
+            "corr-{}",
+            EVENT_COUNTER.fetch_add(1, Ordering::Relaxed)
+        )),
         vars: Some(ctx.vars.to_string()),
         resources: Some(ctx.resources.to_string()),
         deadline_ms: None,
@@ -3818,12 +3840,12 @@ fn publish_packet_event(sock_id: u64, payload: &[u8], ctx: Option<&SockCtx>, now
         task_id: ctx.and_then(|c| c.task_id.clone()),
         action_id: ctx.and_then(|c| c.action_id.clone()),
         payload: json_payload,
-        correlation_id: None,
+        correlation_id: ctx.and_then(|c| c.correlation_id.clone()),
         timestamp_ms: now_ms,
     });
 }
 
-fn handle_tx_request(payload_json: &str) -> Result<(), String> {
+fn handle_tx_request(payload_json: &str, correlation_id: Option<&str>) -> Result<(), String> {
     #[derive(serde::Deserialize)]
     struct TxReq {
         sock_id: u64,
@@ -3882,6 +3904,7 @@ fn handle_tx_request(payload_json: &str) -> Result<(), String> {
         req.user_id.as_deref(),
         req.task_id.as_deref(),
         req.action_id.as_deref(),
+        correlation_id,
     )
 }
 
@@ -3905,6 +3928,7 @@ fn send_udp(
     user_id: Option<&str>,
     task_id: Option<&str>,
     action_id: Option<&str>,
+    correlation_id: Option<&str>,
 ) -> Result<(), String> {
     let now_ms = now_ms();
 
@@ -3917,6 +3941,7 @@ fn send_udp(
                     user_id: user_id.map(|s| s.to_string()),
                     task_id: task_id.map(|s| s.to_string()),
                     action_id: action_id.map(|s| s.to_string()),
+                    correlation_id: correlation_id.map(|s| s.to_string()),
                     last_seen_ms: now_ms,
                 },
             );
@@ -4080,6 +4105,7 @@ fn tick_send_scheduler(now_ms: u64) {
                 job.req.payload.as_deref().unwrap_or(&[]),
                 Some(job.req.user_id.as_str()),
                 Some(job.req.task_id.as_str()),
+                None,
                 None,
             ) {
                 job.last_error = Some(e);

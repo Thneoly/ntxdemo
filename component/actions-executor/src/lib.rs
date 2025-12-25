@@ -40,24 +40,6 @@ enum PayloadSpec {
     Bytes(Vec<u8>),
 }
 
-fn parse_timeout_ms(params: &serde_json::Value) -> Option<u64> {
-    params
-        .get("timeout-ms")
-        .or_else(|| params.get("timeout_ms"))
-        .and_then(|v| v.as_u64())
-}
-
-fn min_deadline_ms(now: u64, from_ctx: Option<u64>, from_params: Option<u64>) -> Option<u64> {
-    // ctx.deadline_ms is absolute; params timeout is relative (ms from now)
-    let p_deadline = from_params.map(|t| now.saturating_add(t));
-    match (from_ctx, p_deadline) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (Some(a), None) => Some(a),
-        (None, Some(b)) => Some(b),
-        (None, None) => None,
-    }
-}
-
 fn parse_payload_spec(params: &serde_json::Value) -> Result<PayloadSpec, String> {
     if let Some(arr) = params.get("payload_bytes").and_then(|v| v.as_array()) {
         let mut out = Vec::with_capacity(arr.len());
@@ -90,6 +72,7 @@ fn publish_tx_request(
     action_id: &str,
     user_id: &Option<String>,
     task_id: &Option<String>,
+    correlation_id: &Option<String>,
 ) -> Result<(), String> {
     let event_id = next_event_id();
     let mut obj = serde_json::Map::new();
@@ -139,7 +122,7 @@ fn publish_tx_request(
         task_id: task_id.clone(),
         action_id: Some(action_id.to_string()),
         payload: payload_json,
-        correlation_id: None,
+        correlation_id: correlation_id.clone(),
         timestamp_ms: now_ms(),
     })
     .map_err(|e| format!("publish tx-request failed: {e}"))?;
@@ -226,61 +209,6 @@ fn parse_schedule(
     }
 }
 
-fn poll_for_packet_rx(
-    subscription_id: &str,
-    want_user_id: &Option<String>,
-    want_task_id: &Option<String>,
-    want_action_id: &str,
-    want_sock_id: u64,
-    deadline_ms: Option<u64>,
-    max_iters: u32,
-) -> Result<Option<serde_json::Value>, String> {
-    for _ in 0..max_iters {
-        if let Some(dl) = deadline_ms {
-            if now_ms() >= dl {
-                return Ok(None);
-            }
-        }
-
-        let events = ntx::scenario_eventbus::event_bus::poll_events(subscription_id, 64)
-            .map_err(|e| format!("poll_events(packet.rx) failed: {e}"))?;
-        if events.is_empty() {
-            continue;
-        }
-
-        for ev in events {
-            if ev.kind != "packet.rx" {
-                continue;
-            }
-
-            // Best-effort match: action_id + user_id + (optional task_id) + payload.sock_id
-            if ev.action_id.as_deref() != Some(want_action_id) {
-                continue;
-            }
-            if want_user_id.is_some() && ev.user_id.as_ref() != want_user_id.as_ref() {
-                continue;
-            }
-            if want_task_id.is_some() && ev.task_id.as_ref() != want_task_id.as_ref() {
-                continue;
-            }
-
-            let p: serde_json::Value = serde_json::from_str(&ev.payload)
-                .map_err(|e| format!("decode packet.rx payload json: {e}"))?;
-            let sock_id = p
-                .get("sock_id")
-                .or_else(|| p.get("sock-id"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            if sock_id != want_sock_id {
-                continue;
-            }
-
-            return Ok(Some(p));
-        }
-    }
-    Ok(None)
-}
-
 impl exports::ntx::scenario_actions_executor::action_component::Guest for ActionExecutorImpl {
     fn init_component() -> Result<(), String> {
         println!("[actions-executor] init-component");
@@ -293,7 +221,7 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
     ) -> Result<ntx::scenario_types::types::ActionOutcome, String> {
         let user_id = ctx.as_ref().and_then(|c| c.user_id.clone());
         let task_id = ctx.as_ref().and_then(|c| c.task_id.clone());
-        let ctx_deadline_ms = ctx.as_ref().and_then(|c| c.deadline_ms);
+        let correlation_id = ctx.as_ref().and_then(|c| c.correlation_id.clone());
 
         println!(
             "[actions-executor] execute action id={} call={} user={:?} task={:?}",
@@ -318,6 +246,7 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
                     &action.id,
                     &user_id,
                     &task_id,
+                    &correlation_id,
                 )?;
 
                 let exports = serde_json::json!({
@@ -335,6 +264,8 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
                 })
             }
             "udp.send-recv" => {
+                // P0: 不在 executor 内部等待 packet.rx（避免单线程自旋/阻塞）。
+                // 该 action 仅委托发包；收包等待/超时/重试由 scheduler 的 wait 节点 + timer event 推进。
                 let params: serde_json::Value = serde_json::from_str(&action.params)
                     .map_err(|e| format!("parse params as json: {e}"))?;
                 let sock_id = params
@@ -343,64 +274,32 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
                     .ok_or_else(|| "missing socket_id (u64)".to_string())?;
 
                 let payload_spec = parse_payload_spec(&params)?;
-                let timeout_ms = parse_timeout_ms(&params);
-                let deadline_ms = min_deadline_ms(now_ms(), ctx_deadline_ms, timeout_ms);
 
-                // 1) Subscribe before tx to avoid missing a fast rx in the in-memory eventbus stub.
-                let sub_id = ntx::scenario_eventbus::event_bus::subscribe("packet.rx")
-                    .map_err(|e| format!("subscribe(packet.rx) failed: {e}"))?;
-
-                // 2) Delegate tx to scheduler/host.
-                if let Err(e) =
-                    publish_tx_request(sock_id, payload_spec, &action.id, &user_id, &task_id)
-                {
-                    let _ = ntx::scenario_eventbus::event_bus::unsubscribe(&sub_id);
-                    return Err(e);
-                }
-
-                // 3) Poll until matching packet.rx arrives or timeout.
-                let started = now_ms();
-                let got = poll_for_packet_rx(
-                    &sub_id,
+                publish_tx_request(
+                    sock_id,
+                    payload_spec,
+                    &action.id,
                     &user_id,
                     &task_id,
-                    &action.id,
-                    sock_id,
-                    deadline_ms,
-                    10_000,
-                );
+                    &correlation_id,
+                )?;
 
-                let _ = ntx::scenario_eventbus::event_bus::unsubscribe(&sub_id);
+                let exports = serde_json::json!({
+                    "socket_id": sock_id,
+                    "action_call": action.call,
+                    "note": "tx delegated; rx/timeout/retry must be handled by scheduler state-machine (wait node + timer events)",
+                })
+                .to_string();
 
-                let p = got?;
-                match p {
-                    Some(rx) => {
-                        let latency = now_ms().saturating_sub(started);
-                        let len = rx.get("len").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let exports = serde_json::json!({
-                            "socket_id": sock_id,
-                            "rx": rx,
-                        })
-                        .to_string();
-                        Ok(ntx::scenario_types::types::ActionOutcome {
-                            status: ntx::scenario_types::types::OutcomeStatus::Success,
-                            detail: Some("udp.send-recv ok".to_string()),
-                            metrics: Some(ntx::scenario_types::types::OutcomeMetrics {
-                                latency_ms: Some(latency),
-                                bytes_sent: None,
-                                bytes_received: Some(len),
-                                response_code: None,
-                            }),
-                            exports: Some(exports),
-                        })
-                    }
-                    None => Ok(ntx::scenario_types::types::ActionOutcome {
-                        status: ntx::scenario_types::types::OutcomeStatus::Timeout,
-                        detail: Some("udp.send-recv timeout waiting for packet.rx".to_string()),
-                        metrics: None,
-                        exports: None,
-                    }),
-                }
+                Ok(ntx::scenario_types::types::ActionOutcome {
+                    status: ntx::scenario_types::types::OutcomeStatus::Success,
+                    detail: Some(format!(
+                        "udp.send-recv delegated (no-wait) socket_id={}",
+                        sock_id
+                    )),
+                    metrics: None,
+                    exports: Some(exports),
+                })
             }
             "udp.schedule-send" => {
                 let params: serde_json::Value = serde_json::from_str(&action.params)
