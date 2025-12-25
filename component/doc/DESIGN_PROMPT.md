@@ -1483,9 +1483,10 @@ actions-executor (component)
 - **已实现**
   - `init-component / execute-action / release-component` 基本骨架已完成（WIT 对齐 `component/wit/actions-executor/world.wit`）
   - `udp.send` / `udp.send-reply`：通过 `eventbus.publish(kind="packet.tx-request")` 委托 scheduler/host 侧实际发包
+  - `udp.send-recv`：**已按事件驱动口径完成**——仅委托发包（发布 `packet.tx-request`）并立即返回（no-wait）；收包等待/超时/重试由 scheduler 的状态机（`wait` 节点 + timer event）推进
   - `udp.schedule-send`：可调用 `send-scheduler.schedule-send()` 提交发送调度（**固定 payload**）
 - **部分实现（存在待优化点）**
-  - `udp.send-recv`：当前在 executor 内部 `subscribe("packet.rx") + poll-events` 轮询等待（有自旋风险）；更推荐按本文档的主口径，改为“只发 tx 并返回”，由 workflow 的 `wait` 节点消费 `packet.rx` 推进状态机
+  - （预留）后续可补齐更丰富的 metrics/correlation 透传、以及更多 action 类型的统一错误/重试语义；当前 `udp.send-recv` 已不再在 executor 内轮询等待 `packet.rx`
 - **未实现**
   - `http.*` / `tcp.*` 等通用 action（目前返回 `Failed(not implemented)`）
   - `payload-generator`（sequence/timestamp 等）在 `udp.schedule-send` 中尚未实现
@@ -1493,6 +1494,6 @@ actions-executor (component)
 
 ### 2) 下一步里程碑（建议）
 
-- **M1（对齐事件驱动语义）**：移除 executor 内自旋等待（`udp.send-recv`），统一由 scheduler+状态机处理等待/超时/重试
+- **M1（已完成，对齐事件驱动语义）**：移除 executor 内自旋等待（`udp.send-recv`），统一由 scheduler+状态机处理等待/超时/重试
 - **M2（完善发包调度能力）**：补齐 `payload-generator`（sequence/timestamp），并完善 `send-scheduler` 的状态回报与事件
 - **M3（扩展 action 类型）**：落地最小 `http.*` / `tcp.*` action（先保证接口闭环与可观测性，再逐步增强能力）
