@@ -1,0 +1,22 @@
+{
+    "schema_version": 1,
+    "change_id": "chg-patch-001",
+    "mode": "patch",
+    "base_version": 1,
+    "ops": [
+        {
+            "op": "set-node-priority",
+            "node_id": "start",
+            "priority": 10
+        },
+        {
+            "op": "upsert-edge",
+            "from": "start",
+            "to": "end",
+            "label": "success",
+            "trigger": {
+                "on": "success"
+            }
+        }
+    ]
+}

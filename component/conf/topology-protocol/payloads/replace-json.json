@@ -1,0 +1,25 @@
+{
+    "schema_version": 1,
+    "change_id": "chg-replace-json-001",
+    "mode": "replace-json",
+    "scenario_json": {
+        "workbook": {
+            "resources": []
+        },
+        "actions": {
+            "actions": []
+        },
+        "workflows": {
+            "nodes": []
+        },
+        "load": {
+            "ramp_up": {
+                "phases": []
+            },
+            "user_lifetime": {
+                "mode": "once"
+            }
+        },
+        "user_resources": {}
+    }
+}

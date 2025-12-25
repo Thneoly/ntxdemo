@@ -31,6 +31,7 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
         let sub_ctrl = subscribe_or_log("scheduler.control.*");
         let sub_timer = subscribe_or_log("scheduler.timer.*");
         let sub_user = subscribe_or_log("scheduler.user.*");
+        let sub_topo = subscribe_or_log("topology.changed");
 
         publish_scheduler_state(SchedulerState::Running, None);
 
@@ -42,6 +43,7 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
             sub_ctrl.as_deref(),
             sub_timer.as_deref(),
             sub_user.as_deref(),
+            sub_topo.as_deref(),
             256,
         );
 
@@ -66,6 +68,9 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
             let _ = ntx::scenario_eventbus::event_bus::unsubscribe(&id);
         }
         if let Some(id) = sub_user {
+            let _ = ntx::scenario_eventbus::event_bus::unsubscribe(&id);
+        }
+        if let Some(id) = sub_topo {
             let _ = ntx::scenario_eventbus::event_bus::unsubscribe(&id);
         }
         loop_result
@@ -111,6 +116,7 @@ use std::collections::VecDeque;
 use std::fmt::Write;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -123,6 +129,45 @@ const MAX_CONSUME: u32 = 64;
 
 static EVENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 static PACKET_RX_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn publish_event(
+    kind: &str,
+    user_id: Option<&str>,
+    task_id: Option<&str>,
+    action_id: Option<&str>,
+    payload: serde_json::Value,
+) {
+    let _ = ntx::scenario_eventbus::event_bus::publish(&ntx::scenario_eventbus::event_bus::Event {
+        id: format!("ev-{}", EVENT_COUNTER.fetch_add(1, Ordering::Relaxed)),
+        kind: kind.to_string(),
+        user_id: user_id.map(|s| s.to_string()),
+        task_id: task_id.map(|s| s.to_string()),
+        action_id: action_id.map(|s| s.to_string()),
+        payload: payload.to_string(),
+        correlation_id: None,
+        timestamp_ms: now_ms(),
+    });
+}
+
+fn publish_event_with_corr(
+    kind: &str,
+    user_id: Option<&str>,
+    task_id: Option<&str>,
+    action_id: Option<&str>,
+    correlation_id: Option<&str>,
+    payload: serde_json::Value,
+) {
+    let _ = ntx::scenario_eventbus::event_bus::publish(&ntx::scenario_eventbus::event_bus::Event {
+        id: format!("ev-{}", EVENT_COUNTER.fetch_add(1, Ordering::Relaxed)),
+        kind: kind.to_string(),
+        user_id: user_id.map(|s| s.to_string()),
+        task_id: task_id.map(|s| s.to_string()),
+        action_id: action_id.map(|s| s.to_string()),
+        payload: payload.to_string(),
+        correlation_id: correlation_id.map(|s| s.to_string()),
+        timestamp_ms: now_ms(),
+    });
+}
 
 /// 配置占位：后续将解析 workflow / workbook / load。
 #[derive(Clone, Debug, Default)]
@@ -221,6 +266,7 @@ struct UserMeta {
     end_event_sent: bool,    // prevent duplicate exit events per iteration
     running: usize,          // current running tasks
     max_running: usize,      // per-user concurrency cap
+    scenario_version: u64,   // topology version bound to this user (old users do not migrate)
 }
 
 impl Default for UserMeta {
@@ -233,6 +279,7 @@ impl Default for UserMeta {
             end_event_sent: false,
             running: 0,
             max_running: 1,
+            scenario_version: 1,
         }
     }
 }
@@ -253,7 +300,52 @@ struct WorkflowIndex {
     wait_by_action_id: HashMap<String, Vec<String>>,
 }
 
-static WF_INDEX: Lazy<Mutex<WorkflowIndex>> = Lazy::new(|| Mutex::new(WorkflowIndex::default()));
+#[derive(Default)]
+struct ScenarioRegistry {
+    active_version: u64,
+    next_version: u64,
+    scenarios: HashMap<u64, Arc<Scenario>>,
+    wf_index: HashMap<u64, WorkflowIndex>,
+}
+
+impl ScenarioRegistry {
+    fn reset_with(&mut self, sc: Scenario) {
+        self.active_version = 1;
+        self.next_version = 2;
+        self.scenarios.clear();
+        self.wf_index.clear();
+        let arc = Arc::new(sc);
+        self.wf_index.insert(1, build_workflow_index(&arc));
+        self.scenarios.insert(1, arc);
+    }
+
+    fn active(&self) -> Option<(u64, Arc<Scenario>, WorkflowIndex)> {
+        let v = self.active_version;
+        let sc = self.scenarios.get(&v)?.clone();
+        let idx = self.wf_index.get(&v).cloned().unwrap_or_default();
+        Some((v, sc, idx))
+    }
+
+    fn by_version(&self, v: u64) -> Option<(Arc<Scenario>, WorkflowIndex)> {
+        let sc = self.scenarios.get(&v)?.clone();
+        let idx = self.wf_index.get(&v).cloned().unwrap_or_default();
+        Some((sc, idx))
+    }
+
+    fn install_new_active(&mut self, sc: Scenario) -> u64 {
+        let v = self.next_version.max(1);
+        self.next_version = v.saturating_add(1);
+        let arc = Arc::new(sc);
+        let idx = build_workflow_index(&arc);
+        self.scenarios.insert(v, arc);
+        self.wf_index.insert(v, idx);
+        self.active_version = v;
+        v
+    }
+}
+
+static SCENARIOS: Lazy<Mutex<ScenarioRegistry>> =
+    Lazy::new(|| Mutex::new(ScenarioRegistry::default()));
 
 #[derive(Clone, Debug)]
 struct TimerJob {
@@ -356,6 +448,14 @@ struct WorkflowNodeDef {
     kind: String,
     #[serde(default)]
     action: Option<String>,
+    /// 多 step action：同一 node 内按顺序执行 actions，全部成功后才沿边推进。
+    /// 兼容：若提供 actions，则优先使用；否则使用 action。
+    #[serde(default)]
+    actions: Option<Vec<String>>,
+    /// 更强的 step 语义：每个 step 可覆写 retry/timeout，并支持失败/超时跳转到指定 step。
+    /// 若提供 steps，则优先使用 steps；否则退化为 actions/action。
+    #[serde(default)]
+    steps: Option<Vec<NodeStepDef>>,
     /// 调度优先级（越大越优先）；默认 0。
     #[serde(default)]
     priority: Option<i32>,
@@ -364,6 +464,27 @@ struct WorkflowNodeDef {
     on: Option<WaitOnSpec>,
     #[serde(default)]
     edges: Vec<WorkflowEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NodeStepDef {
+    action: String,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    retry: Option<RetryDef>,
+    #[serde(default)]
+    on_failed_step: Option<u32>,
+    #[serde(default)]
+    on_timeout_step: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RetryDef {
+    #[serde(default)]
+    max: i64,
+    #[serde(default)]
+    backoff_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -468,58 +589,550 @@ enum TaskState {
 struct TaskMeta {
     state: TaskState,
     last_update_ms: u64,
+    /// action-node 内部的 step index（从 0 开始）。wait/end 节点保持 0。
+    step_idx: u32,
 }
 
 static SOCK_CTX: Lazy<Mutex<HashMap<u64, SockCtx>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
-/// 轻量状态机占位：后续接入完整 workflow / trigger。
+/// StateMachine（方案B）：权威的 workflow 引擎（per-user task 状态 + 边推进）。
+///
+/// 约束：TaskRuntime(vars/exports/resources) 仍在 RUNTIME 内；StateMachine 只负责
+/// “哪个节点在什么状态、收到什么事件后如何沿 workflow 边推进”。
 #[derive(Default)]
 struct StateMachine {
-    tasks: HashMap<String, TaskMeta>,
+    users: HashMap<String, HashMap<String, TaskMeta>>, // user_id -> (node_id -> meta)
+    history: HashMap<String, VecDeque<SmEventDigest>>, // user_id -> recent applied event digests
+}
+
+#[derive(Debug, Clone)]
+enum SmEffect {
+    SetState {
+        user_id: String,
+        node_id: String,
+        state: TaskState,
+    },
+    EnqueueReady {
+        user_id: String,
+        node_id: String,
+        priority: i32,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum SmEvent {
+    /// 初始化/重置某个 user 的 workflow 实例：Created 全量投影 + start 节点入队 Ready。
+    UserReset { user_id: String },
+
+    /// 调度器从 ready queue 取出一个 task，准备派发执行（Ready -> Running）。
+    DispatchStart { user_id: String, node_id: String },
+
+    /// 收到 packet.rx 事件后，尝试触发 wait 节点（Waiting -> Completed + edge advance）。
+    PacketRx {
+        user_id: String,
+        action_id: String,
+        task_id: String,
+        payload: PacketRxPayload,
+        eval_ctx: serde_json::Value,
+    },
+
+    /// 收到 scheduler.action-result 事件后，更新节点状态并按需要推进边。
+    ActionResult {
+        user_id: String,
+        node_id: String,
+        reason: String, // success/failed/timeout
+        success: bool,
+        should_advance: bool,
+        /// success 且 node 还有下一步 action：不沿边推进，而是将自身置回 Ready 并重新入队
+        continue_node: bool,
+        eval_ctx: serde_json::Value,
+    },
+
+    /// 重试 timer 到期（Failed -> Ready 入队）。
+    RetryTimer { user_id: String, node_id: String },
+
+    /// timeout timer 到期：Running -> Failed（后续由 action-result(timeout) 再推进）。
+    TimeoutTimer { user_id: String, node_id: String },
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct SmEventDigest {
+    ts_ms: u64,
+    kind: String,
+    node_id: Option<String>,
+    reason: Option<String>,
 }
 
 impl StateMachine {
-    fn mark_waiting(&mut self, task_id: &str, now_ms: u64) {
-        self.tasks
-            .entry(task_id.to_string())
-            .and_modify(|m| {
-                m.state = TaskState::Waiting;
-                m.last_update_ms = now_ms;
+    fn ensure_user(&mut self, user_id: &str) {
+        self.users.entry(user_id.to_string()).or_default();
+        self.history.entry(user_id.to_string()).or_default();
+    }
+
+    fn get_state(&self, user_id: &str, node_id: &str) -> Option<TaskState> {
+        self.users
+            .get(user_id)
+            .and_then(|m| m.get(node_id))
+            .map(|m| m.state)
+    }
+
+    fn get_step(&self, user_id: &str, node_id: &str) -> u32 {
+        self.users
+            .get(user_id)
+            .and_then(|m| m.get(node_id))
+            .map(|m| m.step_idx)
+            .unwrap_or(0)
+    }
+
+    fn set_step(&mut self, user_id: &str, node_id: &str, step_idx: u32, now_ms: u64) {
+        self.ensure_user(user_id);
+        let m = self.users.get_mut(user_id).unwrap();
+        m.entry(node_id.to_string())
+            .and_modify(|x| {
+                x.step_idx = step_idx;
+                x.last_update_ms = now_ms;
             })
             .or_insert(TaskMeta {
-                state: TaskState::Waiting,
+                state: TaskState::Created,
                 last_update_ms: now_ms,
+                step_idx,
             });
     }
 
-    fn mark_completed(&mut self, task_id: &str, now_ms: u64) {
-        self.tasks
-            .entry(task_id.to_string())
-            .and_modify(|m| {
-                m.state = TaskState::Completed;
-                m.last_update_ms = now_ms;
+    fn set_state(&mut self, user_id: &str, node_id: &str, state: TaskState, now_ms: u64) {
+        self.ensure_user(user_id);
+        let m = self.users.get_mut(user_id).unwrap();
+        m.entry(node_id.to_string())
+            .and_modify(|x| {
+                x.state = state;
+                x.last_update_ms = now_ms;
             })
             .or_insert(TaskMeta {
+                state,
+                last_update_ms: now_ms,
+                step_idx: 0,
+            });
+    }
+
+    fn record_event(&mut self, user_id: &str, d: SmEventDigest) {
+        self.ensure_user(user_id);
+        let h = self.history.get_mut(user_id).unwrap();
+        h.push_back(d);
+        while h.len() > 256 {
+            h.pop_front();
+        }
+    }
+
+    fn digest(now_ms: u64, ev: &SmEvent) -> SmEventDigest {
+        match ev {
+            SmEvent::UserReset { .. } => SmEventDigest {
+                ts_ms: now_ms,
+                kind: "user.reset".to_string(),
+                node_id: None,
+                reason: None,
+            },
+            SmEvent::DispatchStart { node_id, .. } => SmEventDigest {
+                ts_ms: now_ms,
+                kind: "dispatch.start".to_string(),
+                node_id: Some(node_id.clone()),
+                reason: None,
+            },
+            SmEvent::PacketRx { .. } => SmEventDigest {
+                ts_ms: now_ms,
+                kind: "packet.rx".to_string(),
+                node_id: None,
+                reason: None,
+            },
+            SmEvent::ActionResult {
+                node_id, reason, ..
+            } => SmEventDigest {
+                ts_ms: now_ms,
+                kind: "action.result".to_string(),
+                node_id: Some(node_id.clone()),
+                reason: Some(reason.clone()),
+            },
+            SmEvent::RetryTimer { node_id, .. } => SmEventDigest {
+                ts_ms: now_ms,
+                kind: "timer.retry".to_string(),
+                node_id: Some(node_id.clone()),
+                reason: None,
+            },
+            SmEvent::TimeoutTimer { node_id, .. } => SmEventDigest {
+                ts_ms: now_ms,
+                kind: "timer.timeout".to_string(),
+                node_id: Some(node_id.clone()),
+                reason: None,
+            },
+        }
+    }
+
+    /// 唯一入口：对状态机应用一个事件，返回需要落地到 runtime/ready-queue 的 effects。
+    fn apply(
+        &mut self,
+        sc: &Scenario,
+        wf_index: &WorkflowIndex,
+        now_ms: u64,
+        ev: SmEvent,
+    ) -> Vec<SmEffect> {
+        let uid = match &ev {
+            SmEvent::UserReset { user_id }
+            | SmEvent::DispatchStart { user_id, .. }
+            | SmEvent::PacketRx { user_id, .. }
+            | SmEvent::ActionResult { user_id, .. }
+            | SmEvent::RetryTimer { user_id, .. }
+            | SmEvent::TimeoutTimer { user_id, .. } => user_id.as_str(),
+        };
+        self.record_event(uid, Self::digest(now_ms, &ev));
+
+        match ev {
+            SmEvent::UserReset { user_id } => self.reset_user(sc, &user_id, now_ms),
+            SmEvent::DispatchStart { user_id, node_id } => {
+                if self.get_state(&user_id, &node_id) != Some(TaskState::Ready) {
+                    return Vec::new();
+                }
+                self.set_state(&user_id, &node_id, TaskState::Running, now_ms);
+                vec![SmEffect::SetState {
+                    user_id,
+                    node_id,
+                    state: TaskState::Running,
+                }]
+            }
+            SmEvent::PacketRx {
+                user_id,
+                action_id,
+                task_id,
+                payload,
+                eval_ctx,
+            } => self.on_packet_rx(
+                sc, wf_index, &user_id, &action_id, &task_id, &payload, &eval_ctx, now_ms,
+            ),
+            SmEvent::ActionResult {
+                user_id,
+                node_id,
+                reason,
+                success,
+                should_advance,
+                continue_node,
+                eval_ctx,
+            } => self.on_action_result(
+                sc,
+                &user_id,
+                &node_id,
+                &reason,
+                &eval_ctx,
+                should_advance,
+                continue_node,
+                now_ms,
+                success,
+            ),
+            SmEvent::RetryTimer { user_id, node_id } => {
+                self.on_retry_timer(sc, &user_id, &node_id, now_ms)
+            }
+            SmEvent::TimeoutTimer { user_id, node_id } => {
+                if self.get_state(&user_id, &node_id) != Some(TaskState::Running) {
+                    return Vec::new();
+                }
+                self.set_state(&user_id, &node_id, TaskState::Failed, now_ms);
+                vec![SmEffect::SetState {
+                    user_id,
+                    node_id,
+                    state: TaskState::Failed,
+                }]
+            }
+        }
+    }
+
+    fn reset_user(&mut self, sc: &Scenario, user_id: &str, now_ms: u64) -> Vec<SmEffect> {
+        self.ensure_user(user_id);
+        let mut eff = Vec::new();
+        // all nodes Created
+        for n in &sc.workflows.nodes {
+            self.set_state(user_id, &n.id, TaskState::Created, now_ms);
+            self.set_step(user_id, &n.id, 0, now_ms);
+            eff.push(SmEffect::SetState {
+                user_id: user_id.to_string(),
+                node_id: n.id.clone(),
+                state: TaskState::Created,
+            });
+        }
+        // start nodes Ready
+        for nid in find_start_nodes(sc) {
+            self.set_state(user_id, &nid, TaskState::Ready, now_ms);
+            eff.push(SmEffect::SetState {
+                user_id: user_id.to_string(),
+                node_id: nid.clone(),
+                state: TaskState::Ready,
+            });
+            eff.push(SmEffect::EnqueueReady {
+                user_id: user_id.to_string(),
+                node_id: nid.clone(),
+                priority: node_priority(sc, &nid),
+            });
+        }
+        eff
+    }
+
+    fn on_retry_timer(
+        &mut self,
+        sc: &Scenario,
+        user_id: &str,
+        node_id: &str,
+        now_ms: u64,
+    ) -> Vec<SmEffect> {
+        // only Failed -> Ready
+        if self.get_state(user_id, node_id) != Some(TaskState::Failed) {
+            return Vec::new();
+        }
+        self.set_state(user_id, node_id, TaskState::Ready, now_ms);
+        vec![
+            SmEffect::SetState {
+                user_id: user_id.to_string(),
+                node_id: node_id.to_string(),
+                state: TaskState::Ready,
+            },
+            SmEffect::EnqueueReady {
+                user_id: user_id.to_string(),
+                node_id: node_id.to_string(),
+                priority: node_priority(sc, node_id),
+            },
+        ]
+    }
+
+    fn on_packet_rx(
+        &mut self,
+        sc: &Scenario,
+        wf_index: &WorkflowIndex,
+        user_id: &str,
+        action_id: &str,
+        task_id: &str,
+        p: &PacketRxPayload,
+        eval_ctx: &serde_json::Value,
+        now_ms: u64,
+    ) -> Vec<SmEffect> {
+        // 候选 wait 节点：优先按 match.action_id 命中索引，否则走 wait_any
+        let mut candidates: Vec<String> = Vec::new();
+        candidates.extend(wf_index.wait_any.iter().cloned());
+        if !action_id.is_empty() {
+            if let Some(v) = wf_index.wait_by_action_id.get(action_id) {
+                candidates.extend(v.iter().cloned());
+            }
+        }
+
+        let wait_nodes: Vec<String> = candidates
+            .into_iter()
+            .filter(|nid| {
+                sc.workflows
+                    .nodes
+                    .iter()
+                    .find(|n| &n.id == nid)
+                    .map(|n| {
+                        n.kind == "wait"
+                            && n.on
+                                .as_ref()
+                                .map(|o| o.event.as_str() == "packet.rx")
+                                .unwrap_or(false)
+                            && wait_match(n.on.as_ref(), action_id, task_id, p)
+                    })
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        if wait_nodes.is_empty() {
+            return Vec::new();
+        }
+
+        let mut eff = Vec::new();
+        for wait_id in wait_nodes {
+            if self.get_state(user_id, &wait_id) != Some(TaskState::Waiting) {
+                continue;
+            }
+            self.set_state(user_id, &wait_id, TaskState::Completed, now_ms);
+            eff.push(SmEffect::SetState {
+                user_id: user_id.to_string(),
+                node_id: wait_id.clone(),
                 state: TaskState::Completed,
-                last_update_ms: now_ms,
             });
+            eff.extend(self.advance_edges(
+                sc,
+                user_id,
+                &wait_id,
+                "packet.rx",
+                Some(eval_ctx),
+                now_ms,
+            ));
+        }
+        eff
     }
 
-    fn mark_running(&mut self, task_id: &str, now_ms: u64) {
-        self.tasks
-            .entry(task_id.to_string())
-            .and_modify(|m| {
-                m.state = TaskState::Running;
-                m.last_update_ms = now_ms;
-            })
-            .or_insert(TaskMeta {
-                state: TaskState::Running,
-                last_update_ms: now_ms,
-            });
+    fn on_action_result(
+        &mut self,
+        sc: &Scenario,
+        user_id: &str,
+        node_id: &str,
+        reason: &str,
+        eval_ctx: &serde_json::Value,
+        should_advance: bool,
+        continue_node: bool,
+        now_ms: u64,
+        success: bool,
+    ) -> Vec<SmEffect> {
+        // success + continue_node: Ready + re-enqueue same node
+        if success && continue_node {
+            self.set_state(user_id, node_id, TaskState::Ready, now_ms);
+            return vec![
+                SmEffect::SetState {
+                    user_id: user_id.to_string(),
+                    node_id: node_id.to_string(),
+                    state: TaskState::Ready,
+                },
+                SmEffect::EnqueueReady {
+                    user_id: user_id.to_string(),
+                    node_id: node_id.to_string(),
+                    priority: node_priority(sc, node_id),
+                },
+            ];
+        }
+
+        // Running -> Completed/Failed (best-effort; allow idempotent replays)
+        let st = if success {
+            TaskState::Completed
+        } else {
+            TaskState::Failed
+        };
+        self.set_state(user_id, node_id, st, now_ms);
+
+        let mut eff = vec![SmEffect::SetState {
+            user_id: user_id.to_string(),
+            node_id: node_id.to_string(),
+            state: st,
+        }];
+
+        if should_advance {
+            eff.extend(self.advance_edges(sc, user_id, node_id, reason, Some(eval_ctx), now_ms));
+        }
+        eff
+    }
+
+    fn is_end_reached(&self, sc: &Scenario, user_id: &str) -> bool {
+        let end_nodes: Vec<&WorkflowNodeDef> = sc
+            .workflows
+            .nodes
+            .iter()
+            .filter(|n| n.kind == "end")
+            .collect();
+        if end_nodes.is_empty() {
+            return false;
+        }
+        end_nodes
+            .into_iter()
+            .any(|n| self.get_state(user_id, &n.id) == Some(TaskState::Completed))
+    }
+
+    fn advance_edges(
+        &mut self,
+        sc: &Scenario,
+        user_id: &str,
+        from_node_id: &str,
+        reason: &str,
+        eval_ctx: Option<&serde_json::Value>,
+        now_ms: u64,
+    ) -> Vec<SmEffect> {
+        let Some(from) = sc.workflows.nodes.iter().find(|n| n.id == from_node_id) else {
+            return Vec::new();
+        };
+
+        let mut eff = Vec::new();
+        for e in &from.edges {
+            if !edge_trigger_allows(e.trigger.as_ref(), reason, eval_ctx) {
+                continue;
+            }
+            let Some(to) = sc.workflows.nodes.iter().find(|n| n.id == e.to) else {
+                continue;
+            };
+            match to.kind.as_str() {
+                "wait" => {
+                    self.set_state(user_id, &to.id, TaskState::Waiting, now_ms);
+                    eff.push(SmEffect::SetState {
+                        user_id: user_id.to_string(),
+                        node_id: to.id.clone(),
+                        state: TaskState::Waiting,
+                    });
+                }
+                "action" => {
+                    self.set_state(user_id, &to.id, TaskState::Ready, now_ms);
+                    eff.push(SmEffect::SetState {
+                        user_id: user_id.to_string(),
+                        node_id: to.id.clone(),
+                        state: TaskState::Ready,
+                    });
+                    eff.push(SmEffect::EnqueueReady {
+                        user_id: user_id.to_string(),
+                        node_id: to.id.clone(),
+                        priority: node_priority(sc, &to.id),
+                    });
+                }
+                "end" => {
+                    self.set_state(user_id, &to.id, TaskState::Completed, now_ms);
+                    eff.push(SmEffect::SetState {
+                        user_id: user_id.to_string(),
+                        node_id: to.id.clone(),
+                        state: TaskState::Completed,
+                    });
+                }
+                _ => {}
+            }
+        }
+        eff
     }
 }
 
 static STATE_MACHINE: Lazy<Mutex<StateMachine>> = Lazy::new(|| Mutex::new(StateMachine::default()));
+
+fn apply_sm_effects(effects: Vec<SmEffect>) -> Result<(), String> {
+    if effects.is_empty() {
+        return Ok(());
+    }
+    let mut rt = RUNTIME.lock().map_err(|_| "lock runtime".to_string())?;
+    for e in effects {
+        match e {
+            SmEffect::SetState {
+                user_id,
+                node_id,
+                state,
+            } => {
+                if let Some(u) = rt.users.get_mut(&user_id) {
+                    if let Some(t) = u.tasks.get_mut(&node_id) {
+                        let prev = t.state;
+                        t.state = state;
+                        if prev != state {
+                            publish_event(
+                                "scheduler.task.state-changed",
+                                Some(&user_id),
+                                Some(&node_id),
+                                None,
+                                serde_json::json!({
+                                    "from": format!("{:?}", prev),
+                                    "to": format!("{:?}", state),
+                                    "scenario_version": u.meta.scenario_version,
+                                    "ts_ms": now_ms(),
+                                }),
+                            );
+                        }
+                    }
+                }
+            }
+            SmEffect::EnqueueReady {
+                user_id,
+                node_id,
+                priority,
+            } => {
+                rt.ready.push(priority, user_id, node_id);
+            }
+        }
+    }
+    Ok(())
+}
 
 fn load_scenario_config(config_dir: &str) -> Result<ScenarioConfig, String> {
     let meta =
@@ -574,23 +1187,6 @@ fn log_config_summary(cfg: &ScenarioConfig) -> Result<(), String> {
     )
     .map_err(|e| format!("format summary: {e}"))?;
     print!("{buf}");
-    Ok(())
-}
-
-/// 从解析后的 workflow 初始化任务占位。
-#[allow(dead_code)]
-fn bootstrap_state_machine(cfg: &ScenarioConfig) -> Result<(), String> {
-    if let Some(parsed) = &cfg.parsed {
-        let now = now_ms();
-        if let Ok(mut sm) = STATE_MACHINE.lock() {
-            for node in &parsed.workflows.nodes {
-                sm.tasks.entry(node.id.clone()).or_insert(TaskMeta {
-                    state: TaskState::Created,
-                    last_update_ms: now,
-                });
-            }
-        }
-    }
     Ok(())
 }
 
@@ -672,7 +1268,44 @@ fn validate_scenario(sc: &Scenario) -> Result<(), String> {
         if node_ids.insert(&n.id, ()).is_some() {
             return Err(format!("duplicate workflow node id: {}", n.id));
         }
-        if let Some(action_id) = &n.action {
+        if n.kind == "action" {
+            let has_steps = n.steps.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
+            if has_steps {
+                for st in n.steps.as_ref().unwrap() {
+                    if !action_ids.contains_key(&st.action) {
+                        return Err(format!(
+                            "workflow node {} references unknown action {}",
+                            n.id, st.action
+                        ));
+                    }
+                }
+            } else {
+                let has_actions = n.actions.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
+                if has_actions {
+                    for aid in n.actions.as_ref().unwrap() {
+                        if !action_ids.contains_key(aid) {
+                            return Err(format!(
+                                "workflow node {} references unknown action {}",
+                                n.id, aid
+                            ));
+                        }
+                    }
+                } else if let Some(action_id) = &n.action {
+                    if !action_ids.contains_key(action_id) {
+                        return Err(format!(
+                            "workflow node {} references unknown action {}",
+                            n.id, action_id
+                        ));
+                    }
+                } else {
+                    return Err(format!(
+                        "workflow node {} is type=action but missing steps/actions/action",
+                        n.id
+                    ));
+                }
+            }
+        } else if let Some(action_id) = &n.action {
+            // allow legacy/extra fields, but validate if provided
             if !action_ids.contains_key(action_id) {
                 return Err(format!(
                     "workflow node {} references unknown action {}",
@@ -733,9 +1366,9 @@ fn init_runtime(ctx: &SchedulerContext) -> Result<(), String> {
         lc.phases = sc.load.ramp_up.phases.clone();
     }
 
-    // build workflow index
-    if let Ok(mut idx) = WF_INDEX.lock() {
-        *idx = build_workflow_index(sc);
+    // init scenario registry with version=1
+    if let Ok(mut reg) = SCENARIOS.lock() {
+        reg.reset_with(sc.clone());
     }
 
     // 若没有 ramp-up phases，默认立即启动 1 个用户
@@ -769,6 +1402,7 @@ fn run_event_loop(
     sub_ctrl: Option<&str>,
     sub_timer: Option<&str>,
     sub_user: Option<&str>,
+    sub_topo: Option<&str>,
     max_ticks: u32,
 ) -> Result<(), String> {
     let mut idle = 0u32;
@@ -864,6 +1498,23 @@ fn run_event_loop(
             }
         }
 
+        // 4.1) topology change events (affect only NEW users)
+        if let Some(id) = sub_topo {
+            let events = ntx::scenario_eventbus::event_bus::poll_events(id, 16)
+                .map_err(|e| format!("poll_events(topology): {e}"))?;
+            if !events.is_empty() {
+                did_work = true;
+            }
+            for ev in events {
+                if ev.kind == "topology.changed" {
+                    if let Err(e) = on_topology_changed_event(ctx, &ev) {
+                        // on_topology_changed_event already published scheduler.topology.rejected with rich payload
+                        println!("[scheduler] warn: topology.changed rejected: {}", e);
+                    }
+                }
+            }
+        }
+
         // 5) drive load/timers
         tick_load_controller();
         tick_timers();
@@ -918,9 +1569,8 @@ fn handle_packet_rx_trigger(
     };
     let action_id = ev.action_id.as_deref().unwrap_or("");
     let task_id = ev.task_id.as_deref().unwrap_or("");
-    let Some(sc) = ctx.scenario.parsed.as_ref() else {
-        return Ok(());
-    };
+    let (_ver, sc_arc, wf_idx) = get_user_scenario_ctx(ctx_user)?;
+    let sc = sc_arc.as_ref();
 
     let p: PacketRxPayload = serde_json::from_str(&ev.payload).unwrap_or_default();
     let eval_ctx = serde_json::json!({
@@ -934,66 +1584,25 @@ fn handle_packet_rx_trigger(
         "payload_hex": p.payload_hex,
     });
 
-    // 候选 wait 节点：优先按 match.action_id 命中索引，否则走 wait_any
-    let candidates: Vec<String> = match WF_INDEX.lock() {
-        Ok(idx) => {
-            let mut out = Vec::new();
-            out.extend(idx.wait_any.iter().cloned());
-            if !action_id.is_empty() {
-                if let Some(v) = idx.wait_by_action_id.get(action_id) {
-                    out.extend(v.iter().cloned());
-                }
-            }
-            out
-        }
-        Err(_) => Vec::new(),
+    let effects = {
+        let mut sm = STATE_MACHINE
+            .lock()
+            .map_err(|_| "lock state-machine".to_string())?;
+        sm.apply(
+            sc,
+            &wf_idx,
+            now_ms(),
+            SmEvent::PacketRx {
+                user_id: ctx_user.to_string(),
+                action_id: action_id.to_string(),
+                task_id: task_id.to_string(),
+                payload: p,
+                eval_ctx,
+            },
+        )
     };
-
-    // 找到匹配的 wait 节点，并沿边推进
-    let wait_nodes: Vec<String> = candidates
-        .into_iter()
-        .filter(|nid| {
-            sc.workflows
-                .nodes
-                .iter()
-                .find(|n| &n.id == nid)
-                .map(|n| {
-                    n.kind == "wait"
-                        && n.on
-                            .as_ref()
-                            .map(|o| o.event.as_str() == "packet.rx")
-                            .unwrap_or(false)
-                        && wait_match(n.on.as_ref(), action_id, task_id, &p)
-                })
-                .unwrap_or(false)
-        })
-        .collect();
-
-    if wait_nodes.is_empty() {
-        return Ok(());
-    }
-
-    for wait_id in wait_nodes {
-        // 只处理处于 Waiting 的 wait task
-        let mut should_advance = false;
-        if let Ok(mut rt) = RUNTIME.lock() {
-            if let Some(u) = rt.users.get_mut(ctx_user) {
-                if let Some(t) = u.tasks.get_mut(&wait_id) {
-                    if t.state == TaskState::Waiting {
-                        t.state = TaskState::Completed;
-                        should_advance = true;
-                    }
-                }
-            }
-        }
-        if should_advance {
-            if let Ok(mut sm) = STATE_MACHINE.lock() {
-                sm.mark_completed(&wait_id, now_ms());
-            }
-            advance_edges(ctx, ctx_user, &wait_id, "packet.rx", Some(&eval_ctx))?;
-            maybe_finish_user(ctx, ctx_user)?;
-        }
-    }
+    apply_sm_effects(effects)?;
+    maybe_finish_user(ctx, ctx_user)?;
     Ok(())
 }
 
@@ -1101,33 +1710,49 @@ fn on_timeout_timer(
         return Ok(());
     }
 
-    // only apply if still Running
-    let mut should_timeout = false;
-    {
+    // only apply if still Running (authoritative: StateMachine) via apply(TimeoutTimer)
+    let should_timeout = {
+        // ignore if user already gone
+        if RUNTIME
+            .lock()
+            .ok()
+            .and_then(|rt| rt.users.get(user_id).map(|_| ()))
+            .is_none()
+        {
+            return Ok(());
+        }
+        let (_ver, sc_arc, wf_idx) = get_user_scenario_ctx(user_id)?;
+        let sc = sc_arc.as_ref();
+        let mut sm = STATE_MACHINE
+            .lock()
+            .map_err(|_| "lock state-machine".to_string())?;
+        let effects = sm.apply(
+            sc,
+            &wf_idx,
+            now_ms(),
+            SmEvent::TimeoutTimer {
+                user_id: user_id.to_string(),
+                node_id: task_id.to_string(),
+            },
+        );
+        let did = !effects.is_empty();
+        if did {
+            // keep runtime derived state in sync
+            apply_sm_effects(effects)?;
+        }
+        did
+    };
+    if should_timeout {
+        // derive state to runtime + decrement running if needed
         if let Ok(mut rt) = RUNTIME.lock() {
             if let Some(u) = rt.users.get_mut(user_id) {
                 if let Some(t) = u.tasks.get_mut(task_id) {
                     if t.state == TaskState::Running {
-                        t.state = TaskState::Failed;
-                        should_timeout = true;
                         u.meta.running = u.meta.running.saturating_sub(1);
                     }
+                    t.state = TaskState::Failed;
                 }
             }
-        }
-    }
-    if should_timeout {
-        if let Ok(mut sm) = STATE_MACHINE.lock() {
-            sm.tasks
-                .entry(task_id.to_string())
-                .and_modify(|m| {
-                    m.state = TaskState::Failed;
-                    m.last_update_ms = now_ms();
-                })
-                .or_insert(TaskMeta {
-                    state: TaskState::Failed,
-                    last_update_ms: now_ms(),
-                });
         }
 
         // publish an action-result(timeout)
@@ -1157,7 +1782,7 @@ fn on_timeout_timer(
 }
 
 fn on_retry_timer(
-    ctx: &SchedulerContext,
+    _ctx: &SchedulerContext,
     ev: &ntx::scenario_eventbus::event_bus::Event,
 ) -> Result<(), String> {
     let v: serde_json::Value = serde_json::from_str(&ev.payload).unwrap_or(serde_json::json!({}));
@@ -1167,97 +1792,27 @@ fn on_retry_timer(
         return Ok(());
     }
 
-    let Some(sc) = &ctx.scenario.parsed else {
-        return Ok(());
-    };
+    let (_ver, sc_arc, wf_idx) = get_user_scenario_ctx(user_id)?;
+    let sc = sc_arc.as_ref();
     let node = sc.workflows.nodes.iter().find(|n| n.id == task_id);
     if node.is_none() {
         return Ok(());
     }
-
-    if let Ok(mut rt) = RUNTIME.lock() {
-        if let Some(u) = rt.users.get_mut(user_id) {
-            if let Some(t) = u.tasks.get_mut(task_id) {
-                if t.state == TaskState::Failed {
-                    t.state = TaskState::Ready;
-                    rt.ready.push(
-                        node_priority(sc, task_id),
-                        user_id.to_string(),
-                        task_id.to_string(),
-                    );
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn advance_edges(
-    ctx: &SchedulerContext,
-    user_id: &str,
-    from_node_id: &str,
-    reason: &str,
-    eval_ctx: Option<&serde_json::Value>,
-) -> Result<(), String> {
-    let Some(sc) = ctx.scenario.parsed.as_ref() else {
-        return Ok(());
+    let effects = {
+        let mut sm = STATE_MACHINE
+            .lock()
+            .map_err(|_| "lock state-machine".to_string())?;
+        sm.apply(
+            sc,
+            &wf_idx,
+            now_ms(),
+            SmEvent::RetryTimer {
+                user_id: user_id.to_string(),
+                node_id: task_id.to_string(),
+            },
+        )
     };
-    let Some(from) = sc.workflows.nodes.iter().find(|n| n.id == from_node_id) else {
-        return Ok(());
-    };
-
-    for e in &from.edges {
-        if !edge_trigger_allows(e.trigger.as_ref(), reason, eval_ctx) {
-            continue;
-        }
-        let Some(to) = sc.workflows.nodes.iter().find(|n| n.id == e.to) else {
-            continue;
-        };
-
-        if let Ok(mut rt) = RUNTIME.lock() {
-            if let Some(u) = rt.users.get_mut(user_id) {
-                if let Some(t) = u.tasks.get_mut(&to.id) {
-                    match to.kind.as_str() {
-                        "wait" => {
-                            t.state = TaskState::Waiting;
-                        }
-                        "action" => {
-                            t.state = TaskState::Ready;
-                            rt.ready.push(
-                                node_priority(sc, &to.id),
-                                user_id.to_string(),
-                                to.id.clone(),
-                            );
-                        }
-                        "end" => {
-                            t.state = TaskState::Completed;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        if let Ok(mut sm) = STATE_MACHINE.lock() {
-            match to.kind.as_str() {
-                "wait" => sm.mark_waiting(&to.id, now_ms()),
-                "action" => {
-                    sm.tasks
-                        .entry(to.id.clone())
-                        .and_modify(|m| {
-                            m.state = TaskState::Ready;
-                            m.last_update_ms = now_ms();
-                        })
-                        .or_insert(TaskMeta {
-                            state: TaskState::Ready,
-                            last_update_ms: now_ms(),
-                        });
-                }
-                "end" => sm.mark_completed(&to.id, now_ms()),
-                _ => {}
-            }
-        }
-    }
+    apply_sm_effects(effects)?;
     Ok(())
 }
 
@@ -1584,32 +2139,302 @@ fn build_workflow_index(sc: &Scenario) -> WorkflowIndex {
     idx
 }
 
-fn maybe_finish_user(ctx: &SchedulerContext, user_id: &str) -> Result<(), String> {
-    let Some(sc) = ctx.scenario.parsed.as_ref() else {
-        return Ok(());
+fn get_active_scenario_ctx() -> Result<(u64, Arc<Scenario>, WorkflowIndex), String> {
+    let reg = SCENARIOS
+        .lock()
+        .map_err(|_| "lock scenario registry".to_string())?;
+    reg.active().ok_or_else(|| "no active scenario".to_string())
+}
+
+fn get_user_scenario_ctx(user_id: &str) -> Result<(u64, Arc<Scenario>, WorkflowIndex), String> {
+    let ver = {
+        let rt = RUNTIME.lock().map_err(|_| "lock runtime".to_string())?;
+        rt.users
+            .get(user_id)
+            .map(|u| u.meta.scenario_version)
+            .unwrap_or(1)
     };
-    let end_nodes: Vec<String> = sc
-        .workflows
-        .nodes
-        .iter()
-        .filter(|n| n.kind == "end")
-        .map(|n| n.id.clone())
-        .collect();
-    if end_nodes.is_empty() {
-        return Ok(());
+    let reg = SCENARIOS
+        .lock()
+        .map_err(|_| "lock scenario registry".to_string())?;
+    let (sc, idx) = reg
+        .by_version(ver)
+        .ok_or_else(|| format!("scenario version not found: {}", ver))?;
+    Ok((ver, sc, idx))
+}
+
+fn on_topology_changed_event(
+    _ctx: &SchedulerContext,
+    ev: &ntx::scenario_eventbus::event_bus::Event,
+) -> Result<(), String> {
+    // Normalized protocol (JSON, strict):
+    // {
+    //   "schema_version": 1,
+    //   "change_id": "uuid-or-human",
+    //   "mode": "replace-yaml" | "replace-json" | "patch",
+    //   "base_version": 3,              // optional; required for patch for optimistic concurrency
+    //   ... mode-specific fields ...
+    // }
+    #[derive(Debug, Clone, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct TopologyChangedEnvelope {
+        schema_version: u32,
+        change_id: String,
+        #[serde(default)]
+        base_version: Option<u64>,
+        #[serde(flatten)]
+        change: TopologyChangedBody,
     }
 
+    #[derive(Debug, Clone, Deserialize)]
+    #[serde(tag = "mode", rename_all = "kebab-case", deny_unknown_fields)]
+    enum TopologyChangedBody {
+        ReplaceYaml { scenario_yaml: String },
+        ReplaceJson { scenario_json: serde_json::Value },
+        Patch { ops: Vec<PatchOp> },
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    #[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
+    enum PatchOp {
+        SetNodePriority {
+            node_id: String,
+            priority: i32,
+        },
+        UpsertEdge {
+            from: String,
+            to: String,
+            #[serde(default)]
+            label: Option<String>,
+            #[serde(default)]
+            trigger: Option<serde_json::Value>,
+        },
+        RemoveNode {
+            node_id: String,
+        },
+        AddNode {
+            node: WorkflowNodeDef,
+        },
+        UpsertAction {
+            action: Action,
+        },
+    }
+
+    let corr = ev
+        .correlation_id
+        .as_deref()
+        .or_else(|| Some(ev.id.as_str()));
+
+    let env: TopologyChangedEnvelope = match serde_json::from_str(&ev.payload) {
+        Ok(v) => v,
+        Err(e) => {
+            publish_event_with_corr(
+                "scheduler.topology.rejected",
+                None,
+                None,
+                None,
+                corr,
+                serde_json::json!({
+                    "error": format!("invalid payload json: {e}"),
+                }),
+            );
+            return Err("invalid topology.changed payload".to_string());
+        }
+    };
+
+    if env.schema_version != 1 {
+        publish_event_with_corr(
+            "scheduler.topology.rejected",
+            None,
+            None,
+            None,
+            corr,
+            serde_json::json!({
+                "change_id": env.change_id,
+                "error": format!("unsupported schema_version={}", env.schema_version),
+            }),
+        );
+        return Err("unsupported topology schema_version".to_string());
+    }
+
+    fn apply_patch(sc: &mut Scenario, ops: &[PatchOp]) -> Result<(), String> {
+        for op in ops {
+            match op {
+                PatchOp::SetNodePriority { node_id, priority } => {
+                    let n = sc
+                        .workflows
+                        .nodes
+                        .iter_mut()
+                        .find(|n| n.id == *node_id)
+                        .ok_or_else(|| format!("set-node-priority: node not found: {}", node_id))?;
+                    n.priority = Some(*priority);
+                }
+                PatchOp::UpsertEdge {
+                    from,
+                    to,
+                    label,
+                    trigger,
+                } => {
+                    let n = sc
+                        .workflows
+                        .nodes
+                        .iter_mut()
+                        .find(|n| n.id == *from)
+                        .ok_or_else(|| format!("upsert-edge: from node not found: {}", from))?;
+                    if let Some(e) = n.edges.iter_mut().find(|e| e.to == *to) {
+                        if label.is_some() {
+                            e.label = label.clone();
+                        }
+                        if trigger.is_some() {
+                            e.trigger = trigger.clone();
+                        }
+                    } else {
+                        n.edges.push(WorkflowEdge {
+                            to: to.clone(),
+                            label: label.clone(),
+                            trigger: trigger.clone(),
+                        });
+                    }
+                }
+                PatchOp::RemoveNode { node_id } => {
+                    sc.workflows.nodes.retain(|n| n.id != *node_id);
+                    // also remove incoming edges to this node (best-effort)
+                    for n in sc.workflows.nodes.iter_mut() {
+                        n.edges.retain(|e| e.to != *node_id);
+                    }
+                }
+                PatchOp::AddNode { node } => {
+                    if sc.workflows.nodes.iter().any(|n| n.id == node.id) {
+                        return Err(format!("add-node: duplicate node id: {}", node.id));
+                    }
+                    sc.workflows.nodes.push(node.clone());
+                }
+                PatchOp::UpsertAction { action } => {
+                    if let Some(a) = sc.actions.actions.iter_mut().find(|a| a.id == action.id) {
+                        *a = action.clone();
+                    } else {
+                        sc.actions.actions.push(action.clone());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    // resolve base_version and build new scenario
+    let (base_ver, base_sc) = {
+        let reg = SCENARIOS
+            .lock()
+            .map_err(|_| "lock scenario registry".to_string())?;
+        let (active_ver, sc, _idx) = reg
+            .active()
+            .ok_or_else(|| "no active scenario".to_string())?;
+        let want = env.base_version.unwrap_or(active_ver);
+        if want != active_ver {
+            // strict: only allow patching from current active_version to avoid ambiguity
+            publish_event_with_corr(
+                "scheduler.topology.rejected",
+                None,
+                None,
+                None,
+                corr,
+                serde_json::json!({
+                    "change_id": env.change_id,
+                    "error": format!("base_version mismatch: want={}, active={}", want, active_ver),
+                    "base_version": want,
+                    "active_version": active_ver,
+                }),
+            );
+            return Err("base_version mismatch".to_string());
+        }
+        (active_ver, sc)
+    };
+
+    let mode_str = match &env.change {
+        TopologyChangedBody::ReplaceYaml { .. } => "replace-yaml",
+        TopologyChangedBody::ReplaceJson { .. } => "replace-json",
+        TopologyChangedBody::Patch { .. } => "patch",
+    };
+
+    let new_sc: Scenario = match env.change {
+        TopologyChangedBody::ReplaceYaml { scenario_yaml } => {
+            serde_yaml::from_str::<Scenario>(&scenario_yaml)
+                .or_else(|_| serde_json::from_str::<Scenario>(&scenario_yaml))
+                .map_err(|e| format!("parse replace-yaml: {e}"))?
+        }
+        TopologyChangedBody::ReplaceJson { scenario_json } => {
+            serde_json::from_value::<Scenario>(scenario_json)
+                .map_err(|e| format!("parse replace-json: {e}"))?
+        }
+        TopologyChangedBody::Patch { ops } => {
+            let mut sc = (*base_sc).clone();
+            apply_patch(&mut sc, &ops)?;
+            sc
+        }
+    };
+
+    if let Err(e) = validate_scenario(&new_sc) {
+        publish_event_with_corr(
+            "scheduler.topology.rejected",
+            None,
+            None,
+            None,
+            corr,
+            serde_json::json!({
+                "change_id": env.change_id,
+                "base_version": base_ver,
+                "mode": mode_str,
+                "error": e,
+            }),
+        );
+        return Err("topology validation failed".to_string());
+    }
+
+    let new_ver = {
+        let mut reg = SCENARIOS
+            .lock()
+            .map_err(|_| "lock scenario registry".to_string())?;
+        reg.install_new_active(new_sc.clone())
+    };
+
+    // update load controller phases for future spawns (existing users do not migrate)
+    if let Ok(mut lc) = LOAD.lock() {
+        if let Ok(reg) = SCENARIOS.lock() {
+            if let Some((sc, _idx)) = reg.by_version(new_ver) {
+                lc.phases = sc.load.ramp_up.phases.clone();
+                lc.next_phase = 0;
+                // keep next_user_seq so user ids remain monotonic
+            }
+        }
+    }
+
+    publish_event_with_corr(
+        "scheduler.topology.applied",
+        None,
+        None,
+        None,
+        corr,
+        serde_json::json!({
+            "change_id": env.change_id,
+            "base_version": base_ver,
+            "new_version": new_ver,
+            "mode": mode_str,
+        }),
+    );
+    println!(
+        "[scheduler] topology.changed applied: new active_version={}",
+        new_ver
+    );
+    Ok(())
+}
+
+fn maybe_finish_user(_ctx: &SchedulerContext, user_id: &str) -> Result<(), String> {
+    let (_ver, sc_arc, _wf_idx) = get_user_scenario_ctx(user_id)?;
+    let sc = sc_arc.as_ref();
     let reached_end = {
-        let rt = RUNTIME.lock().map_err(|_| "lock runtime".to_string())?;
-        let Some(u) = rt.users.get(user_id) else {
-            return Ok(());
-        };
-        end_nodes.iter().any(|eid| {
-            u.tasks
-                .get(eid)
-                .map(|t| t.state == TaskState::Completed)
-                .unwrap_or(false)
-        })
+        let sm = STATE_MACHINE
+            .lock()
+            .map_err(|_| "lock state-machine".to_string())?;
+        sm.is_end_reached(sc, user_id)
     };
     if reached_end {
         // publish only once per iteration
@@ -1645,12 +2470,11 @@ fn publish_user_exit_event(user_id: &str, reason: &str) {
 }
 
 fn on_user_start_event(
-    ctx: &SchedulerContext,
+    _ctx: &SchedulerContext,
     ev: &ntx::scenario_eventbus::event_bus::Event,
 ) -> Result<(), String> {
-    let Some(sc) = &ctx.scenario.parsed else {
-        return Ok(());
-    };
+    let (ver, sc_arc, wf_idx) = get_active_scenario_ctx()?;
+    let sc = sc_arc.as_ref();
     let v: serde_json::Value = serde_json::from_str(&ev.payload).unwrap_or(serde_json::json!({}));
     let user_id = v.get("user_id").and_then(|x| x.as_str()).unwrap_or("");
     if user_id.is_empty() {
@@ -1661,9 +2485,12 @@ fn on_user_start_event(
     let mut user = UserInstance {
         tasks: HashMap::new(),
         resources,
-        meta: user_meta_from_config(&sc.load.user_lifetime),
+        meta: {
+            let mut m = user_meta_from_config(&sc.load.user_lifetime);
+            m.scenario_version = ver;
+            m
+        },
     };
-    let start_nodes = find_start_nodes(sc);
     for n in &sc.workflows.nodes {
         let tr = TaskRuntime {
             state: TaskState::Created,
@@ -1678,32 +2505,34 @@ fn on_user_start_event(
             return Ok(());
         }
         rt.users.insert(user_id.to_string(), user);
-        // start nodes 入队
-        for nid in start_nodes {
-            if let Some(t) = rt
-                .users
-                .get_mut(user_id)
-                .and_then(|u| u.tasks.get_mut(&nid))
-            {
-                t.state = TaskState::Ready;
-                rt.ready
-                    .push(node_priority(sc, &nid), user_id.to_string(), nid);
-            }
-        }
     }
+    // authoritative init via StateMachine
+    let effects = {
+        let mut sm = STATE_MACHINE
+            .lock()
+            .map_err(|_| "lock state-machine".to_string())?;
+        sm.apply(
+            sc,
+            &wf_idx,
+            now_ms(),
+            SmEvent::UserReset {
+                user_id: user_id.to_string(),
+            },
+        )
+    };
+    apply_sm_effects(effects)?;
     Ok(())
 }
 
 fn on_user_exit_event(
-    ctx: &SchedulerContext,
+    _ctx: &SchedulerContext,
     ev: &ntx::scenario_eventbus::event_bus::Event,
 ) -> Result<(), String> {
     let Some(user_id) = ev.user_id.as_deref() else {
         return Ok(());
     };
-    let Some(sc) = ctx.scenario.parsed.as_ref() else {
-        return Ok(());
-    };
+    let (_ver, sc_arc, _wf_idx) = get_user_scenario_ctx(user_id)?;
+    let sc = sc_arc.as_ref();
 
     // read current meta
     let (mode, iterations, think_ms, cur_iter) = {
@@ -1720,7 +2549,7 @@ fn on_user_exit_event(
     };
 
     if mode != "loop" {
-        return finish_user(ctx, user_id);
+        return finish_user(_ctx, user_id);
     }
 
     // loop mode: increment iteration and decide stop/restart
@@ -1735,7 +2564,7 @@ fn on_user_exit_event(
     }
 
     if should_stop {
-        return finish_user(ctx, user_id);
+        return finish_user(_ctx, user_id);
     }
 
     if let Some(ms) = think_ms {
@@ -1753,38 +2582,38 @@ fn on_user_exit_event(
     }
 }
 
-fn restart_user_iteration(ctx: &SchedulerContext, user_id: &str) -> Result<(), String> {
-    let Some(sc) = ctx.scenario.parsed.as_ref() else {
-        return Ok(());
-    };
-    restart_user_iteration_with_scenario(sc, user_id)
+fn restart_user_iteration(_ctx: &SchedulerContext, user_id: &str) -> Result<(), String> {
+    let (_ver, sc_arc, _wf_idx) = get_user_scenario_ctx(user_id)?;
+    restart_user_iteration_with_scenario(sc_arc.as_ref(), user_id)
 }
 
 fn restart_user_iteration_with_scenario(sc: &Scenario, user_id: &str) -> Result<(), String> {
-    let start_nodes = find_start_nodes(sc);
     if let Ok(mut rt) = RUNTIME.lock() {
-        let mut enqueue: Vec<String> = Vec::new();
-        {
-            let Some(u) = rt.users.get_mut(user_id) else {
-                return Ok(());
-            };
-            for (_nid, t) in u.tasks.iter_mut() {
-                t.state = TaskState::Created;
-                t.vars = serde_json::json!({});
-                t.exports = serde_json::json!({});
-            }
-            for nid in start_nodes {
-                if let Some(t) = u.tasks.get_mut(&nid) {
-                    t.state = TaskState::Ready;
-                    enqueue.push(nid);
-                }
-            }
-        }
-        for nid in enqueue {
-            rt.ready
-                .push(node_priority(sc, &nid), user_id.to_string(), nid);
+        let Some(u) = rt.users.get_mut(user_id) else {
+            return Ok(());
+        };
+        for (_nid, t) in u.tasks.iter_mut() {
+            // vars/exports 的生命周期仍由 runtime 持有
+            t.vars = serde_json::json!({});
+            t.exports = serde_json::json!({});
         }
     }
+    // states + start enqueue 由 StateMachine 权威重置
+    let (_ver, _sc_arc, wf_idx) = get_user_scenario_ctx(user_id)?;
+    let effects = {
+        let mut sm = STATE_MACHINE
+            .lock()
+            .map_err(|_| "lock state-machine".to_string())?;
+        sm.apply(
+            sc,
+            &wf_idx,
+            now_ms(),
+            SmEvent::UserReset {
+                user_id: user_id.to_string(),
+            },
+        )
+    };
+    apply_sm_effects(effects)?;
     Ok(())
 }
 
@@ -1803,6 +2632,7 @@ fn user_meta_from_config(ul: &UserLifetime) -> UserMeta {
         end_event_sent: false,
         running: 0,
         max_running,
+        scenario_version: 1,
     }
 }
 
@@ -1977,9 +2807,6 @@ fn publish_scheduler_state(state: SchedulerState, err: Option<&String>) {
 }
 
 fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, String> {
-    let Some(sc) = &ctx.scenario.parsed else {
-        return Ok(false);
-    };
     let mut did = false;
     for _ in 0..max {
         let next = {
@@ -1990,46 +2817,107 @@ fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, Stri
             break;
         };
 
-        // 找 node + action
-        let node = sc
-            .workflows
-            .nodes
-            .iter()
-            .find(|n| n.id == node_id)
-            .ok_or_else(|| format!("node not found: {}", node_id))?;
-        let Some(action_id) = node.action.as_ref() else {
-            continue;
+        // per-user scenario (old users do not migrate)
+        let (_ver, sc_arc, wf_idx) = match get_user_scenario_ctx(&user_id) {
+            Ok(v) => v,
+            Err(_) => continue,
         };
-        let action = sc
-            .actions
-            .actions
-            .iter()
-            .find(|a| &a.id == action_id)
-            .ok_or_else(|| format!("action not found: {}", action_id))?;
+        let sc = sc_arc.as_ref();
+
+        // 找 node
+        let node = match sc.workflows.nodes.iter().find(|n| n.id == node_id) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        // multi-step: pick action by state-machine step (authoritative)
+        let step_idx: u32 = {
+            let sm = STATE_MACHINE
+                .lock()
+                .map_err(|_| "lock state-machine".to_string())?;
+            sm.get_step(&user_id, &node_id)
+        };
+
+        let (action_id, step_timeout_ms, step_retry) = {
+            // prefer steps
+            if let Some(steps) = node.steps.as_ref().filter(|v| !v.is_empty()) {
+                let si = usize::try_from(step_idx).unwrap_or(0);
+                if si >= steps.len() {
+                    continue;
+                }
+                let st = &steps[si];
+                (st.action.clone(), st.timeout_ms, st.retry.clone())
+            } else {
+                // fallback: actions/action list
+                let list: Vec<String> = node
+                    .actions
+                    .as_ref()
+                    .filter(|v| !v.is_empty())
+                    .cloned()
+                    .or_else(|| node.action.as_ref().map(|a| vec![a.clone()]))
+                    .unwrap_or_default();
+                let si = usize::try_from(step_idx).unwrap_or(0);
+                if list.is_empty() || si >= list.len() {
+                    continue;
+                }
+                (list[si].clone(), None, None)
+            }
+        };
+
+        let action = match sc.actions.actions.iter().find(|a| a.id == action_id) {
+            Some(a) => a,
+            None => continue,
+        };
 
         // B) 真实资源绑定：为 udp action 确保 user 已绑定 socket，并注入 socket_id
         if action.call.starts_with("udp.") {
             ensure_udp_socket_for_user(ctx, sc, &user_id)?;
         }
 
-        // 取 runtime task 上下文
+        // per-user concurrency cap + 状态机 Ready->Running
         let (task_vars, task_exports, user_resources) = {
+            // 1) concurrency check (runtime meta)
+            {
+                let mut rt = RUNTIME.lock().map_err(|_| "lock runtime".to_string())?;
+                let u = rt
+                    .users
+                    .get_mut(&user_id)
+                    .ok_or_else(|| format!("user not found: {}", user_id))?;
+                if u.meta.running >= u.meta.max_running {
+                    rt.ready.push(
+                        node_priority(sc, &node_id),
+                        user_id.to_string(),
+                        node_id.to_string(),
+                    );
+                    continue;
+                }
+            }
+            // 2) state-machine transition (authoritative) via apply(DispatchStart)
+            let effects = {
+                let mut sm = STATE_MACHINE
+                    .lock()
+                    .map_err(|_| "lock state-machine".to_string())?;
+                sm.apply(
+                    sc,
+                    &wf_idx,
+                    now_ms(),
+                    SmEvent::DispatchStart {
+                        user_id: user_id.to_string(),
+                        node_id: node_id.to_string(),
+                    },
+                )
+            };
+            if effects.is_empty() {
+                // stale ready item
+                continue;
+            }
+            apply_sm_effects(effects)?;
+            // 3) write derived state to runtime + snapshot context
             let mut rt = RUNTIME.lock().map_err(|_| "lock runtime".to_string())?;
             let u = rt
                 .users
                 .get_mut(&user_id)
                 .ok_or_else(|| format!("user not found: {}", user_id))?;
-
-            // per-user concurrency cap
-            if u.meta.running >= u.meta.max_running {
-                rt.ready.push(
-                    node_priority(sc, &node_id),
-                    user_id.to_string(),
-                    node_id.to_string(),
-                );
-                continue;
-            }
-
             let t = u
                 .tasks
                 .get_mut(&node_id)
@@ -2039,33 +2927,51 @@ fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, Stri
             (t.vars.clone(), t.exports.clone(), u.resources.clone())
         };
 
-        if let Ok(mut sm) = STATE_MACHINE.lock() {
-            sm.mark_running(&node_id, now_ms());
-        }
-
         let tctx = TemplateContext {
             vars: task_vars,
             resources: user_resources,
             exports: task_exports,
         };
 
-        // 初始化 retry policy（来自 action.with.retry.max/backoff_ms）
+        // 初始化 retry policy（step 覆写优先；否则来自 action.with.retry.max/backoff_ms）
         if let Ok(mut rt) = RUNTIME.lock() {
             if let Some(u) = rt.users.get_mut(&user_id) {
                 if let Some(t) = u.tasks.get_mut(&node_id) {
+                    let cur_step = step_idx;
+                    let retry_step = t
+                        .vars
+                        .get("_retry_step")
+                        .and_then(|v| v.as_u64())
+                        .and_then(|n| u32::try_from(n).ok());
+                    let need_reset = retry_step != Some(cur_step);
+                    if need_reset {
+                        if let Some(obj) = t.vars.as_object_mut() {
+                            obj.remove("_retry");
+                            obj.insert(
+                                "_retry_step".to_string(),
+                                serde_json::Value::Number((cur_step as u64).into()),
+                            );
+                        }
+                    }
                     if t.vars.get("_retry").is_none() {
-                        let max = action
-                            .with
-                            .get("retry")
-                            .and_then(|r| r.get("max"))
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0);
-                        let backoff_ms = action
-                            .with
-                            .get("retry")
-                            .and_then(|r| r.get("backoff_ms"))
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(1000);
+                        let (max, backoff_ms) = if let Some(r) = step_retry.as_ref() {
+                            (r.max, r.backoff_ms)
+                        } else {
+                            (
+                                action
+                                    .with
+                                    .get("retry")
+                                    .and_then(|r| r.get("max"))
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0),
+                                action
+                                    .with
+                                    .get("retry")
+                                    .and_then(|r| r.get("backoff_ms"))
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(1000),
+                            )
+                        };
                         if max > 0 {
                             if let Some(obj) = t.vars.as_object_mut() {
                                 obj.insert(
@@ -2085,12 +2991,14 @@ fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, Stri
             inject_udp_socket_id(&user_id, &mut def)?;
         }
 
-        // 超时 timer：支持 action.with.timeout-ms/timeout_ms（毫秒）
-        let timeout_ms = action
-            .with
-            .get("timeout-ms")
-            .or_else(|| action.with.get("timeout_ms"))
-            .and_then(|v| v.as_u64());
+        // 超时 timer：step.timeout_ms 覆写优先；否则 action.with.timeout-ms/timeout_ms（毫秒）
+        let timeout_ms = step_timeout_ms.or_else(|| {
+            action
+                .with
+                .get("timeout-ms")
+                .or_else(|| action.with.get("timeout_ms"))
+                .and_then(|v| v.as_u64())
+        });
         if let Some(tmo) = timeout_ms {
             schedule_timer(
                 "scheduler.timer.timeout",
@@ -2339,6 +3247,12 @@ fn finish_user(_ctx: &SchedulerContext, user_id: &str) -> Result<(), String> {
         rt.users.remove(user_id);
     }
 
+    // 2.1) drop state-machine user state (authoritative workflow instance)
+    if let Ok(mut sm) = STATE_MACHINE.lock() {
+        sm.users.remove(user_id);
+        sm.history.remove(user_id);
+    }
+
     // 3) cancel timers for this user
     if let Ok(mut timers) = TIMERS.lock() {
         timers.retain(|t| t.user_id.as_deref() != Some(user_id));
@@ -2481,6 +3395,9 @@ fn on_action_result_event(
         return Ok(());
     };
 
+    let (_ver, sc_arc, wf_idx) = get_user_scenario_ctx(user_id)?;
+    let sc = sc_arc.as_ref();
+
     let status_lc = status.to_ascii_lowercase();
     let success = status_lc.contains("success");
     let timeout = status_lc.contains("timeout");
@@ -2495,20 +3412,23 @@ fn on_action_result_event(
         "exports": exports.clone().unwrap_or(serde_json::Value::Null),
     });
 
-    // update runtime state + exports
+    // update runtime state + exports + step branching decision
     let mut need_retry = false;
     let mut retry_after_ms: Option<u64> = None;
     let mut retries_left: Option<i64> = None;
+    // step branching (state-machine internal step_idx drives the actual dispatch)
+    let cur_step: u32 = {
+        let sm = STATE_MACHINE
+            .lock()
+            .map_err(|_| "lock state-machine".to_string())?;
+        sm.get_step(user_id, task_id)
+    };
+    let mut jump_step: Option<u32> = None; // Some(next_step) means re-enqueue same node to that step
     {
         if let Ok(mut rt) = RUNTIME.lock() {
             if let Some(u) = rt.users.get_mut(user_id) {
                 if let Some(t) = u.tasks.get_mut(task_id) {
                     let was_running = t.state == TaskState::Running;
-                    if success {
-                        t.state = TaskState::Completed;
-                    } else {
-                        t.state = TaskState::Failed;
-                    }
                     if was_running {
                         u.meta.running = u.meta.running.saturating_sub(1);
                     }
@@ -2556,21 +3476,58 @@ fn on_action_result_event(
         }
     }
 
-    // update state machine mirror
-    if let Ok(mut sm) = STATE_MACHINE.lock() {
-        if success {
-            sm.mark_completed(task_id, now_ms());
+    // decide step jump:
+    // - success: go to next step if exists
+    // - failure/timeout: if no retry and step specifies on_failed_step/on_timeout_step, jump there
+    if let Some(node) = sc.workflows.nodes.iter().find(|n| n.id == task_id) {
+        let steps_len: usize = if let Some(steps) = node.steps.as_ref().filter(|v| !v.is_empty()) {
+            steps.len()
+        } else if let Some(actions) = node.actions.as_ref().filter(|v| !v.is_empty()) {
+            actions.len()
+        } else if node.action.is_some() {
+            1
         } else {
-            sm.tasks
-                .entry(task_id.to_string())
-                .and_modify(|m| {
-                    m.state = TaskState::Failed;
-                    m.last_update_ms = now_ms();
-                })
-                .or_insert(TaskMeta {
-                    state: TaskState::Failed,
-                    last_update_ms: now_ms(),
-                });
+            0
+        };
+
+        if steps_len > 0 {
+            if success {
+                let next = cur_step.saturating_add(1);
+                if (next as usize) < steps_len {
+                    jump_step = Some(next);
+                }
+            } else if !need_retry {
+                if let Some(steps) = node.steps.as_ref().filter(|v| !v.is_empty()) {
+                    let si = usize::try_from(cur_step).unwrap_or(0);
+                    if si < steps.len() {
+                        let st = &steps[si];
+                        if timeout {
+                            jump_step = st.on_timeout_step;
+                        } else {
+                            jump_step = st.on_failed_step;
+                        }
+                        if let Some(ns) = jump_step {
+                            if (ns as usize) >= steps_len {
+                                jump_step = None;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // if we will jump to another step, clear per-step retry state so dispatch can re-init
+    if jump_step.is_some() {
+        if let Ok(mut rt) = RUNTIME.lock() {
+            if let Some(u) = rt.users.get_mut(user_id) {
+                if let Some(t) = u.tasks.get_mut(task_id) {
+                    if let Some(obj) = t.vars.as_object_mut() {
+                        obj.remove("_retry");
+                        obj.remove("_retry_step");
+                    }
+                }
+            }
         }
     }
 
@@ -2595,8 +3552,35 @@ fn on_action_result_event(
     } else {
         "failed"
     };
-    if success || (!need_retry) {
-        advance_edges(ctx, user_id, task_id, reason, Some(&eval_ctx))?;
+    // should advance workflow edges only when:
+    // - success and no jump_step
+    // - failure/timeout and no retry and no jump_step
+    let should_advance =
+        ((success) && jump_step.is_none()) || ((!success) && !need_retry && jump_step.is_none());
+    let effects = {
+        let mut sm = STATE_MACHINE
+            .lock()
+            .map_err(|_| "lock state-machine".to_string())?;
+        if let Some(ns) = jump_step {
+            sm.set_step(user_id, task_id, ns, now_ms());
+        }
+        sm.apply(
+            sc,
+            &wf_idx,
+            now_ms(),
+            SmEvent::ActionResult {
+                user_id: user_id.to_string(),
+                node_id: task_id.to_string(),
+                reason: reason.to_string(),
+                success,
+                should_advance,
+                continue_node: jump_step.is_some(),
+                eval_ctx,
+            },
+        )
+    };
+    apply_sm_effects(effects)?;
+    if should_advance {
         maybe_finish_user(ctx, user_id)?;
     }
 

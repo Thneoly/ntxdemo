@@ -1,0 +1,6 @@
+{
+    "schema_version": 1,
+    "change_id": "chg-replace-yaml-001",
+    "mode": "replace-yaml",
+    "scenario_yaml": "version: \"v1\"\nname: \"udp-echo-minimal\"\nworkbook:\n  resources: []\nactions:\n  actions: []\nworkflows:\n  nodes: []\nload:\n  ramp_up:\n    phases: []\n  user_lifetime:\n    mode: \"once\"\nuser_resources: {}\n"
+}
