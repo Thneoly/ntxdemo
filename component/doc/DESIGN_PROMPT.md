@@ -212,6 +212,18 @@ loop {
 - `ActionResult(success=false)` → `Running` → `Failed`
 - `TimerFired(retry_deadline)` → `Failed` → `Ready`（重试）
 
+#### 3.1 task 内部 step（对齐当前实现）
+
+在更贴近工程实现的模型里，一个 workflow 的 `type: action` 节点并不一定只有一个 action，而是可以包含一个 **step 列表**（每个 step 绑定一个 action，并可覆写 timeout/retry，以及定义失败/超时的 step 跳转）。
+
+关键约束（重要）：
+- **step index 属于状态机内部字段**（per-user + per-node），不挂在 `vars` 上，避免被模板变量覆盖/污染。
+- 只有当一个 action-node 的 **最后一个 step 成功** 时，才会沿 workflow edge 推进到下一个节点。
+- 对于失败/超时：
+  - 若 step 仍有重试次数，则由 retry timer 驱动回到本 step 继续尝试
+  - 若无重试且配置了 `on_failed_step` / `on_timeout_step`，则在 action-node 内部跳转到指定 step 并继续执行
+  - 否则才进入 workflow edge 的 failed/timeout 分支推进
+
 在引入网络事件后，`packet.rx` 也会作为状态机的输入之一，例如 UDP Echo Client 场景：
 
 ```text
@@ -343,6 +355,7 @@ actions-executor 同样可以通过 eventbus（或通过 scheduler 暴露的简�
     - 同时在事件顶层字段或 payload 中携带 `user_id?`、`task_id?`、`action_id?`，用于驱动状态机
   - `scheduler.state-changed`：scheduler 自身状态变化（`Idle/Running/Degraded/Error/Completed`）时上报
   - `topology.changed`：workflow / workbook 发生拓扑变更时上报，payload 携带变更 diff
+- `scheduler.task.state-changed`：task 状态迁移时上报，payload 携带 from/to、scenario_version 等（便于审计与回放）
 
 > 注：以上事件类型不强制绑定具体字符串前缀，但建议在实现中统一使用 `"scheduler.*"` / `"packet.*"` / `"topology.*"` 命名空间，便于过滤与订阅。
 
@@ -420,6 +433,35 @@ user_resources:
     strategy: "per_user"     # per-user / per-task / shared
     release_on: "user_exit"  # task-end / user-exit
 ```
+
+#### 1.0.1 Action Node 的 step 配置（推荐形态，对齐当前实现）
+
+除 `action`（单 action）与 `actions[]`（多 action 列表）外，推荐使用 `steps[]` 表达更完整的执行语义：
+- step 级 `timeout_ms` / `retry` 覆写（优先于 `actions.actions[*].with.timeout-ms` / `with.retry`）
+- step 级失败/超时跳转：`on_failed_step` / `on_timeout_step`
+
+```yaml
+workflows:
+  nodes:
+    - id: "start"
+      type: "action"
+      steps:
+        - action: "a1"
+          timeout_ms: 1000
+          retry: { max: 2, backoff_ms: 200 }
+          on_failed_step: 2
+        - action: "a2"
+          timeout_ms: 3000
+        - action: "a3"
+          # timeout_ms/retry 可省略
+      edges:
+        - to: "end"
+          label: "done"
+```
+
+说明：
+- `steps` 优先级最高；若存在 `steps`，则忽略同节点的 `actions/action`
+- `on_failed_step/on_timeout_step` 为 step 索引（从 0 开始），用于在 action-node 内部跳转
 
 ### 1.1 UDP Echo 最小场景示例（结合当前实现）
 
