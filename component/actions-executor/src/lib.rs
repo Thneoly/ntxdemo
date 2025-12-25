@@ -6,6 +6,7 @@ wit_bindgen::generate!({
     path: [
         "../wit/core-types",
         "../wit/eventbus",
+        "../wit/send-scheduler",
         "../wit/actions-executor",
     ],
     generate_all,
@@ -143,6 +144,86 @@ fn publish_tx_request(
     })
     .map_err(|e| format!("publish tx-request failed: {e}"))?;
     Ok(())
+}
+
+fn next_request_id(prefix: &str) -> String {
+    let n = EVENT_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{n}")
+}
+
+fn parse_u32(params: &serde_json::Value, key: &str) -> Option<u32> {
+    params
+        .get(key)
+        .and_then(|v| v.as_u64())
+        .and_then(|n| u32::try_from(n).ok())
+}
+
+fn parse_u64(params: &serde_json::Value, key: &str) -> Option<u64> {
+    params.get(key).and_then(|v| v.as_u64())
+}
+
+fn parse_string(params: &serde_json::Value, key: &str) -> Option<String> {
+    params
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn parse_schedule(
+    params: &serde_json::Value,
+) -> Result<ntx::scenario_types::types::SendSchedule, String> {
+    let mode = params
+        .get("schedule")
+        .or_else(|| params.get("send_schedule"))
+        .or_else(|| params.get("mode"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("once")
+        .trim()
+        .to_ascii_lowercase();
+
+    match mode.as_str() {
+        "once" => Ok(ntx::scenario_types::types::SendSchedule::Once),
+        "periodic" => {
+            let interval_ms = parse_u64(params, "interval_ms")
+                .or_else(|| parse_u64(params, "interval-ms"))
+                .ok_or_else(|| "missing interval_ms for periodic schedule".to_string())?;
+            let start_delay_ms =
+                parse_u64(params, "start_delay_ms").or_else(|| parse_u64(params, "start-delay-ms"));
+            Ok(ntx::scenario_types::types::SendSchedule::Periodic(
+                ntx::scenario_types::types::PeriodicSchedule {
+                    interval_ms,
+                    start_delay_ms,
+                },
+            ))
+        }
+        "timetable" => {
+            let ts = params
+                .get("timestamps_ms")
+                .or_else(|| params.get("timestamps-ms"))
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| "missing timestamps_ms for timetable schedule".to_string())?;
+            let mut out: Vec<u64> = Vec::with_capacity(ts.len());
+            for x in ts {
+                out.push(
+                    x.as_u64()
+                        .ok_or_else(|| "timestamps_ms must be u64 array".to_string())?,
+                );
+            }
+            Ok(ntx::scenario_types::types::SendSchedule::Timetable(
+                ntx::scenario_types::types::TimetableSchedule { timestamps_ms: out },
+            ))
+        }
+        "rate-limited" | "rate_limited" | "ratelimited" => {
+            let pps = parse_u32(params, "pps")
+                .ok_or_else(|| "missing pps for rate-limited schedule".to_string())?;
+            let burst_size =
+                parse_u32(params, "burst_size").or_else(|| parse_u32(params, "burst-size"));
+            Ok(ntx::scenario_types::types::SendSchedule::RateLimited(
+                ntx::scenario_types::types::RateLimitedSchedule { pps, burst_size },
+            ))
+        }
+        other => Err(format!("unsupported send schedule mode: {other}")),
+    }
 }
 
 fn poll_for_packet_rx(
@@ -321,9 +402,98 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
                     }),
                 }
             }
+            "udp.schedule-send" => {
+                let params: serde_json::Value = serde_json::from_str(&action.params)
+                    .map_err(|e| format!("parse params as json: {e}"))?;
+                let sock_id = params
+                    .get("socket_id")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| "missing socket_id (u64)".to_string())?;
+
+                let user_id = user_id
+                    .clone()
+                    .ok_or_else(|| "udp.schedule-send requires ctx.user_id".to_string())?;
+                let task_id = task_id
+                    .clone()
+                    .ok_or_else(|| "udp.schedule-send requires ctx.task_id".to_string())?;
+
+                // payload: allow fixed bytes via the same payload spec helper; generator is not implemented yet.
+                let payload_spec = parse_payload_spec(&params)?;
+                let schedule = parse_schedule(&params)?;
+
+                let max_count =
+                    parse_u32(&params, "max_count").or_else(|| parse_u32(&params, "max-count"));
+                let timeout_ms =
+                    parse_u64(&params, "timeout_ms").or_else(|| parse_u64(&params, "timeout-ms"));
+
+                let request_id = parse_string(&params, "request_id")
+                    .or_else(|| parse_string(&params, "request-id"))
+                    .unwrap_or_else(|| next_request_id("send"));
+
+                let payload_bytes: Vec<u8> = match payload_spec {
+                    PayloadSpec::Text(s) => s.into_bytes(),
+                    PayloadSpec::Hex(h) => {
+                        // Reuse scheduler-side convention: accept 0x prefix and ignore whitespace.
+                        let mut t = h.trim().to_ascii_lowercase();
+                        if let Some(rest) = t.strip_prefix("0x") {
+                            t = rest.to_string();
+                        }
+                        let t: String = t.chars().filter(|c| !c.is_whitespace()).collect();
+                        if t.len() % 2 != 0 {
+                            return Err("payload_hex length must be even".to_string());
+                        }
+                        let mut out = Vec::with_capacity(t.len() / 2);
+                        for i in (0..t.len()).step_by(2) {
+                            let byte = u8::from_str_radix(&t[i..i + 2], 16)
+                                .map_err(|_| format!("invalid hex byte: {}", &t[i..i + 2]))?;
+                            out.push(byte);
+                        }
+                        out
+                    }
+                    PayloadSpec::Bytes(b) => b,
+                };
+
+                let req = ntx::scenario_types::types::SendRequest {
+                    request_id: request_id.clone(),
+                    user_id: user_id.clone(),
+                    task_id: task_id.clone(),
+                    socket_id: sock_id,
+                    schedule,
+                    payload: Some(payload_bytes),
+                    payload_generator: None,
+                    max_count,
+                    timeout_ms,
+                };
+
+                let rid = ntx::scenario_send_scheduler::send_scheduler::schedule_send(&req)
+                    .map_err(|e| format!("schedule-send failed: {e}"))?;
+
+                let exports = serde_json::json!({
+                    "request_id": rid,
+                    "socket_id": sock_id,
+                    "scheduled": true,
+                })
+                .to_string();
+
+                Ok(ntx::scenario_types::types::ActionOutcome {
+                    status: ntx::scenario_types::types::OutcomeStatus::Success,
+                    detail: Some(format!("udp.schedule-send ok request_id={}", exports)),
+                    metrics: None,
+                    exports: Some(exports),
+                })
+            }
+            c if c.starts_with("http.") || c.starts_with("tcp.") => {
+                Ok(ntx::scenario_types::types::ActionOutcome {
+                    status: ntx::scenario_types::types::OutcomeStatus::Failed,
+                    detail: Some(format!("action not implemented yet: {}", c)),
+                    metrics: None,
+                    exports: None,
+                })
+            }
             _ => Ok(ntx::scenario_types::types::ActionOutcome {
-                status: ntx::scenario_types::types::OutcomeStatus::Success,
-                detail: Some("stub executed".to_string()),
+                // IMPORTANT: unknown actions must not default to Success (would mislead the state machine).
+                status: ntx::scenario_types::types::OutcomeStatus::Failed,
+                detail: Some(format!("unknown action.call: {}", action.call)),
                 metrics: None,
                 exports: None,
             }),

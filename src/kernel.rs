@@ -769,6 +769,15 @@ pub fn non_blocking_recv() -> Option<Vec<u8>> {
     non_blocking_recv_with_sock().map(|(_sock, payload)| payload)
 }
 
+/// UDP RX result with best-effort flow correlation.
+#[derive(Debug, Clone)]
+pub struct UdpRx {
+    pub sock_id: Option<resources::SockId>,
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub payload: Vec<u8>,
+}
+
 /// Receive one packet payload (non-blocking) and try to correlate it to a UDP socket.
 ///
 /// Step-1 数据面策略：
@@ -778,6 +787,11 @@ pub fn non_blocking_recv() -> Option<Vec<u8>> {
 ///
 /// 返回：`Some((sock_id_opt, payload))` 或 `None`（无包）。
 pub fn non_blocking_recv_with_sock() -> Option<(Option<resources::SockId>, Vec<u8>)> {
+    non_blocking_recv_udp().map(|rx| (rx.sock_id, rx.payload))
+}
+
+/// Receive one UDP datagram (non-blocking) and return dst/src ports + best-effort sock_id.
+pub fn non_blocking_recv_udp() -> Option<UdpRx> {
     let mut nic = KERNEL.nic();
     let reg = KERNEL.reg();
     let abr_view = KERNEL.abr_view();
@@ -831,7 +845,12 @@ pub fn non_blocking_recv_with_sock() -> Option<(Option<resources::SockId>, Vec<u
 
     let sock_id = udp_sockets.peek(&flow_key).map(|c| c.key.id);
 
-    Some((sock_id, payload.to_vec()))
+    Some(UdpRx {
+        sock_id,
+        src_port: udp.src_port,
+        dst_port: udp.dst_port,
+        payload: payload.to_vec(),
+    })
 }
 
 // Extract a sock_id from already-parsed IPv4+UDP metadata.

@@ -1,0 +1,57 @@
+package ntx:hostnet;
+interface udp-socket-control {
+    /// Canonical UUID string.
+    use types.{ipv4-addr, mac-addr};
+    type resource-id = string;
+
+    /// Opaque dataplane socket/flow id.
+    type sock-id = u64;
+
+    /// Socket handle returned to the guest.
+    record udp-socket {
+        owner: resource-id,
+        sock: sock-id,
+    }
+
+    /// One-shot configuration for a UDP socket.
+    record udp-bind {
+        local-ipv4: ipv4-addr,
+        local-mac: mac-addr,
+        local-udp-port: u16,
+
+        peer-ipv4: ipv4-addr,
+        peer-port: u16,
+        peer-mac: mac-addr,
+
+        ttl: option<u8>,
+    }
+
+    /// A handle for a frame written into host-managed shared memory.
+    record frame-handle {
+        region: u32,
+        offset: u32,
+        len: u32,
+    }
+
+    variant socket-error {
+        invalid-argument,
+        invalid-state,
+        not-found,
+        no-space,
+        other(string),
+    }
+
+    /// Create a UDP socket. Host allocates both owner ResourceId and sock-id.
+    create: func(name: string) -> result<udp-socket, socket-error>;
+
+    /// Bind a UDP socket to a port.
+    bind: func(sock: sock-id, b: udp-bind) -> result<_, socket-error>;
+
+    /// Build a UDP reply frame and write it into host shared memory.
+    build-reply: func(sock: sock-id, payload: list<u8>) -> result<frame-handle, socket-error>;
+
+    /// Transmit a previously built frame.
+    tx: func(frame: frame-handle) -> result<u32, socket-error>;
+}
+
+

@@ -16,14 +16,13 @@ use ntx_network;
 mod packet_engine_bindings {
     wasmtime::component::bindgen!({
         world: "ntx:packet/packet-engine",
-        path: ["component/wit/host"],
+        // This package has file-based deps under `plugins/wit/packet-engine/deps/*`.
+        path: ["plugins/wit/packet-engine"],
         debug:true,
     });
 }
-use packet_engine_bindings::exports::ntx::hostnet::resources::{
-    Host as ResourceHost, ResourceError,
-};
-use packet_engine_bindings::exports::ntx::hostnet::types::Host as TypesHost;
+use packet_engine_bindings::ntx::hostnet::resources::{Host as ResourceHost, ResourceError};
+use packet_engine_bindings::ntx::hostnet::types::Host as TypesHost;
 // (types imported via WIT bindings in signatures; concrete conversions use ntx_network types)
 use packet_engine_bindings::ntx::hostnet::udp_socket_control::{
     FrameHandle, Host as UdpHost, SocketError, UdpBind, UdpSocket,
@@ -112,21 +111,19 @@ impl ResourceHost for State {
         &mut self,
         pool: String,
         owner: String,
-    ) -> wasmtime::Result<
-        packet_engine_bindings::exports::ntx::hostnet::resources::UdpIdentity,
-        ResourceError,
-    > {
+    ) -> wasmtime::Result<packet_engine_bindings::ntx::hostnet::resources::UdpIdentity, ResourceError>
+    {
         let (ip, mac, port) = kernel::hostnet_acquire_udp_identity(&pool, &owner)
             .map_err(|e| ResourceError::Other(e.to_string()))?;
         Ok(
-            packet_engine_bindings::exports::ntx::hostnet::resources::UdpIdentity {
-                local_ipv4: packet_engine_bindings::exports::ntx::hostnet::types::Ipv4Addr {
+            packet_engine_bindings::ntx::hostnet::resources::UdpIdentity {
+                local_ipv4: packet_engine_bindings::ntx::hostnet::types::Ipv4Addr {
                     a: ip.octets()[0],
                     b: ip.octets()[1],
                     c: ip.octets()[2],
                     d: ip.octets()[3],
                 },
-                local_mac: packet_engine_bindings::exports::ntx::hostnet::types::MacAddr {
+                local_mac: packet_engine_bindings::ntx::hostnet::types::MacAddr {
                     a: mac.0[0],
                     b: mac.0[1],
                     c: mac.0[2],
@@ -141,11 +138,8 @@ impl ResourceHost for State {
 
     fn resolve_peer_mac(
         &mut self,
-        peer_ipv4: packet_engine_bindings::exports::ntx::hostnet::types::Ipv4Addr,
-    ) -> wasmtime::Result<
-        packet_engine_bindings::exports::ntx::hostnet::types::MacAddr,
-        ResourceError,
-    > {
+        peer_ipv4: packet_engine_bindings::ntx::hostnet::types::Ipv4Addr,
+    ) -> wasmtime::Result<packet_engine_bindings::ntx::hostnet::types::MacAddr, ResourceError> {
         let mac = kernel::hostnet_resolve_peer_mac(ntx_network::Ipv4Addr([
             peer_ipv4.a,
             peer_ipv4.b,
@@ -157,16 +151,14 @@ impl ResourceHost for State {
             kernel::HostnetError::InvalidArgument(_) => ResourceError::InvalidArgument,
             other => ResourceError::Other(other.to_string()),
         })?;
-        Ok(
-            packet_engine_bindings::exports::ntx::hostnet::types::MacAddr {
-                a: mac.0[0],
-                b: mac.0[1],
-                c: mac.0[2],
-                d: mac.0[3],
-                e: mac.0[4],
-                f: mac.0[5],
-            },
-        )
+        Ok(packet_engine_bindings::ntx::hostnet::types::MacAddr {
+            a: mac.0[0],
+            b: mac.0[1],
+            c: mac.0[2],
+            d: mac.0[3],
+            e: mac.0[4],
+            f: mac.0[5],
+        })
     }
 
     fn resolve_udp_port(&mut self, rid: String) -> wasmtime::Result<u16, ResourceError> {
@@ -174,6 +166,12 @@ impl ResourceHost for State {
             kernel::HostnetError::NotFound(_) => ResourceError::NotFound,
             other => ResourceError::Other(other.to_string()),
         })
+    }
+
+    fn release_resource(&mut self, _rid: String) -> wasmtime::Result<(), ResourceError> {
+        // Best-effort cleanup: the host control-plane owns pool lifecycle.
+        // For now we keep this as a no-op to satisfy the WIT contract.
+        Ok(())
     }
 }
 

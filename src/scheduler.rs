@@ -1,7 +1,7 @@
 use crate::app_config::{SchedulerConfig, WasmConfig};
 use crate::error::SchedulerError;
 use crate::event_bus::{Bytes, EventBus, SimpleEventBus, build_event};
-use crate::kernel::non_blocking_recv_with_sock;
+use crate::kernel::non_blocking_recv_udp;
 use crate::time::{PollTimeManager, TimeManager, TimerToken};
 use crate::wasm_engine::{EngineConfig, EngineHandle, EngineManager};
 use once_cell::sync::Lazy;
@@ -526,7 +526,7 @@ impl Scheduler {
             TaskKind::NetworkIo(NetworkIoTask::NicRx) => {
                 // Policy #2: NicRx only receives and enqueues a WasmCall; the WasmCall will
                 // drive the guest handler.
-                let Some((sock, payload)) = non_blocking_recv_with_sock() else {
+                let Some(rx) = non_blocking_recv_udp() else {
                     return false;
                 };
 
@@ -535,7 +535,7 @@ impl Scheduler {
                 let mut mgr = EngineManager::global()
                     .lock()
                     .expect("engine manager poisoned");
-                let _ = mgr.enqueue_rx(sock.map(|s| s as u64), &payload);
+                let _ = mgr.enqueue_rx(rx.sock_id.map(|s| s as u64), &rx.payload);
                 self.submit(Task::wasm_call("wasm-rx", "notify-rx"));
                 true
             }

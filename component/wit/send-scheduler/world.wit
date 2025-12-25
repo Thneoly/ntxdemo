@@ -1,0 +1,14 @@
+package ntx:scenario-send-scheduler@0.1.0;
+
+use ntx:scenario-types/types@0.1.0 as t;
+
+/// 发包调度接口：actions-executor 委托 scheduler 执行周期/限速/时间表等复杂发包策略。
+interface send-scheduler {
+    use t.{send-request, send-status};
+
+    schedule-send: func(request: send-request) -> result<string, string>;
+    cancel-send: func(request-id: string) -> result<_, string>;
+    query-send-status: func(request-id: string) -> result<send-status, string>;
+}
+
+

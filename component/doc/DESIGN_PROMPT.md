@@ -1236,7 +1236,7 @@ execute_action(action: ActionDef, ctx: Option<ActionContext>) -> ActionOutcome:
 
 ### 7. UDP 收包通知的完整流程
 
-#### 模式 A：事件轮询模式（Client 场景）
+#### （仅支持）模式 A：事件轮询/统一收包转译模式（Client/Server 通用）
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -1268,7 +1268,7 @@ execute_action(action: ActionDef, ctx: Option<ActionContext>) -> ActionOutcome:
 │                 //    的 task（可能处于 Waiting 状态）      │
 │                 task = find_task_by_socket(desc.socket_id)  │
 │                                                              │
-│                 // 5. 创建事件并更新状态机                   │
+│                 // 5. 创建事件并更新状态机（统一把收包转为显式事件） │
 │                 event = UdpPacketReceived {                 │
 │                     task_id: task.id,                       │
 │                     payload: payload,                       │
@@ -1290,60 +1290,23 @@ execute_action(action: ActionDef, ctx: Option<ActionContext>) -> ActionOutcome:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-#### 模式 B：直接调用模式（Server 场景）
+> 说明：本系统**不支持 Mode-B（host 直接调用 actions-executor 导出函数）**。收包永远先进入 scheduler，
+> 由 scheduler 统一转译为 `packet.rx` 事件，再驱动状态机与后续 action 执行。
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Host 侧                                                      │
-├─────────────────────────────────────────────────────────────┤
-│ 1. NIC 收到 UDP 包                                          │
-│ 2. 解析 UDP/IP/Ethernet 头                                  │
-│ 3. 根据 dst_ip:dst_port 查找对应的 socket                  │
-│ 4. 找到对应的 actions-executor 组件实例                     │
-│ 5. 直接调用导出的函数：                                      │
-│    wasm_instance.call_on_packet_received(meta, payload)      │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│ Actions-Executor（Guest 侧）                               │
-├─────────────────────────────────────────────────────────────┤
-│ export on_packet_received:                                  │
-│     func(meta: packet-meta, payload: list<u8>)              │
-│     -> result<list<u8>, string>                           │
-│ {                                                            │
-│     // 1. 处理数据包（echo：原样返回）                      │
-│     response = echo_payload(payload)                        │
-│                                                              │
-│     // 2. 通过 eventbus 发送执行结果事件（可选）             │
-│     eventbus.publish(ActionResultEvent {                    │
-│         action_id: "udp-echo-server",                       │
-│         status: Success,                                    │
-│         payload: response,                                  │
-│     })                                                       │
-│                                                              │
-│     // 3. 返回响应 payload（host 负责封装 UDP/IP 帧）      │
-│     return Ok(response)                                      │
-│ }                                                            │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│ Host 侧（继续处理）                                          │
-├─────────────────────────────────────────────────────────────┤
-│ 6. 接收返回的 response payload                              │
-│ 7. 构建 UDP 回复帧（交换 src/dst，使用 response 作为 payload）│
-│ 8. 通过 NIC 发送                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+##### 为什么不支持 Mode-B（host 直调 guest）
 
-**两种模式的对比**：
+1. **违背“事件是唯一合法动态入口”**：host 直调会绕过 scheduler 的统一审计/编排入口，破坏可回放/可审计边界。
+2. **耦合与安全面扩大**：host 需要理解 guest 的导出函数与实例路由规则，接口一旦演进会放大集成成本与风险。
+3. **难以统一状态机语义**：直接调用返回值并不天然对应“事件驱动”的状态迁移与重放序列。
 
-| 特性 | 模式 A（事件轮询） | 模式 B（直接调用） |
-|------|------------------|------------------|
-| **适用场景** | Client（主动轮询回复） | Server（响应式处理） |
-| **控制流** | Guest 主动轮询 | Host 主动调用 |
-| **与 scheduler 集成** | 通过事件更新状态机 | 通过 eventbus 异步通知 |
-| **并发处理** | 适合多并发请求 | 适合单请求响应 |
-| **实现复杂度** | 较高（需要事件循环） | 较低（直接函数调用） |
+##### Server 也可以走模式 A（推荐）
+
+“Server 场景”和“Client 场景”本质都是**处理收包**，差别在于是否需要**立即生成响应 payload 并发送**。在模式 A 下建议做法是：
+
+1. scheduler 收包 → 生成 `packet.rx`（携带 `sock_id/meta/payload`）事件 → 状态机把对应 task 从 `Waiting` 推进到可执行状态；
+2. scheduler 调度一个 server handler action（例如 `udp.echo` / `udp.server.handle`）到 actions-executor 执行；
+3. actions-executor 根据收到的 payload 生成响应（echo/transform/业务逻辑），并通过 `eventbus.publish(packet.tx-request)` 委托 scheduler/host 发送（或在 `ActionOutcome.exports` 中返回响应并由 scheduler 转译为 tx-request）；
+4. scheduler 统一执行 `udp-socket-control.build-reply + tx` 完成回包，并更新 SockCtx/观测事件。
 
 ### 8. 接口依赖关系图
 

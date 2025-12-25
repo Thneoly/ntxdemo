@@ -6,6 +6,7 @@ wit_bindgen::generate!({
     path: [
         "../wit/host",
         "../wit/core-types",
+        "../wit/send-scheduler",
         "../wit/eventbus",
         "../wit/actions-executor",
         "../wit/scheduler",
@@ -77,7 +78,7 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
     }
 }
 
-impl exports::ntx::scenario_scheduler::send_scheduler::Guest for SchedulerExports {
+impl exports::ntx::scenario_send_scheduler::send_scheduler::Guest for SchedulerExports {
     fn schedule_send(request: ntx::scenario_types::types::SendRequest) -> Result<String, String> {
         schedule_send_job(request)
     }
