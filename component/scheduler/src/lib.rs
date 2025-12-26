@@ -5,19 +5,25 @@ wit_bindgen::generate!({
     world: "ntx:scenario-scheduler/scheduler-main@0.1.0",
     path: [
         "../wit/host",
-        "../wit/send-scheduler",
+        "../wit/types",
         "../wit/eventbus",
         "../wit/actions-executor",
         "../wit/scheduler",
     ],
     generate_all,
+    generate_unused_types:true,
     debug: true,
 });
-use crate::ntx::host::{resources, types, udp_socket_control};
-use crate::ntx::scenario_send_scheduler::types::{
-    ActionContext, ActionDef, ActionOutcome, SendRequest, SendRequestState, SendSchedule,
-    SendStatus,
+use crate::ntx::core_types::types::{
+    ActionContext,
+    ActionDef,
+    ActionOutcome,
+    SendRequest,
+    SendRequestState,
+    SendSchedule,
+    // SendStatus,
 };
+use crate::ntx::host::{resources, types, udp_socket_control};
 struct SchedulerExports;
 
 impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerExports {
@@ -81,19 +87,19 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
     }
 }
 
-impl exports::ntx::scenario_send_scheduler::send_scheduler::Guest for SchedulerExports {
-    fn schedule_send(request: SendRequest) -> Result<String, String> {
-        schedule_send_job(request)
-    }
+// impl exports::ntx::scenario_send_scheduler::send_scheduler::Guest for SchedulerExports {
+//     fn schedule_send(request: SendRequest) -> Result<String, String> {
+//         schedule_send_job(request)
+//     }
 
-    fn cancel_send(request_id: String) -> Result<(), String> {
-        cancel_send_job(&request_id)
-    }
+// fn cancel_send(request_id: String) -> Result<(), String> {
+//     cancel_send_job(&request_id)
+// }
 
-    fn query_send_status(request_id: String) -> Result<SendStatus, String> {
-        query_send_status_job(&request_id)
-    }
-}
+// fn query_send_status(request_id: String) -> Result<SendStatus, String> {
+//     query_send_status_job(&request_id)
+// }
+// }
 
 impl exports::ntx::scenario_scheduler::packet_ingest::Guest for SchedulerExports {
     fn notify_rx(desc_mem: Vec<u8>, payload_mem: Vec<u8>) -> Result<u32, String> {
@@ -4015,43 +4021,43 @@ fn next_due_after(job: &SendJob, now_ms: u64) -> Option<u64> {
     }
 }
 
-fn schedule_send_job(request: SendRequest) -> Result<String, String> {
-    if request.payload.is_none() && request.payload_generator.is_some() {
-        return Err("payload-generator not supported yet".into());
-    }
-    if request.payload.is_none() && request.payload_generator.is_none() {
-        return Err("missing payload".into());
-    }
-    if let SendSchedule::RateLimited(r) = &request.schedule {
-        if r.pps == 0 {
-            return Err("pps must be > 0".into());
-        }
-    }
+// fn schedule_send_job(request: SendRequest) -> Result<String, String> {
+//     if request.payload.is_none() && request.payload_generator.is_some() {
+//         return Err("payload-generator not supported yet".into());
+//     }
+//     if request.payload.is_none() && request.payload_generator.is_none() {
+//         return Err("missing payload".into());
+//     }
+//     if let SendSchedule::RateLimited(r) = &request.schedule {
+//         if r.pps == 0 {
+//             return Err("pps must be > 0".into());
+//         }
+//     }
 
-    let now = now_ms();
-    let next_ms = calc_initial_next_send_ms(&request, now);
-    let job = SendJob {
-        req: request.clone(),
-        next_send_ms: next_ms,
-        total_sent: 0,
-        last_sent_time_ms: None,
-        last_error: None,
-    };
-    if let Ok(mut map) = SEND_JOBS.lock() {
-        map.insert(request.request_id.clone(), job);
-    }
-    Ok(request.request_id)
-}
+//     let now = now_ms();
+//     let next_ms = calc_initial_next_send_ms(&request, now);
+//     let job = SendJob {
+//         req: request.clone(),
+//         next_send_ms: next_ms,
+//         total_sent: 0,
+//         last_sent_time_ms: None,
+//         last_error: None,
+//     };
+//     if let Ok(mut map) = SEND_JOBS.lock() {
+//         map.insert(request.request_id.clone(), job);
+//     }
+//     Ok(request.request_id)
+// }
 
-fn cancel_send_job(request_id: &str) -> Result<(), String> {
-    if let Ok(mut map) = SEND_JOBS.lock() {
-        if map.remove(request_id).is_none() {
-            return Err(format!("request not found: {request_id}"));
-        }
-    }
-    Ok(())
-}
-
+// fn cancel_send_job(request_id: &str) -> Result<(), String> {
+//     if let Ok(mut map) = SEND_JOBS.lock() {
+//         if map.remove(request_id).is_none() {
+//             return Err(format!("request not found: {request_id}"));
+//         }
+//     }
+//     Ok(())
+// }
+/*
 fn query_send_status_job(request_id: &str) -> Result<SendStatus, String> {
     let job = SEND_JOBS
         .lock()
@@ -4068,7 +4074,7 @@ fn query_send_status_job(request_id: &str) -> Result<SendStatus, String> {
         last_error: job.last_error,
     })
 }
-
+*/
 fn tick_send_scheduler(now_ms: u64) {
     let mut to_send: Vec<String> = Vec::new();
     {

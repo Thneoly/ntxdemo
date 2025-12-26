@@ -4,7 +4,7 @@ use ntx:scenario-actions-executor/action-component@0.1.0;
 use ntx:scenario-eventbus/event-bus@0.1.0;
 use ntx:host/resources;
 use ntx:host/udp-socket-control;
-use ntx:scenario-send-scheduler/send-scheduler@0.1.0;
+use ntx:core-types/types@0.1.0;
 
 /// Scheduler 主循环入口
 interface scheduler-component {
@@ -28,9 +28,9 @@ world scheduler-main {
     import event-bus;
     import ntx:host/resources;
     import ntx:host/udp-socket-control;
+    import types;
     export scheduler-component;
     export packet-ingest;
     export packet-tx;
-    export send-scheduler;
 }
 

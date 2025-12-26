@@ -8,11 +8,13 @@ package ntx:scenario-scheduler-composition@0.1.0;
 
 // 事件总线组件：实现 `ntx:scenario-eventbus/event-bus@0.1.0`
 let eventbus = new component:eventbus{...};
-
+let core-types = new component:core-types{...};
 // actions-executor：导入 event-bus
 let executor = new component:actions-executor {
     "ntx:scenario-eventbus/event-bus@0.1.0":
         eventbus["ntx:scenario-eventbus/event-bus@0.1.0"],
+    "ntx:core-types/types@0.1.0":
+        core-types["ntx:core-types/types@0.1.0"],
     ...
 };
 
@@ -20,6 +22,10 @@ let executor = new component:actions-executor {
 let scheduler = new component:scheduler {
     "ntx:scenario-eventbus/event-bus@0.1.0":
         eventbus["ntx:scenario-eventbus/event-bus@0.1.0"],
+    "ntx:scenario-actions-executor/action-component@0.1.0":
+        executor["ntx:scenario-actions-executor/action-component@0.1.0"],
+    "ntx:core-types/types@0.1.0":
+        core-types["ntx:core-types/types@0.1.0"],
     ...
 };
 

@@ -1,8 +1,7 @@
 package ntx:scenario-actions-executor@0.1.0;
 
 use ntx:scenario-eventbus/event-bus@0.1.0;
-use ntx:scenario-send-scheduler/send-scheduler@0.1.0;
-use ntx:scenario-send-scheduler/types@0.1.0;
+use ntx:core-types/types@0.1.0;
 
 /// actions-executor：只负责执行 action，不负责调度。
 interface action-component {
@@ -22,7 +21,7 @@ interface action-component {
 
 world action-executor-component {
     import event-bus;
-    import send-scheduler;
+    import types;
     export action-component;
 }
 

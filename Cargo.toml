@@ -11,6 +11,7 @@ members = [
 	"component/scheduler",
 	"component/actions-executor",
 	"component/eventbus",
+	"component/core-types",
 ]
 
 [lib]

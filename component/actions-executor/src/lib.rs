@@ -5,13 +5,14 @@ wit_bindgen::generate!({
     world: "ntx:scenario-actions-executor/action-executor-component@0.1.0",
     path: [
         "../wit/eventbus",
-        "../wit/send-scheduler",
+        "../wit/types",
         "../wit/actions-executor",
     ],
     generate_all,
+    generate_unused_types:true,
     debug: true,
 });
-use crate::ntx::scenario_send_scheduler::types::{
+use crate::ntx::core_types::types::{
     ActionContext, ActionDef, ActionOutcome, OutcomeStatus, PeriodicSchedule, RateLimitedSchedule,
     SendRequest, SendSchedule, TimetableSchedule,
 };
@@ -362,10 +363,10 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
                     max_count,
                     timeout_ms,
                 };
-
-                let rid = ntx::scenario_send_scheduler::send_scheduler::schedule_send(&req)
-                    .map_err(|e| format!("schedule-send failed: {e}"))?;
-
+                // todo: cal
+                // let rid = ntx::scenario_send_scheduler::send_scheduler::schedule_send(&req)
+                //     .map_err(|e| format!("schedule-send failed: {e}"))?;
+                let rid = req.request_id.clone();
                 let exports = serde_json::json!({
                     "request_id": rid,
                     "socket_id": sock_id,
