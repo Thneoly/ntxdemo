@@ -132,6 +132,79 @@ fn publish_tx_request(
     Ok(())
 }
 
+fn publish_send_schedule_request(
+    req: &SendRequest,
+    action_id: &str,
+    correlation_id: &Option<String>,
+) -> Result<(), String> {
+    // Use JSON payload for forward compatibility; scheduler parses payload and enqueues send job.
+    // Keep field names aligned with scheduler-side struct conventions where possible.
+    let mut obj = serde_json::Map::new();
+    obj.insert("request_id".to_string(), serde_json::json!(req.request_id));
+    obj.insert("user_id".to_string(), serde_json::json!(req.user_id));
+    obj.insert("task_id".to_string(), serde_json::json!(req.task_id));
+    obj.insert("socket_id".to_string(), serde_json::json!(req.socket_id));
+    obj.insert(
+        "max_count".to_string(),
+        req.max_count
+            .map(|v| serde_json::json!(v))
+            .unwrap_or(serde_json::Value::Null),
+    );
+    obj.insert(
+        "timeout_ms".to_string(),
+        req.timeout_ms
+            .map(|v| serde_json::json!(v))
+            .unwrap_or(serde_json::Value::Null),
+    );
+
+    // schedule
+    let schedule_json = match &req.schedule {
+        SendSchedule::Once => serde_json::json!({"mode":"once"}),
+        SendSchedule::Periodic(p) => serde_json::json!({
+            "mode":"periodic",
+            "interval_ms": p.interval_ms,
+            "start_delay_ms": p.start_delay_ms,
+        }),
+        SendSchedule::Timetable(t) => serde_json::json!({
+            "mode":"timetable",
+            "timestamps_ms": t.timestamps_ms,
+        }),
+        SendSchedule::RateLimited(r) => serde_json::json!({
+            "mode":"rate-limited",
+            "pps": r.pps,
+            "burst_size": r.burst_size,
+        }),
+    };
+    obj.insert("schedule".to_string(), schedule_json);
+
+    // payload (generator not implemented yet in executor)
+    if let Some(payload) = req.payload.as_ref() {
+        obj.insert("payload_bytes".to_string(), serde_json::json!(payload));
+    }
+    if req.payload_generator.is_some() {
+        obj.insert(
+            "payload_generator".to_string(),
+            serde_json::json!({"note":"payload_generator not implemented in actions-executor"}),
+        );
+    }
+
+    let payload_json = serde_json::Value::Object(obj).to_string();
+
+    ntx::scenario_eventbus::event_bus::publish(&ntx::scenario_eventbus::event_bus::Event {
+        id: format!("send-req-{}", req.request_id),
+        kind: "send.schedule-request".to_string(),
+        user_id: Some(req.user_id.clone()),
+        task_id: Some(req.task_id.clone()),
+        action_id: Some(action_id.to_string()),
+        payload: payload_json,
+        correlation_id: correlation_id.clone(),
+        timestamp_ms: now_ms(),
+    })
+    .map_err(|e| format!("publish send.schedule-request failed: {e}"))?;
+
+    Ok(())
+}
+
 fn next_request_id(prefix: &str) -> String {
     let n = EVENT_SEQ.fetch_add(1, Ordering::Relaxed);
     format!("{prefix}-{n}")
@@ -363,9 +436,10 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
                     max_count,
                     timeout_ms,
                 };
-                // todo: 改为通过eventbush 发布，由scheduler最终处理
-                // let rid = ntx::scenario_send_scheduler::send_scheduler::schedule_send(&req)
-                //     .map_err(|e| format!("schedule-send failed: {e}"))?;
+
+                // Publish event to scheduler; scheduler owns the send-queue and host tx.
+                publish_send_schedule_request(&req, &action.id, &correlation_id)?;
+
                 let rid = req.request_id.clone();
                 let exports = serde_json::json!({
                     "request_id": rid,

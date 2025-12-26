@@ -36,6 +36,7 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
         init_runtime(&ctx)?;
 
         let sub_tx = subscribe_or_log("packet.tx-request");
+        let sub_send = subscribe_or_log("send.schedule-request");
         let sub_ar = subscribe_or_log("scheduler.action-result");
         let sub_rx = subscribe_or_log("packet.rx");
         let sub_ctrl = subscribe_or_log("scheduler.control.*");
@@ -48,6 +49,7 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
         let loop_result = run_event_loop(
             &ctx,
             sub_tx.as_deref(),
+            sub_send.as_deref(),
             sub_ar.as_deref(),
             sub_rx.as_deref(),
             sub_ctrl.as_deref(),
@@ -63,6 +65,9 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
         }
 
         if let Some(id) = sub_tx {
+            let _ = ntx::scenario_eventbus::event_bus::unsubscribe(&id);
+        }
+        if let Some(id) = sub_send {
             let _ = ntx::scenario_eventbus::event_bus::unsubscribe(&id);
         }
         if let Some(id) = sub_ar {
@@ -1407,6 +1412,7 @@ fn build_resources_json(sc: &Scenario) -> serde_json::Value {
 fn run_event_loop(
     ctx: &SchedulerContext,
     sub_tx: Option<&str>,
+    sub_send: Option<&str>,
     sub_ar: Option<&str>,
     sub_rx: Option<&str>,
     sub_ctrl: Option<&str>,
@@ -1446,6 +1452,22 @@ fn run_event_loop(
                 if ev.kind == "packet.tx-request" {
                     if let Err(e) = handle_tx_request(&ev.payload, ev.correlation_id.as_deref()) {
                         println!("[scheduler] process tx-request failed: {e}");
+                    }
+                }
+            }
+        }
+
+        // 1.5) send schedule requests (executor -> scheduler)
+        if let Some(id) = sub_send {
+            let events = ntx::scenario_eventbus::event_bus::poll_events(id, 64)
+                .map_err(|e| format!("poll_events(send.schedule-request): {e}"))?;
+            if !events.is_empty() {
+                did_work = true;
+            }
+            for ev in events {
+                if ev.kind == "send.schedule-request" {
+                    if let Err(e) = on_send_schedule_request(&ev) {
+                        println!("[scheduler] handle send.schedule-request failed: {e}");
                     }
                 }
             }
@@ -3903,6 +3925,139 @@ fn handle_tx_request(payload_json: &str, correlation_id: Option<&str>) -> Result
         req.action_id.as_deref(),
         correlation_id,
     )
+}
+
+fn on_send_schedule_request(ev: &ntx::scenario_eventbus::event_bus::Event) -> Result<(), String> {
+    // Parse executor-published JSON payload and enqueue job.
+    // Payload is expected to be compatible with core-types SendRequest fields.
+    #[derive(serde::Deserialize)]
+    struct SendScheduleReq {
+        request_id: String,
+        user_id: String,
+        task_id: String,
+        socket_id: u64,
+        #[serde(default)]
+        max_count: Option<u32>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+        #[serde(default)]
+        payload_bytes: Option<Vec<u8>>,
+        #[serde(default)]
+        schedule: serde_json::Value,
+    }
+
+    fn parse_schedule(v: &serde_json::Value) -> Result<SendSchedule, String> {
+        let mode = v
+            .get("mode")
+            .and_then(|x| x.as_str())
+            .unwrap_or("once")
+            .trim()
+            .to_ascii_lowercase();
+        match mode.as_str() {
+            "once" => Ok(SendSchedule::Once),
+            "periodic" => {
+                let interval_ms = v
+                    .get("interval_ms")
+                    .and_then(|x| x.as_u64())
+                    .ok_or_else(|| "missing schedule.interval_ms".to_string())?;
+                let start_delay_ms = v.get("start_delay_ms").and_then(|x| x.as_u64());
+                Ok(SendSchedule::Periodic(
+                    crate::ntx::core_types::types::PeriodicSchedule {
+                        interval_ms,
+                        start_delay_ms,
+                    },
+                ))
+            }
+            "timetable" => {
+                let ts = v
+                    .get("timestamps_ms")
+                    .and_then(|x| x.as_array())
+                    .ok_or_else(|| "missing schedule.timestamps_ms".to_string())?;
+                let mut out: Vec<u64> = Vec::with_capacity(ts.len());
+                for x in ts {
+                    let n = x
+                        .as_u64()
+                        .ok_or_else(|| "timestamps_ms must be u64".to_string())?;
+                    out.push(n);
+                }
+                Ok(SendSchedule::Timetable(
+                    crate::ntx::core_types::types::TimetableSchedule { timestamps_ms: out },
+                ))
+            }
+            "rate-limited" | "rate_limited" | "ratelimited" => {
+                let pps = v
+                    .get("pps")
+                    .and_then(|x| x.as_u64())
+                    .ok_or_else(|| "missing schedule.pps".to_string())?;
+                let burst_size = v.get("burst_size").and_then(|x| x.as_u64());
+                Ok(SendSchedule::RateLimited(
+                    crate::ntx::core_types::types::RateLimitedSchedule {
+                        pps: pps as u32,
+                        burst_size: burst_size.map(|b| b as u32),
+                    },
+                ))
+            }
+            other => Err(format!("unsupported schedule mode: {other}")),
+        }
+    }
+
+    let req: SendScheduleReq =
+        serde_json::from_str(&ev.payload).map_err(|e| format!("parse payload json: {e}"))?;
+
+    let schedule = parse_schedule(&req.schedule)?;
+
+    let payload = req
+        .payload_bytes
+        .ok_or_else(|| "missing payload_bytes for send.schedule-request".to_string())?;
+
+    let core_req = SendRequest {
+        request_id: req.request_id.clone(),
+        user_id: req.user_id.clone(),
+        task_id: req.task_id.clone(),
+        socket_id: req.socket_id,
+        schedule,
+        payload: Some(payload),
+        payload_generator: None,
+        max_count: req.max_count,
+        timeout_ms: req.timeout_ms,
+    };
+
+    // basic validation
+    if let SendSchedule::RateLimited(r) = &core_req.schedule {
+        if r.pps == 0 {
+            return Err("pps must be > 0".to_string());
+        }
+    }
+
+    let now = now_ms();
+    let next_ms = calc_initial_next_send_ms(&core_req, now);
+    let job = SendJob {
+        req: core_req.clone(),
+        next_send_ms: next_ms,
+        total_sent: 0,
+        last_sent_time_ms: None,
+        last_error: None,
+    };
+    if let Ok(mut map) = SEND_JOBS.lock() {
+        map.insert(core_req.request_id.clone(), job);
+    }
+
+    // optional: publish a status/ack event
+    publish_event_with_corr(
+        "send.scheduled",
+        Some(core_req.user_id.as_str()),
+        Some(core_req.task_id.as_str()),
+        ev.action_id.as_deref(),
+        ev.correlation_id.as_deref(),
+        serde_json::json!({
+            "request_id": core_req.request_id,
+            "socket_id": core_req.socket_id,
+            "state": "pending",
+            "next_send_ms": next_ms,
+        }),
+    );
+
+    Ok(())
 }
 
 /// 在 socket 关闭时清理 sock_id 对应的上下文映射。
