@@ -10,7 +10,7 @@ package ntx:scenario-scheduler-composition@0.1.0;
 let eventbus = new component:eventbus{...};
 
 // actions-executor：导入 event-bus
-let executor = new component:action-executor {
+let executor = new component:actions-executor {
     "ntx:scenario-eventbus/event-bus@0.1.0":
         eventbus["ntx:scenario-eventbus/event-bus@0.1.0"],
     ...
@@ -23,4 +23,4 @@ let scheduler = new component:scheduler {
     ...
 };
 
-export scheduler as escheduler;
+export scheduler["ntx:scenario-scheduler/packet-ingest@0.1.0"];

@@ -1,10 +1,167 @@
 package ntx:scenario-send-scheduler@0.1.0;
 
-use ntx:scenario-types/types@0.1.0 as t;
+
+interface types {
+    /// 基础网络类型（不依赖 host，保持 core-types 独立性）
+    record ipv4-addr {
+        a: u8,
+        b: u8,
+        c: u8,
+        d: u8,
+    }
+
+    record mac-addr {
+        a: u8,
+        b: u8,
+        c: u8,
+        d: u8,
+        e: u8,
+        f: u8,
+    }
+    /// 以 JSON string 作为跨组件 payload（避免频繁引入复杂 WIT 类型，后续可替换为更强类型）。
+    type json = string;
+
+    /// 统一使用毫秒时间戳（相对或绝对由 host 约定）。
+    type timestamp-ms = u64;
+
+    /// 最小 action 定义（从 scenario/actions 配置解析得到，scheduler 负责模板展开）。
+    record action-def {
+        id: string,
+        call: string,
+        /// 参数 JSON（模板展开后的最终值）。
+        params: json,
+        exports: list<export-def>,
+    }
+
+    record export-def {
+        export-type: string,
+        name: string,
+        scope: option<string>,
+        default: option<json>,
+    }
+
+    /// 运行时上下文（补齐原有 WIT 的缺口）。
+    ///
+    /// - scheduler 作为"唯一事件入口"与"状态机驱动者"，负责把 user/task/action 关联信息带过来
+    /// - actions-executor 仅消费上下文，不做调度决策
+    record action-context {
+        user-id: option<string>,
+        task-id: option<string>,
+        action-id: option<string>,
+        correlation-id: option<string>,
+
+        /// 运行时变量（包含 user/task 局部变量、模板展开中间态等），JSON。
+        vars: option<json>,
+
+        /// 资源视图（如 user 绑定 IP/端口/owner-id 等），JSON。
+        resources: option<json>,
+
+        /// 可选 deadline（超时语义由 scheduler 决定；executor 可用于快速失败）。
+        deadline-ms: option<timestamp-ms>,
+    }
+
+    enum outcome-status {
+        success,
+        failed,
+        timeout,
+        skipped,
+        partial,
+    }
+
+    record outcome-metrics {
+        latency-ms: option<u64>,
+        bytes-sent: option<u64>,
+        bytes-received: option<u64>,
+        response-code: option<u32>,
+    }
+
+    /// action 执行结果（可观测 Deliverable）。
+    record action-outcome {
+        status: outcome-status,
+        detail: option<string>,
+        metrics: option<outcome-metrics>,
+        /// 可选导出变量（JSON），用于驱动后续 action 模板或 topology-change。
+        exports: option<json>,
+    }
+
+    /// send-scheduler：actions-executor 委托 scheduler 执行复杂发包策略（可选但推荐）。
+    record send-request {
+        request-id: string,
+        user-id: string,
+        task-id: string,
+
+        socket-id: u64,
+
+        schedule: send-schedule,
+
+        /// 固定 payload（与 payload-generator 二选一；两者同时存在时 host/scheduler 自行裁决）。
+        payload: option<list<u8>>,
+        payload-generator: option<payload-generator>,
+
+        max-count: option<u32>,
+        timeout-ms: option<u64>,
+    }
+
+    variant send-schedule {
+        once,
+        periodic(periodic-schedule),
+        timetable(timetable-schedule),
+        rate-limited(rate-limited-schedule),
+    }
+
+    record periodic-schedule {
+        interval-ms: u64,
+        start-delay-ms: option<u64>,
+    }
+
+    record timetable-schedule {
+        timestamps-ms: list<u64>,
+    }
+
+    record rate-limited-schedule {
+        pps: u32,
+        burst-size: option<u32>,
+    }
+
+    variant payload-generator {
+        fixed(fixed-payload),
+        sequence(sequence-payload),
+        timestamp(timestamp-payload),
+    }
+
+    record fixed-payload { payload: list<u8> }
+
+    record sequence-payload {
+        template: list<u8>,
+        start-seq: u32,
+    }
+
+    record timestamp-payload {
+        template: list<u8>,
+    }
+
+    enum send-request-state {
+        pending,
+        active,
+        paused,
+        completed,
+        cancelled,
+        error,
+    }
+
+    record send-status {
+        request-id: string,
+        state: send-request-state,
+        total-sent: u32,
+        last-sent-time-ms: option<u64>,
+        next-send-time-ms: option<u64>,
+        last-error: option<string>,
+    }
+}
 
 /// 发包调度接口：actions-executor 委托 scheduler 执行周期/限速/时间表等复杂发包策略。
 interface send-scheduler {
-    use t.{send-request, send-status};
+    use types.{send-request, send-status};
 
     schedule-send: func(request: send-request) -> result<string, string>;
     cancel-send: func(request-id: string) -> result<_, string>;

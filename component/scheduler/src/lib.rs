@@ -5,7 +5,6 @@ wit_bindgen::generate!({
     world: "ntx:scenario-scheduler/scheduler-main@0.1.0",
     path: [
         "../wit/host",
-        "../wit/core-types",
         "../wit/send-scheduler",
         "../wit/eventbus",
         "../wit/actions-executor",
@@ -15,7 +14,10 @@ wit_bindgen::generate!({
     debug: true,
 });
 use crate::ntx::host::{resources, types, udp_socket_control};
-
+use crate::ntx::scenario_send_scheduler::types::{
+    ActionContext, ActionDef, ActionOutcome, SendRequest, SendRequestState, SendSchedule,
+    SendStatus,
+};
 struct SchedulerExports;
 
 impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerExports {
@@ -80,7 +82,7 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
 }
 
 impl exports::ntx::scenario_send_scheduler::send_scheduler::Guest for SchedulerExports {
-    fn schedule_send(request: ntx::scenario_types::types::SendRequest) -> Result<String, String> {
+    fn schedule_send(request: SendRequest) -> Result<String, String> {
         schedule_send_job(request)
     }
 
@@ -88,9 +90,7 @@ impl exports::ntx::scenario_send_scheduler::send_scheduler::Guest for SchedulerE
         cancel_send_job(&request_id)
     }
 
-    fn query_send_status(
-        request_id: String,
-    ) -> Result<ntx::scenario_types::types::SendStatus, String> {
+    fn query_send_status(request_id: String) -> Result<SendStatus, String> {
         query_send_status_job(&request_id)
     }
 }
@@ -3036,7 +3036,7 @@ fn publish_action_result_event(
     task_id: &str,
     action_id: &str,
     correlation_id: Option<&str>,
-    outcome: &ntx::scenario_types::types::ActionOutcome,
+    outcome: &ActionOutcome,
 ) -> Result<(), String> {
     let now = now_ms();
     let metrics = outcome.metrics.as_ref().map(|m| {
@@ -3182,10 +3182,7 @@ fn ensure_udp_socket_for_user(
     Ok(())
 }
 
-fn inject_udp_socket_id(
-    user_id: &str,
-    def: &mut ntx::scenario_types::types::ActionDef,
-) -> Result<(), String> {
+fn inject_udp_socket_id(user_id: &str, def: &mut ActionDef) -> Result<(), String> {
     let sock_id = {
         let rt = RUNTIME.lock().map_err(|_| "lock runtime".to_string())?;
         let u = rt
@@ -3613,24 +3610,18 @@ fn build_action_def_with_ctx(
     ctx: &TemplateContext,
     user_id: Option<&str>,
     task_id: Option<&str>,
-) -> Result<
-    (
-        ntx::scenario_types::types::ActionDef,
-        ntx::scenario_types::types::ActionContext,
-    ),
-    String,
-> {
+) -> Result<(ActionDef, ActionContext), String> {
     let expanded = render_value(&action.with, ctx)?;
     let params = serde_json::to_string(&expanded).map_err(|e| format!("encode params: {e}"))?;
 
-    let def = ntx::scenario_types::types::ActionDef {
+    let def = ActionDef {
         id: action.id.clone(),
         call: action.call.clone(),
         params,
         exports: vec![], // 预留 exports，后续从配置补充
     };
 
-    let act_ctx = ntx::scenario_types::types::ActionContext {
+    let act_ctx = ActionContext {
         user_id: user_id.map(|s| s.to_string()),
         task_id: task_id.map(|s| s.to_string()),
         action_id: Some(action.id.clone()),
@@ -3722,7 +3713,7 @@ fn get_path<'a>(val: &'a serde_json::Value, parts: &[&str]) -> Option<String> {
 
 #[derive(Clone)]
 struct SendJob {
-    req: ntx::scenario_types::types::SendRequest,
+    req: SendRequest,
     next_send_ms: u64,
     total_sent: u32,
     last_sent_time_ms: Option<u64>,
@@ -3967,58 +3958,53 @@ fn now_ms() -> u64 {
 fn is_job_active(job: &SendJob) -> bool {
     matches!(
         job_state(job),
-        ntx::scenario_types::types::SendRequestState::Pending
-            | ntx::scenario_types::types::SendRequestState::Active
+        SendRequestState::Pending | SendRequestState::Active
     )
 }
 
-fn job_state(job: &SendJob) -> ntx::scenario_types::types::SendRequestState {
+fn job_state(job: &SendJob) -> SendRequestState {
     if job
         .last_error
         .as_ref()
         .map(|s| !s.is_empty())
         .unwrap_or(false)
     {
-        return ntx::scenario_types::types::SendRequestState::Error;
+        return SendRequestState::Error;
     }
 
     if let Some(max) = job.req.max_count {
         if job.total_sent >= max {
-            return ntx::scenario_types::types::SendRequestState::Completed;
+            return SendRequestState::Completed;
         }
     }
 
     if job.total_sent > 0 {
-        ntx::scenario_types::types::SendRequestState::Active
+        SendRequestState::Active
     } else {
-        ntx::scenario_types::types::SendRequestState::Pending
+        SendRequestState::Pending
     }
 }
 
-fn calc_initial_next_send_ms(req: &ntx::scenario_types::types::SendRequest, base_ms: u64) -> u64 {
+fn calc_initial_next_send_ms(req: &SendRequest, base_ms: u64) -> u64 {
     match &req.schedule {
-        ntx::scenario_types::types::SendSchedule::Once => base_ms,
-        ntx::scenario_types::types::SendSchedule::Periodic(p) => {
-            base_ms + p.start_delay_ms.unwrap_or(0)
-        }
-        ntx::scenario_types::types::SendSchedule::Timetable(t) => {
-            base_ms + t.timestamps_ms.first().cloned().unwrap_or(0)
-        }
-        ntx::scenario_types::types::SendSchedule::RateLimited(_) => base_ms,
+        SendSchedule::Once => base_ms,
+        SendSchedule::Periodic(p) => base_ms + p.start_delay_ms.unwrap_or(0),
+        SendSchedule::Timetable(t) => base_ms + t.timestamps_ms.first().cloned().unwrap_or(0),
+        SendSchedule::RateLimited(_) => base_ms,
     }
 }
 
 fn next_due_after(job: &SendJob, now_ms: u64) -> Option<u64> {
     match &job.req.schedule {
-        ntx::scenario_types::types::SendSchedule::Once => None,
-        ntx::scenario_types::types::SendSchedule::Periodic(p) => Some(now_ms + p.interval_ms),
-        ntx::scenario_types::types::SendSchedule::Timetable(t) => {
+        SendSchedule::Once => None,
+        SendSchedule::Periodic(p) => Some(now_ms + p.interval_ms),
+        SendSchedule::Timetable(t) => {
             let idx = job.total_sent as usize;
             t.timestamps_ms
                 .get(idx + 1)
                 .map(|delta| now_ms.saturating_add(*delta))
         }
-        ntx::scenario_types::types::SendSchedule::RateLimited(r) => {
+        SendSchedule::RateLimited(r) => {
             if r.pps == 0 {
                 None
             } else {
@@ -4029,14 +4015,14 @@ fn next_due_after(job: &SendJob, now_ms: u64) -> Option<u64> {
     }
 }
 
-fn schedule_send_job(request: ntx::scenario_types::types::SendRequest) -> Result<String, String> {
+fn schedule_send_job(request: SendRequest) -> Result<String, String> {
     if request.payload.is_none() && request.payload_generator.is_some() {
         return Err("payload-generator not supported yet".into());
     }
     if request.payload.is_none() && request.payload_generator.is_none() {
         return Err("missing payload".into());
     }
-    if let ntx::scenario_types::types::SendSchedule::RateLimited(r) = &request.schedule {
+    if let SendSchedule::RateLimited(r) = &request.schedule {
         if r.pps == 0 {
             return Err("pps must be > 0".into());
         }
@@ -4066,16 +4052,14 @@ fn cancel_send_job(request_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn query_send_status_job(
-    request_id: &str,
-) -> Result<ntx::scenario_types::types::SendStatus, String> {
+fn query_send_status_job(request_id: &str) -> Result<SendStatus, String> {
     let job = SEND_JOBS
         .lock()
         .ok()
         .and_then(|m| m.get(request_id).cloned())
         .ok_or_else(|| format!("request not found: {request_id}"))?;
 
-    Ok(ntx::scenario_types::types::SendStatus {
+    Ok(SendStatus {
         request_id: request_id.to_string(),
         state: job_state(&job),
         total_sent: job.total_sent,

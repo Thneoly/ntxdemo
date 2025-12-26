@@ -4,7 +4,6 @@
 wit_bindgen::generate!({
     world: "ntx:scenario-actions-executor/action-executor-component@0.1.0",
     path: [
-        "../wit/core-types",
         "../wit/eventbus",
         "../wit/send-scheduler",
         "../wit/actions-executor",
@@ -12,7 +11,10 @@ wit_bindgen::generate!({
     generate_all,
     debug: true,
 });
-
+use crate::ntx::scenario_send_scheduler::types::{
+    ActionContext, ActionDef, ActionOutcome, OutcomeStatus, PeriodicSchedule, RateLimitedSchedule,
+    SendRequest, SendSchedule, TimetableSchedule,
+};
 struct ActionExecutorImpl;
 
 use once_cell::sync::Lazy;
@@ -152,9 +154,7 @@ fn parse_string(params: &serde_json::Value, key: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn parse_schedule(
-    params: &serde_json::Value,
-) -> Result<ntx::scenario_types::types::SendSchedule, String> {
+fn parse_schedule(params: &serde_json::Value) -> Result<SendSchedule, String> {
     let mode = params
         .get("schedule")
         .or_else(|| params.get("send_schedule"))
@@ -165,19 +165,17 @@ fn parse_schedule(
         .to_ascii_lowercase();
 
     match mode.as_str() {
-        "once" => Ok(ntx::scenario_types::types::SendSchedule::Once),
+        "once" => Ok(SendSchedule::Once),
         "periodic" => {
             let interval_ms = parse_u64(params, "interval_ms")
                 .or_else(|| parse_u64(params, "interval-ms"))
                 .ok_or_else(|| "missing interval_ms for periodic schedule".to_string())?;
             let start_delay_ms =
                 parse_u64(params, "start_delay_ms").or_else(|| parse_u64(params, "start-delay-ms"));
-            Ok(ntx::scenario_types::types::SendSchedule::Periodic(
-                ntx::scenario_types::types::PeriodicSchedule {
-                    interval_ms,
-                    start_delay_ms,
-                },
-            ))
+            Ok(SendSchedule::Periodic(PeriodicSchedule {
+                interval_ms,
+                start_delay_ms,
+            }))
         }
         "timetable" => {
             let ts = params
@@ -192,18 +190,19 @@ fn parse_schedule(
                         .ok_or_else(|| "timestamps_ms must be u64 array".to_string())?,
                 );
             }
-            Ok(ntx::scenario_types::types::SendSchedule::Timetable(
-                ntx::scenario_types::types::TimetableSchedule { timestamps_ms: out },
-            ))
+            Ok(SendSchedule::Timetable(TimetableSchedule {
+                timestamps_ms: out,
+            }))
         }
         "rate-limited" | "rate_limited" | "ratelimited" => {
             let pps = parse_u32(params, "pps")
                 .ok_or_else(|| "missing pps for rate-limited schedule".to_string())?;
             let burst_size =
                 parse_u32(params, "burst_size").or_else(|| parse_u32(params, "burst-size"));
-            Ok(ntx::scenario_types::types::SendSchedule::RateLimited(
-                ntx::scenario_types::types::RateLimitedSchedule { pps, burst_size },
-            ))
+            Ok(SendSchedule::RateLimited(RateLimitedSchedule {
+                pps,
+                burst_size,
+            }))
         }
         other => Err(format!("unsupported send schedule mode: {other}")),
     }
@@ -216,9 +215,9 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
     }
 
     fn execute_action(
-        action: ntx::scenario_types::types::ActionDef,
-        ctx: Option<ntx::scenario_types::types::ActionContext>,
-    ) -> Result<ntx::scenario_types::types::ActionOutcome, String> {
+        action: ActionDef,
+        ctx: Option<ActionContext>,
+    ) -> Result<ActionOutcome, String> {
         let user_id = ctx.as_ref().and_then(|c| c.user_id.clone());
         let task_id = ctx.as_ref().and_then(|c| c.task_id.clone());
         let correlation_id = ctx.as_ref().and_then(|c| c.correlation_id.clone());
@@ -256,8 +255,8 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
                 })
                 .to_string();
 
-                Ok(ntx::scenario_types::types::ActionOutcome {
-                    status: ntx::scenario_types::types::OutcomeStatus::Success,
+                Ok(ActionOutcome {
+                    status: OutcomeStatus::Success,
                     detail: Some(format!("{} delegated socket_id={}", action.call, sock_id)),
                     metrics: None,
                     exports: Some(exports),
@@ -291,8 +290,8 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
                 })
                 .to_string();
 
-                Ok(ntx::scenario_types::types::ActionOutcome {
-                    status: ntx::scenario_types::types::OutcomeStatus::Success,
+                Ok(ActionOutcome {
+                    status: OutcomeStatus::Success,
                     detail: Some(format!(
                         "udp.send-recv delegated (no-wait) socket_id={}",
                         sock_id
@@ -352,7 +351,7 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
                     PayloadSpec::Bytes(b) => b,
                 };
 
-                let req = ntx::scenario_types::types::SendRequest {
+                let req = SendRequest {
                     request_id: request_id.clone(),
                     user_id: user_id.clone(),
                     task_id: task_id.clone(),
@@ -374,24 +373,22 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
                 })
                 .to_string();
 
-                Ok(ntx::scenario_types::types::ActionOutcome {
-                    status: ntx::scenario_types::types::OutcomeStatus::Success,
+                Ok(ActionOutcome {
+                    status: OutcomeStatus::Success,
                     detail: Some(format!("udp.schedule-send ok request_id={}", exports)),
                     metrics: None,
                     exports: Some(exports),
                 })
             }
-            c if c.starts_with("http.") || c.starts_with("tcp.") => {
-                Ok(ntx::scenario_types::types::ActionOutcome {
-                    status: ntx::scenario_types::types::OutcomeStatus::Failed,
-                    detail: Some(format!("action not implemented yet: {}", c)),
-                    metrics: None,
-                    exports: None,
-                })
-            }
-            _ => Ok(ntx::scenario_types::types::ActionOutcome {
+            c if c.starts_with("http.") || c.starts_with("tcp.") => Ok(ActionOutcome {
+                status: OutcomeStatus::Failed,
+                detail: Some(format!("action not implemented yet: {}", c)),
+                metrics: None,
+                exports: None,
+            }),
+            _ => Ok(ActionOutcome {
                 // IMPORTANT: unknown actions must not default to Success (would mislead the state machine).
-                status: ntx::scenario_types::types::OutcomeStatus::Failed,
+                status: OutcomeStatus::Failed,
                 detail: Some(format!("unknown action.call: {}", action.call)),
                 metrics: None,
                 exports: None,
