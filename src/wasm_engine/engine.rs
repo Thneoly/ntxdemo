@@ -20,7 +20,6 @@ mod packet_engine_bindings {
         path: ["component/wit/host"],
         debug:true,
     });
-    pub struct PacketEngine;
 }
 use packet_engine_bindings::ntx::host::resources::{
     Host as ResourceHost, ResourceError, UdpIdentity,
@@ -256,8 +255,6 @@ pub struct ComponentEngine {
     store: Store<State>,
     instance: Instance,
 
-    packet: Option<packet_engine_bindings::PacketEngine>,
-
     // Cached exports for the packet-engine ABI (optional).
     desc_get: Option<Func>,
     desc_put: Option<Func>,
@@ -295,10 +292,10 @@ impl ComponentEngine {
         // Wire the host WIT imports (`ntx:hostnet/*`) into the component linker.
         //
         // IMPORTANT: This uses the exact bindgen-generated signature for Wasmtime 39:
-        //   PacketEngine::add_to_linker::<T, D>(linker, host_getter)
+        //   Hostnet::add_to_linker::<T, D>(linker, host_getter)
         // where `D` is a type that implements `HostWithStore` for the imported interfaces
         // and `host_getter` returns `D::Data<'_>`.
-        packet_engine_bindings::PacketEngine::add_to_linker::<
+        packet_engine_bindings::Hostnet::add_to_linker::<
             State,
             wasmtime::component::HasSelf<State>,
         >(&mut linker, |s| s)
@@ -321,16 +318,12 @@ impl ComponentEngine {
             instance,
             shm_initialized: false,
             next_seq: 1,
-            packet: None,
             desc_get: None,
             desc_put: None,
             payload_put: None,
             notify_rx: None,
         };
 
-        // Prefer typed bindings for the packet-engine ABI.
-        tmp.packet = packet_engine_bindings::PacketEngine::new(&mut tmp.store, &tmp.instance).ok();
-        // Keep legacy cache as fallback (useful when a component doesn't match our WIT).
         tmp.cache_packet_engine_exports();
 
         return Ok(tmp);
@@ -346,11 +339,6 @@ impl ComponentEngine {
     #[cfg(any(test, feature = "wasm-engine-test-access"))]
     pub fn store_mut(&mut self) -> &mut Store<State> {
         &mut self.store
-    }
-
-    #[cfg(any(test, feature = "wasm-engine-test-access"))]
-    pub fn packet_typed(&self) -> Option<&packet_engine_bindings::PacketEngine> {
-        self.packet.as_ref()
     }
 
     /// Initialize shared-memory ABI structures inside guest memory.
@@ -474,14 +462,6 @@ impl ComponentEngine {
 
     /// Call the guest `notify-rx` export.
     pub fn notify_rx(&mut self) -> Result<u32, EngineError> {
-        if let Some(packet) = &self.packet {
-            return packet
-                .call_notify_rx(&mut self.store)
-                .context("notify-rx call")
-                .map_err(EngineError::Call);
-        }
-
-        // Fallback: dynamic lookup.
         let func = self
             .notify_rx
             .clone()
@@ -506,21 +486,6 @@ impl ComponentEngine {
             component = %self.cfg.component_path.display(),
             "ComponentEngine::run: calling guest export"
         );
-        if let Some(packet) = &self.packet {
-            return packet
-                .call_run(&mut self.store)
-                .context("run call")
-                .map_err(EngineError::Call)
-                .and_then(|r| match r {
-                    Ok(()) => {
-                        tracing::info!(target: "ntx::wasm_engine", "ComponentEngine::run: guest returned Ok");
-                        Ok(())
-                    }
-                    Err(e) => Err(EngineError::Call(anyhow::anyhow!(e))),
-                });
-        }
-
-        // Fallback: dynamic lookup.
         let func = self.find_export_func("run")?;
         let typed = func
             .typed::<(), (Result<(), String>,)>(&self.store)
@@ -631,13 +596,6 @@ impl ComponentEngine {
     }
 
     fn desc_get(&mut self) -> Result<Vec<u8>, EngineError> {
-        if let Some(packet) = &self.packet {
-            return packet
-                .call_desc_get(&mut self.store)
-                .context("desc-get call")
-                .map_err(EngineError::Call);
-        }
-
         let func = self
             .desc_get
             .clone()
@@ -656,13 +614,6 @@ impl ComponentEngine {
     }
 
     fn desc_put(&mut self, off: u32, data: &[u8]) -> Result<(), EngineError> {
-        if let Some(packet) = &self.packet {
-            return packet
-                .call_desc_put(&mut self.store, off, data)
-                .context("desc-put call")
-                .map_err(EngineError::Call);
-        }
-
         let func = self
             .desc_put
             .clone()
@@ -681,13 +632,6 @@ impl ComponentEngine {
     }
 
     fn payload_put(&mut self, off: u32, data: &[u8]) -> Result<(), EngineError> {
-        if let Some(packet) = &self.packet {
-            return packet
-                .call_payload_put(&mut self.store, off, data)
-                .context("payload-put call")
-                .map_err(EngineError::Call);
-        }
-
         let func = self
             .payload_put
             .clone()
