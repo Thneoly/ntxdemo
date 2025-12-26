@@ -79,6 +79,10 @@ interface udp-socket-control {
 }
 
 world hostnet {
+    // The guest imports these host-provided interfaces.
+    import types;
+    import resources;
+    import udp-socket-control;
     export types;
     export resources;
     export udp-socket-control;
