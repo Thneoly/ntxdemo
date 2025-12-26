@@ -288,4 +288,5 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
+*.wasm
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,macos,linux,windows,rust,python,powershell

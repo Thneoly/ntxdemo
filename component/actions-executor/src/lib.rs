@@ -363,7 +363,7 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
                     max_count,
                     timeout_ms,
                 };
-                // todo: cal
+                // todo: 改为通过eventbush 发布，由scheduler最终处理
                 // let rid = ntx::scenario_send_scheduler::send_scheduler::schedule_send(&req)
                 //     .map_err(|e| format!("schedule-send failed: {e}"))?;
                 let rid = req.request_id.clone();

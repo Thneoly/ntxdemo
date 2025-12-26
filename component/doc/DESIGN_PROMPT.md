@@ -656,7 +656,7 @@ on_tick(now):
   - **不直接与 host 交互**：actions-executor 不能直接导入或调用 host 提供的接口（如 `ntx:hostnet/udp-socket-control`、`ntx:hostnet/resources`）
   - **通过 eventbus 和 scheduler 间接与 host 通信**：
     - 需要发包时，通过 `eventbus.publish()` 发布 `packet.tx-request` 事件，由 scheduler 处理并调用 host 的 `udp-socket-control.tx()`
-    - 需要资源时，通过 scheduler 暴露的 WIT 接口（如 `send-scheduler.schedule-send()`）间接获取
+    - 需要资源时，通过 scheduler 在 workflow 初始化/节点推进阶段完成资源绑定，并通过 `ActionContext` / `vars` 等上下文传入 action（executor 内不直接申请资源）
     - 收包通知通过 eventbus 的 `packet.rx` 事件接收，由 scheduler 从 host 的共享内存解析后发布
   - **对 scheduler 提供统一的执行结果模型 `ActionOutcome`**：
     - `status`：Success / Failed / Timeout / Skipped …
@@ -672,7 +672,7 @@ on_tick(now):
 
 - **executor 不做自旋等待**：禁止在 `execute-action()` 内部通过 loop/poll 的方式等待 `packet.rx` / 外部回调 / 定时器等（包括忙等、重复 poll-events、sleep 等）。
 - **等待由 scheduler 的状态机节点推进**：
-  - action 负责“发起副作用”（发布 `packet.tx-request`、提交 `send-scheduler` 等）并**立即返回**
+  - action 负责“发起副作用”（发布 `packet.tx-request`、`send.schedule-request` 等）并**立即返回**
   - workflow 中使用 `wait` 节点（或等价机制）消费 `packet.rx` 等事件，推动 task 从 `Waiting -> Completed/Failed`
 - **超时由 scheduler 的 timer event 驱动**：超时/重试/think-time 统一由 scheduler 的 TimerManager 生成 `timer-fired`（或等价事件）注入事件队列，由状态机决定迁移与重试，而不是 executor 内部计时与循环。
 
@@ -689,7 +689,7 @@ workflow wait 节点消费 packet.rx -> 状态机迁移 Waiting -> Completed
 #### 允许与不允许（实践口径）
 
 - **允许**
-  - executor：构造事件/委托请求（`packet.tx-request` / `send-scheduler.schedule-send`）并返回 `ActionOutcome`
+  - executor：构造事件/委托请求（`packet.tx-request` / `send.schedule-request`）并返回 `ActionOutcome`
   - scheduler：订阅/轮询 eventbus、解析 RX ring、投递 `packet.rx`、发出 timer event、驱动状态机
 - **不允许**
   - executor：在一次 `execute-action` 中“等到某个事件发生”为止（即便有 deadline），这会导致单线程被占用并放大尾延迟
@@ -727,9 +727,10 @@ workflow wait 节点消费 packet.rx -> 状态机迁移 Waiting -> Completed
 ```wit
 package ntx:scenario-actions-executor@0.1.0;
 
+// 说明：当前实现已引入 core-types 模块来承载跨组件共享 types，
+// 并废弃 send-scheduler，统一通过 event-bus 发布请求/结果事件来闭环。
 use ntx:scenario-types/types@0.1.0 as t;
 use ntx:scenario-eventbus/event-bus@0.1.0;
-use ntx:scenario-send-scheduler/send-scheduler@0.1.0;
 
 /// actions-executor：只负责执行 action，不负责调度。
 interface action-component {
@@ -749,7 +750,6 @@ interface action-component {
 
 world action-executor-component {
     import event-bus;
-    import send-scheduler;
     export action-component;
 }
 ```
@@ -1041,7 +1041,9 @@ execute_action(action: ActionDef, ctx: Option<ActionContext>) -> ActionOutcome:
      - 调用 host 的 `udp-socket-control.build-reply()` 构建回复帧
      - 调用 host 的 `udp-socket-control.tx()` 发送数据包
      - 更新 `SockCtx` 映射表（`sock_id -> {user_id, task_id, action_id, last_seen_ms}`）
-   - 对于周期性发包、速率控制（PPS）、批量发送等场景，scheduler 可以通过 `send-scheduler.schedule-send()` 接口维护发包调度队列
+   - 对于周期性发包、速率控制（PPS）、批量发送等场景，scheduler 可以维护「发包调度队列」，并以 event-bus 事件形式接收/输出：
+     - actions-executor 发布 `send.schedule-request`（或等价事件）提交调度请求
+     - scheduler 发布 `send.scheduled` / `send.tick` / `send.completed`（或等价事件）用于观测与回放
    
    **发包委托数据结构**：
    ```wit
@@ -1174,20 +1176,29 @@ execute_action(action: ActionDef, ctx: Option<ActionContext>) -> ActionOutcome:
        }
    ```
    
-   **actions-executor 委托发包的接口**：
+   **actions-executor 委托发包（当前方案：event-bus 事件）**：
+
+   - executor 通过 `eventbus.publish()` 提交调度请求
+   - scheduler 在内部维护 send-queue，并通过事件发布状态变化（可观测 + 可回放）
+
+   建议事件（示意，字段可按实现调整）：
+
+   - `send.schedule-request`：提交调度请求（相当于旧的 `schedule-send`）
+   - `send.cancel-request`：取消调度请求（相当于旧的 `cancel-send`）
+   - `send.status-changed`：调度状态变化（pending/active/paused/completed/failed）
+   - `send.completed`：调度完成事件（可携带 total-sent、last-error 等）
+
+   说明：事件 payload 推荐使用 JSON，至少包含 `request_id`，以及用于追踪/归因的 `user_id` / `task_id` / `correlation_id`。
+
+   **（历史参考，已废弃）send-scheduler WIT 接口**：
    
    ```wit
-   // 在 scheduler 的 WIT 接口中新增
+   // 旧方案：在 scheduler 的 WIT 接口中新增，供 executor 直接调用。
+   // 现已废弃：统一走 event-bus，避免额外接口面并保持事件可回放。
    interface send-scheduler {
-       /// 提交一个发包委托
-       /// - 返回 request-id，可用于后续取消或查询状态
-       schedule-send: func(request: send-request) -> result<string, string>;
-       
-       /// 取消一个发包委托
-       cancel-send: func(request-id: string) -> result<_, string>;
-       
-       /// 查询发包委托状态
-       query-send-status: func(request-id: string) -> result<send-status, string>;
+     schedule-send: func(request: send-request) -> result<string, string>;
+     cancel-send: func(request-id: string) -> result<_, string>;
+     query-send-status: func(request-id: string) -> result<send-status, string>;
    }
    
    record send-status {
@@ -1242,7 +1253,8 @@ execute_action(action: ActionDef, ctx: Option<ActionContext>) -> ActionOutcome:
        }
        
        // 3. 委托 scheduler 发送
-       request_id = scheduler.schedule-send(send_req)
+  // 旧：request_id = scheduler.schedule-send(send_req)
+  // 新：publish(send.schedule-request{...}) 并以 request_id/correlation_id 关联后续事件
        
        // 4. 返回（action 执行完成，实际发包由 scheduler 异步进行）
        return ActionOutcome {
@@ -1345,10 +1357,9 @@ scheduler (component)
     ├─→ import action-component (from actions-executor)
     │       └─→ execute-action(action-def, ctx: option<action-context>) → action-outcome
     │
-    ├─→ export send-scheduler (新增：发包调度接口)
-    │       ├─→ schedule-send(send-request) → request-id
-    │       ├─→ cancel-send(request-id)
-    │       └─→ query-send-status(request-id) → send-status
+    ├─→ (send scheduling via event-bus)
+    │       ├─→ consume send.schedule-request / send.cancel-request
+    │       └─→ publish send.status-changed / send.completed
     │
     ├─→ import event-bus
     │       ├─→ subscribe(topic-filter) → subscription-id
@@ -1408,13 +1419,15 @@ actions-executor (component)
 对于周期性发包、速率控制（PPS）、批量发送等场景：
 ┌─────────────────────────────────────────────────────────────┐
 │ actions-executor.execute_action()                           │
-│   └─→ 构造 send-request {                                   │
+│   └─→ 构造 send.schedule-request 事件 payload {             │
+│          request_id: "...",                                │
+│          socket_id: <socket-id>,                             │
 │          schedule: rate-limited { pps: 100 },               │
-│          payload-generator: sequence { ... },              │
-│          max-count: 1000,                                   │
+│          payload_generator: sequence { ... },               │
+│          max_count: 1000,                                   │
+│          user_id/task_id/correlation_id: "..."             │
 │       }                                                      │
-│   └─→ eventbus.publish(packet.tx-request) 或               │
-│   └─→ scheduler.send-scheduler.schedule-send(send-request) │
+│   └─→ event-bus.publish(send.schedule-request)               │
 │                                                              │
 │ scheduler 主循环                                             │
 │   ├─→ 检查发送队列（按时间排序）                            │
@@ -1484,7 +1497,7 @@ actions-executor (component)
   - `init-component / execute-action / release-component` 基本骨架已完成（WIT 对齐 `component/wit/actions-executor/world.wit`）
   - `udp.send` / `udp.send-reply`：通过 `eventbus.publish(kind="packet.tx-request")` 委托 scheduler/host 侧实际发包
   - `udp.send-recv`：**已按事件驱动口径完成**——仅委托发包（发布 `packet.tx-request`）并立即返回（no-wait）；收包等待/超时/重试由 scheduler 的状态机（`wait` 节点 + timer event）推进
-  - `udp.schedule-send`：可调用 `send-scheduler.schedule-send()` 提交发送调度（**固定 payload**）
+  - `udp.schedule-send`：通过 event-bus 发布 `send.schedule-request` 提交发送调度（**固定 payload**）；具体发包由 scheduler 统一处理
 - **部分实现（存在待优化点）**
   - （预留）后续可补齐更丰富的 metrics/correlation 透传、以及更多 action 类型的统一错误/重试语义；当前 `udp.send-recv` 已不再在 executor 内轮询等待 `packet.rx`
 - **未实现**
@@ -1495,5 +1508,5 @@ actions-executor (component)
 ### 2) 下一步里程碑（建议）
 
 - **M1（已完成，对齐事件驱动语义）**：移除 executor 内自旋等待（`udp.send-recv`），统一由 scheduler+状态机处理等待/超时/重试
-- **M2（完善发包调度能力）**：补齐 `payload-generator`（sequence/timestamp），并完善 `send-scheduler` 的状态回报与事件
+- **M2（完善发包调度能力）**：补齐 `payload-generator`（sequence/timestamp），并完善 send 相关事件（schedule/tick/completed）以及可观测字段
 - **M3（扩展 action 类型）**：落地最小 `http.*` / `tcp.*` action（先保证接口闭环与可观测性，再逐步增强能力）
