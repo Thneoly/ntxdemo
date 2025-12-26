@@ -1,4 +1,4 @@
-package ntx:hostnet;
+package ntx:host;
 
 /// 基础网络类型
 interface types {

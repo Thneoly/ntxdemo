@@ -15,7 +15,7 @@ use ntx_network;
 // Demo entrypoints (`handle-packet`, `run-scenario`) intentionally remain dynamic.
 mod packet_engine_bindings {
     wasmtime::component::bindgen!({
-        world: "ntx:packet/packet-engine",
+        world: "ntx:host/hostnet",
         // This package has file-based deps under `plugins/wit/packet-engine/deps/*`.
         path: ["plugins/wit/packet-engine"],
         debug:true,

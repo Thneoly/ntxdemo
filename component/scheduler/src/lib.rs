@@ -14,6 +14,7 @@ wit_bindgen::generate!({
     generate_all,
     debug: true,
 });
+use crate::ntx::host::{resources, types, udp_socket_control};
 
 struct SchedulerExports;
 
@@ -3115,7 +3116,7 @@ fn ensure_udp_socket_for_user(
         .and_then(|v| u8::try_from(v).ok());
 
     // create + bind
-    let sock = ntx::hostnet::udp_socket_control::create(user_id)
+    let sock = udp_socket_control::create(user_id)
         .map_err(|e| format!("udp_socket_control.create: {:?}", e))?;
 
     // pool name: prefer scenario.user_resources.ip_binding.pool_id; then resource.properties.pool; else "default"
@@ -3131,22 +3132,21 @@ fn ensure_udp_socket_for_user(
         })
         .unwrap_or_else(|| "default".to_string());
 
-    let ident = ntx::hostnet::resources::acquire_udp_identity(&pool, &sock.owner)
+    let ident = resources::acquire_udp_identity(&pool, &sock.owner)
         .map_err(|e| format!("resources.acquire_udp_identity(pool={pool}): {:?}", e))?;
 
     // peer mac may be resolved by host (best-effort) if not configured
     let peer_mac = match peer_mac {
         Some(m) => m,
         None => {
-            let mac =
-                ntx::hostnet::resources::resolve_peer_mac(to_wit_ipv4(peer_ip)).map_err(|e| {
-                    format!("resources.resolve_peer_mac(peer_ip={:?}): {:?}", peer_ip, e)
-                })?;
+            let mac = resources::resolve_peer_mac(to_wit_ipv4(peer_ip)).map_err(|e| {
+                format!("resources.resolve_peer_mac(peer_ip={:?}): {:?}", peer_ip, e)
+            })?;
             [mac.a, mac.b, mac.c, mac.d, mac.e, mac.f]
         }
     };
 
-    let bind = ntx::hostnet::udp_socket_control::UdpBind {
+    let bind = udp_socket_control::UdpBind {
         local_ipv4: ident.local_ipv4,
         local_mac: ident.local_mac,
         local_udp_port: ident.local_udp_port,
@@ -3156,7 +3156,7 @@ fn ensure_udp_socket_for_user(
         ttl,
     };
 
-    ntx::hostnet::udp_socket_control::bind(sock.sock, bind)
+    udp_socket_control::bind(sock.sock, bind)
         .map_err(|e| format!("udp_socket_control.bind: {:?}", e))?;
 
     // store binding into runtime resources
@@ -3287,7 +3287,7 @@ fn finish_user(_ctx: &SchedulerContext, user_id: &str) -> Result<(), String> {
 
     // 6) release host resources (owner) best-effort
     if let Some(owner) = owner_id {
-        match ntx::hostnet::resources::release_resource(&owner) {
+        match resources::release_resource(&owner) {
             Ok(_) => {
                 let _ = ntx::scenario_eventbus::event_bus::publish(
                     &ntx::scenario_eventbus::event_bus::Event {
@@ -3377,8 +3377,8 @@ fn parse_u16(props: &serde_json::Value, keys: &[&str]) -> Option<u16> {
     None
 }
 
-fn to_wit_ipv4(ip: [u8; 4]) -> ntx::hostnet::types::Ipv4Addr {
-    ntx::hostnet::types::Ipv4Addr {
+fn to_wit_ipv4(ip: [u8; 4]) -> types::Ipv4Addr {
+    types::Ipv4Addr {
         a: ip[0],
         b: ip[1],
         c: ip[2],
@@ -3386,8 +3386,8 @@ fn to_wit_ipv4(ip: [u8; 4]) -> ntx::hostnet::types::Ipv4Addr {
     }
 }
 
-fn to_wit_mac(mac: [u8; 6]) -> ntx::hostnet::types::MacAddr {
-    ntx::hostnet::types::MacAddr {
+fn to_wit_mac(mac: [u8; 6]) -> types::MacAddr {
+    types::MacAddr {
         a: mac[0],
         b: mac[1],
         c: mac[2],
@@ -3951,9 +3951,9 @@ fn send_udp(
     // 注意：不在 packet.tx-request 处理路径里直接做 workflow 状态迁移；
     // Waiting 由 workflow edge（action -> wait）或 wait 节点触发器决定。
 
-    let frame = ntx::hostnet::udp_socket_control::build_reply(sock_id, payload)
+    let frame = udp_socket_control::build_reply(sock_id, payload)
         .map_err(|e| format!("build_reply failed: {:?}", e))?;
-    ntx::hostnet::udp_socket_control::tx(frame).map_err(|e| format!("tx failed: {:?}", e))?;
+    udp_socket_control::tx(frame).map_err(|e| format!("tx failed: {:?}", e))?;
     Ok(())
 }
 
