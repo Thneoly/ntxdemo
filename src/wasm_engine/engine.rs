@@ -2,7 +2,9 @@ use anyhow::Context;
 use std::path::PathBuf;
 use wasmtime::component::{Component, Func, Instance, Linker, types::ComponentItem};
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView, p2::add_to_linker_sync};
+use wasmtime_wasi::{
+    DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView, p2::add_to_linker_sync,
+};
 
 use crate::kernel;
 use ntx_network;
@@ -244,13 +246,24 @@ impl ComponentEngine {
         let engine =
             Engine::new(&wasm_cfg).map_err(|e| EngineError::Init(anyhow::Error::from(e)))?;
 
+        // WASI: preopen the current working directory as ".".
+        //
+        // The guest scheduler's `run(config_dir)` expects to open the provided
+        // config directory path, which (in our current config) is often a
+        // relative path like "./component/conf/udp-echo-minimal".
+        //
+        // WASI sandboxing requires that the *parent* directory is preopened.
+        // Preopening "." keeps things simple and matches `wasmtime --dir=.`.
+        let mut wasi_builder = WasiCtxBuilder::new();
+        wasi_builder.inherit_stdio().inherit_network();
+        wasi_builder
+            .preopened_dir(".", ".", DirPerms::READ, FilePerms::READ)
+            .map_err(|e| EngineError::Init(anyhow::Error::from(e)))?;
+
         let mut store = Store::new(
             &engine,
             State {
-                wasi: WasiCtxBuilder::new()
-                    .inherit_stdio()
-                    .inherit_network()
-                    .build(),
+                wasi: wasi_builder.build(),
                 table: wasmtime::component::ResourceTable::default(),
             },
         );
@@ -285,12 +298,12 @@ impl ComponentEngine {
             "ntx:scenario-scheduler/packet-ingest@0.1.0",
             "packet-ingest",
         ];
-        let notify_rx = find_packet(&iframe_names, &mut store, &instance)?;
+        let notify_rx = find_packet_ingest_notify_rx(&iframe_names, &mut store, &instance)?;
         let iframe_names = [
             "ntx:scenario-scheduler/scheduler-component@0.1.0",
             "scheduler-component",
         ];
-        let run = find_packet(&iframe_names, &mut store, &instance)?;
+        let run = find_scheduler_component_run(&iframe_names, &mut store, &instance)?;
         Ok(Self {
             cfg,
             store,
@@ -326,26 +339,75 @@ impl ComponentEngine {
         }
     }
 
+    /// Start the guest scheduler main loop.
+    ///
+    /// WIT contract:
+    /// - `ntx:scenario-scheduler/scheduler-component@0.1.0#run(config-dir: string) -> result<_, string>`
+    ///
+    /// This call is expected to block (the guest loop). The host typically runs it on a
+    /// dedicated thread.
+    pub fn run(&mut self, config_dir: String) -> Result<(), EngineError> {
+        // In WIT, `result<_, string>` is lowered to `Result<(), String>`.
+        let typed = self
+            .run
+            .typed::<(String,), (Result<(), String>,)>(&self.store)
+            .context("run signature mismatch")
+            .map_err(EngineError::Call)?;
+
+        match typed
+            .call(&mut self.store, (config_dir,))
+            .context("run call")
+            .map_err(EngineError::Call)?
+            .0
+        {
+            Ok(()) => Ok(()),
+            Err(e) => Err(EngineError::Call(anyhow::anyhow!(e))),
+        }
+    }
+
     pub fn config(&self) -> &EngineConfig {
         &self.cfg
     }
 }
 
-fn find_packet(
+fn find_packet_ingest_notify_rx(
     iface_names: &[&str],
     store: &mut Store<State>,
     instance: &Instance,
 ) -> Result<Func, EngineError> {
-    // WAC composed exports are typically an *interface instance* export named like:
-    //   "ntx:scenario-scheduler/packet-ingest@0.1.0"
-    // and then the function inside that instance is named "notify-rx".
-    // Some builds may additionally flatten to a single top-level function name.
-
     let mut tried: Vec<String> = vec![];
 
-    // 1) Preferred: interface instance export -> lookup func under that export index.
     for iface in iface_names {
         let func_name = "notify-rx";
+        tried.push(iface.to_string());
+        if let Some((iface_item, iface_idx)) = instance.get_export(&mut *store, None, iface) {
+            if matches!(iface_item, ComponentItem::ComponentInstance(_)) {
+                tried.push(format!("{iface}::{func_name}"));
+                if let Some((func_item, func_idx)) =
+                    instance.get_export(&mut *store, Some(&iface_idx), func_name)
+                {
+                    if matches!(func_item, ComponentItem::ComponentFunc(_)) {
+                        if let Some(f) = instance.get_func(&mut *store, func_idx) {
+                            return Ok(f);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Err(EngineError::EntryNotFound { candidates: tried })
+}
+
+fn find_scheduler_component_run(
+    iface_names: &[&str],
+    store: &mut Store<State>,
+    instance: &Instance,
+) -> Result<Func, EngineError> {
+    let mut tried: Vec<String> = vec![];
+
+    for iface in iface_names {
+        let func_name = "run";
         tried.push(iface.to_string());
         if let Some((iface_item, iface_idx)) = instance.get_export(&mut *store, None, iface) {
             if matches!(iface_item, ComponentItem::ComponentInstance(_)) {

@@ -29,6 +29,16 @@ interface event-bus {
     /// - max-events: 本次最多返回的事件数量
     /// - 返回: 事件列表（可能为空）
     poll-events: func(subscription-id: string, max-events: u32) -> result<list<event>, string>;
+
+    /// 等待订阅事件（阻塞/带超时）。
+    ///
+    /// 语义：
+    /// - 若队列中已有事件，立即返回（最多 max-events 条）。
+    /// - 若队列为空且 timeout-ms > 0，则等待直到有事件或超时。
+    /// - 若队列为空且 timeout-ms == 0，立即返回空列表（等价于 poll-events）。
+    ///
+    /// 说明：这是为 scheduler 事件循环提供“无事件时阻塞等待”的能力，避免忙轮询耗 CPU。
+    wait-events: func(subscription-id: string, max-events: u32, timeout-ms: u32) -> result<list<event>, string>;
 }
 
 world event-bus-world {

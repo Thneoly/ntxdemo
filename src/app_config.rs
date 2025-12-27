@@ -35,6 +35,12 @@ pub struct WasmConfig {
     /// Optional wasm component path to auto-load at scheduler startup.
     #[serde(default)]
     pub component_path: Option<PathBuf>,
+
+    /// Scenario config directory passed to `scheduler-component.run(config-dir)`.
+    ///
+    /// If not set, the host will default to the current working directory (".").
+    #[serde(default)]
+    pub config_dir: Option<PathBuf>,
 }
 
 impl Default for AppConfig {
@@ -46,6 +52,7 @@ impl Default for AppConfig {
             scheduler: SchedulerConfig {
                 wasm: WasmConfig {
                     component_path: None,
+                    config_dir: None,
                 },
             },
         }
@@ -64,6 +71,7 @@ impl Default for WasmConfig {
     fn default() -> Self {
         Self {
             component_path: None,
+            config_dir: None,
         }
     }
 }

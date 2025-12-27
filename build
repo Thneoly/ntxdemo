@@ -1,0 +1,27 @@
+use std::process::Command;
+
+fn main() {
+    // Re-run if the build script or relevant component sources change.
+    // (We go a bit broad to be safe; this avoids the "updated code but old composed wasm" issue.)
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=component/build.sh");
+    println!("cargo:rerun-if-changed=component/wac/scheduler-composition.wac");
+    println!("cargo:rerun-if-changed=component/wit");
+    println!("cargo:rerun-if-changed=component/scheduler/src");
+    println!("cargo:rerun-if-changed=component/eventbus/src");
+    println!("cargo:rerun-if-changed=component/actions-executor/src");
+    println!("cargo:rerun-if-changed=component/core-types/src");
+
+    // Build and compose the latest wasm components.
+    // NOTE: this requires `wac` and `wasm-tools` to be available in PATH.
+    // We run it from the workspace root so relative paths in the script keep working.
+    let status = Command::new("bash")
+        .current_dir("component")
+        .arg("build.sh")
+        .status()
+        .expect("failed to execute component/build.sh");
+
+    if !status.success() {
+        panic!("component/build.sh failed with status {status}");
+    }
+}

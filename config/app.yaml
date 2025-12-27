@@ -10,6 +10,9 @@ scheduler:
     # If unset, wasm tasks (like `run`) won't execute.
     # 使用新的 scheduler 组件（wasm32-wasip2）
     component_path: "./component/wac/scheduler-composed.wasm"
+    # Scenario 配置目录：guest `scheduler-component.run(config-dir)` 会在该目录下读取 `scenario.yaml`。
+    # 注意：WASI 沙箱下 guest 只能访问 host 预打开(preopen)的目录；不要依赖 "."。
+    config_dir: "./component/conf/udp-echo-minimal"
     # Candidate export entrypoints.
     entry_candidates:
       - "handle-packet"

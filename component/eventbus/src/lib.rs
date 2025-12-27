@@ -3,6 +3,7 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 wit_bindgen::generate!({
     world: "ntx:scenario-eventbus/event-bus-world@0.1.0",
@@ -110,6 +111,41 @@ impl exports::ntx::scenario_eventbus::event_bus::Guest for EventBusComponent {
             Ok(result)
         } else {
             Err(format!("subscription not found: {}", subscription_id))
+        }
+    }
+
+    fn wait_events(
+        subscription_id: String,
+        max_events: u32,
+        timeout_ms: u32,
+    ) -> Result<Vec<WitEvent>, String> {
+        // WASM-friendly "blocking": loop poll + short sleep until we have events or hit timeout.
+        //
+        // Why: wasm32-wasip2 doesn't support Condvar/parking lot primitives that rely on OS
+        // thread parking. In WASI we can still sleep/yield.
+        let deadline = if timeout_ms == 0 {
+            None
+        } else {
+            Some(Instant::now() + Duration::from_millis(timeout_ms as u64))
+        };
+
+        let backoff = Duration::from_millis(1);
+        loop {
+            let events = Self::poll_events(subscription_id.clone(), max_events)?;
+            if !events.is_empty() {
+                return Ok(events);
+            }
+
+            if let Some(dl) = deadline {
+                if Instant::now() >= dl {
+                    return Ok(Vec::new());
+                }
+            } else {
+                // timeout_ms == 0 behaves like poll-events.
+                return Ok(Vec::new());
+            }
+
+            std::thread::sleep(backoff);
         }
     }
 }

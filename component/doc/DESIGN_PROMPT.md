@@ -39,6 +39,39 @@ loop {
     // 5. 生成/更新指标、心跳等
     emit_metrics_and_heartbeat()
 }
+
+#### 1.0 Host 如何拉起 scheduler 的主循环（WAC 组装后的启动契约）
+
+本仓库中，scheduler 作为 `wasm32-wasip2` component 被 **WAC 组装**（见 `component/wac/scheduler-composition.wac`）后，会对外导出两个接口实例：
+
+- `ntx:scenario-scheduler/scheduler-component@0.1.0`
+- `ntx:scenario-scheduler/packet-ingest@0.1.0`
+
+其中，`scheduler-component` 明确提供 scheduler 的主循环入口（见 `component/wit/scheduler/world.wit`）：
+
+- `run(config-dir: string) -> result<_, string>`
+
+**Host 启动流程必须先调用 `run()` 拉起 scheduler 的调度循环**，之后才会进入后续的收包驱动（`notify-rx`）与发包调度（事件总线）链路。
+
+推荐的 host 行为模型如下：
+
+1. host 加载 `component/wac/scheduler-composed.wasm`（WAC 产物），并在启动时配置 `scheduler.wasm.component_path` 指向该文件。
+2. host 启动后会先初始化 **host scheduler**（root crate 的 `Scheduler`），并由该 host scheduler 统一调度：
+  - NIC RX resident 任务（持续收包）
+  - wasm 相关调用（WasmCall 任务）
+3. （**按当前实现**）host 会向 host scheduler 提交一个 “run” 类型的 wasm 调用任务，用于触发 guest 的 `run()`：
+  - 入口参考：`src/main.rs` 中提交 `Task::wasm_call("wasm-run", "run")`，随后 `Scheduler::global().run()` 进入 host 调度循环。
+  - wasm engine 的加载参考：`src/scheduler.rs::apply_wasm_config()` 会通过 `EngineManager::load_and_register()` 实例化 composed component。
+4. （**接口契约**）当 host 需要真正拉起 component scheduler 的主循环时，应该由 wasm engine 调用导出
+  `scheduler-component.run(config-dir)`；其中 `config-dir` 指向 scenario/workflow/workbook/load 的所在目录。
+5. 为避免阻塞 host 的其他子系统（例如 NIC RX poll、控制面、日志等），host **可以在单独线程**中执行该 `run()`：
+  - 该线程负责长期运行 scheduler 的 loop；
+  - 其他线程（例如 NIC RX 线程）通过 host→guest 的导出接口调用（例如 `packet-ingest.notify-rx`）向 scheduler 注入外部刺激。
+
+> 备注：`run()` 是“拉起组件内部事件循环”的入口；`notify-rx()` 是“外部事件注入”的入口。两者不是互斥关系，而是 **先 run，再 notify**。
+>
+> 现状对齐：当前 host 的 wasm engine 已稳定支持 `packet-ingest.notify-rx(desc_mem, payload_mem)`（用于收包驱动）；
+> `scheduler-component.run(config-dir)` 已在 WIT/WAC 中定义并导出，但 host 侧还需要在 wasm engine 的 WasmCall 执行路径中把 `run()` 真正调起来（目前 `TaskKind::WasmCall` 分支只做日志占位）。
 ```
 
 ### 2. actions-executor 运行形态
@@ -478,17 +511,24 @@ workbook:
       properties:
         peer_ip: "10.0.0.2"
         peer_port: 8080
-        # peer_mac 可选：如果不提供，scheduler 可调用 host resources.resolve-peer-mac(peer_ip) 做 best-effort 解析
-        # 若 host 没有邻居/ARP 缓存条目，则仍会报 not-found（这时可以在配置里显式提供 peer_mac）
-        # peer_mac: "aa:bb:cc:dd:ee:ff"
+        # peer_mac 可选：
+        # - 如果 host 侧 ARP cache 已有条目，scheduler 会调用 resources.resolve-peer-mac(peer_ip) 自动解析
+        # - 如果没有条目，会返回 not-found；此时请显式填写 peer_mac
+        peer_mac: "aa:bb:cc:dd:ee:ff"
+        # 可选：从哪个资源池分配 local ip/mac/udp-port（默认 "default"）
+        pool: "default"
 
 actions:
   actions:
     - id: "udp-send-reply"
       call: "udp.send-reply"
       with:
-        # 由 scheduler/host 侧维护 sock_id 绑定（并从 host resources 池分配本地 ip/mac/port），这里仅描述 payload 语义
         payload: "hello-ntx"
+        # 可选：超时与重试（毫秒）
+        timeout-ms: 3000
+        retry:
+          max: 0
+          backoff_ms: 500
 
 workflows:
   nodes:
@@ -521,6 +561,14 @@ load:
         spawn_users: 1
   user_lifetime:
     mode: "once"
+    # P4：每 user 并发上限（Running task 数）
+    max_concurrency: 1
+
+user_resources:
+  ip_binding:
+    enabled: true
+    # host resources 的 pool 名称（一般就是 "default"）
+    pool_id: "default"
 ```
 
 对应执行过程（与前文状态机示例一致）：

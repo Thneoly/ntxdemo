@@ -62,4 +62,18 @@ impl EngineManager {
 
         Ok(0)
     }
+
+    pub fn run(&mut self, config_dir: String) -> Result<(), EngineError> {
+        let Some(default) = self.default.clone() else {
+            return Ok(());
+        };
+
+        for (handle, engine) in &mut self.engines {
+            if *handle == default {
+                return engine.run(config_dir);
+            }
+        }
+
+        Ok(())
+    }
 }

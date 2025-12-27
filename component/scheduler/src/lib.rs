@@ -46,6 +46,7 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
 
         publish_scheduler_state(SchedulerState::Running, None);
 
+        // Long-running loop: block when idle instead of ticking out.
         let loop_result = run_event_loop(
             &ctx,
             sub_tx.as_deref(),
@@ -56,7 +57,6 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
             sub_timer.as_deref(),
             sub_user.as_deref(),
             sub_topo.as_deref(),
-            256,
         );
 
         match &loop_result {
@@ -1412,15 +1412,14 @@ fn run_event_loop(
     sub_timer: Option<&str>,
     sub_user: Option<&str>,
     sub_topo: Option<&str>,
-    max_ticks: u32,
 ) -> Result<(), String> {
     let mut idle = 0u32;
-    for _ in 0..max_ticks {
+    loop {
         let mut did_work = false;
 
-        // 1) control events
+        // 1) control events (blocking wait)
         if let Some(id) = sub_ctrl {
-            let events = ntx::scenario_eventbus::event_bus::poll_events(id, 64)
+            let events = ntx::scenario_eventbus::event_bus::wait_events(id, 64, 50)
                 .map_err(|e| format!("poll_events(control): {e}"))?;
             if !events.is_empty() {
                 did_work = true;
@@ -1432,11 +1431,11 @@ fn run_event_loop(
 
         // stop flag
         if RUNTIME.lock().map(|rt| rt.stop).unwrap_or(false) {
-            break;
+            return Ok(());
         }
 
         if let Some(id) = sub_tx {
-            let events = ntx::scenario_eventbus::event_bus::poll_events(id, 64)
+            let events = ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
                 .map_err(|e| format!("poll_events(packet.tx-request): {e}"))?;
             if !events.is_empty() {
                 did_work = true;
@@ -1452,7 +1451,7 @@ fn run_event_loop(
 
         // 1.5) send schedule requests (executor -> scheduler)
         if let Some(id) = sub_send {
-            let events = ntx::scenario_eventbus::event_bus::poll_events(id, 64)
+            let events = ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
                 .map_err(|e| format!("poll_events(send.schedule-request): {e}"))?;
             if !events.is_empty() {
                 did_work = true;
@@ -1468,7 +1467,7 @@ fn run_event_loop(
 
         // 2) action-result events (async-compatible)
         if let Some(id) = sub_ar {
-            let events = ntx::scenario_eventbus::event_bus::poll_events(id, 64)
+            let events = ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
                 .map_err(|e| format!("poll_events(action-result): {e}"))?;
             if !events.is_empty() {
                 did_work = true;
@@ -1481,7 +1480,7 @@ fn run_event_loop(
         }
 
         if let Some(id) = sub_rx {
-            let events = ntx::scenario_eventbus::event_bus::poll_events(id, 64)
+            let events = ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
                 .map_err(|e| format!("poll_events(packet.rx): {e}"))?;
             if !events.is_empty() {
                 did_work = true;
@@ -1495,7 +1494,7 @@ fn run_event_loop(
 
         // 3) timer events
         if let Some(id) = sub_timer {
-            let events = ntx::scenario_eventbus::event_bus::poll_events(id, 64)
+            let events = ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
                 .map_err(|e| format!("poll_events(timer): {e}"))?;
             if !events.is_empty() {
                 did_work = true;
@@ -1509,7 +1508,7 @@ fn run_event_loop(
 
         // 4) user lifecycle events
         if let Some(id) = sub_user {
-            let events = ntx::scenario_eventbus::event_bus::poll_events(id, 64)
+            let events = ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
                 .map_err(|e| format!("poll_events(user): {e}"))?;
             if !events.is_empty() {
                 did_work = true;
@@ -1525,7 +1524,7 @@ fn run_event_loop(
 
         // 4.1) topology change events (affect only NEW users)
         if let Some(id) = sub_topo {
-            let events = ntx::scenario_eventbus::event_bus::poll_events(id, 16)
+            let events = ntx::scenario_eventbus::event_bus::wait_events(id, 16, 0)
                 .map_err(|e| format!("poll_events(topology): {e}"))?;
             if !events.is_empty() {
                 did_work = true;
@@ -1571,11 +1570,12 @@ fn run_event_loop(
                 .map(|rt| !rt.ready.is_empty())
                 .unwrap_or(false);
             if !has_active_send && !has_ready {
-                break;
+                // No useful work; keep blocking instead of exiting.
+                // We'll wait via the control subscription above.
+                idle = 0;
             }
         }
     }
-    Ok(())
 }
 
 fn on_packet_rx(
