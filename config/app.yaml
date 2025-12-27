@@ -15,6 +15,4 @@ scheduler:
     config_dir: "./component/conf/udp-echo-minimal"
     # Candidate export entrypoints.
     entry_candidates:
-      - "handle-packet"
-      - "run-scenario"
       - "run"

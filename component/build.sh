@@ -17,7 +17,7 @@ pushd core-types
 popd
 
 rm -rf wac/deps/component/*.wasm
-
+mkdir -p wac/deps/component/
 cp ../target/wasm32-wasip2/debug/actions_executor.wasm wac/deps/component/actions-executor.wasm
 cp ../target/wasm32-wasip2/debug/eventbus.wasm wac/deps/component/eventbus.wasm
 cp ../target/wasm32-wasip2/debug/scheduler.wasm wac/deps/component/scheduler.wasm
