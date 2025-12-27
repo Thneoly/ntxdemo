@@ -24,23 +24,14 @@ fn hostnet_imports_are_wired() {
 
     // Instantiate the engine and call the smoke export.
     // NOTE: This uses the host's generated bindings (not the guest's).
-    let cfg = ntx::wasm_engine::EngineConfig {
-        component_path,
-        // Not used by this test, but required by config.
-        entry_candidates: vec![],
-    };
+    let cfg = ntx::wasm_engine::EngineConfig { component_path };
 
     let mut engine =
         ntx::wasm_engine::ComponentEngine::new(cfg).expect("failed to create ComponentEngine");
 
-    // Prefer calling the explicit smoke export if available (stronger signal), but
-    // don't fail if the artifact doesn't include it (e.g., older component builds).
-    match engine.hostnet_smoke_create_owner("smoke-test") {
-        Ok(owner) => assert!(!owner.is_empty()),
-        Err(_) => {
-            // Fallback: instantiation already exercises import resolution.
-            // If host wiring is missing, `ComponentEngine::new` would fail above.
-            let _ = engine.notify_rx().expect("notify_rx should work");
-        }
-    }
+    // Instantiation already exercises import resolution.
+    // If host wiring is missing, `ComponentEngine::new` would fail above.
+    let _ = engine
+        .notify_rx(Vec::new(), Vec::new())
+        .expect("notify_rx should be callable");
 }

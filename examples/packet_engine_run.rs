@@ -1,20 +1,17 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ntx::wasm_engine::{ComponentEngine, EngineConfig};
 use std::env;
 
 fn main() -> Result<()> {
-    let component_path =
-        env::var("NTX_COMPONENT").context("set NTX_COMPONENT=<path-to-your-wasm-component>")?;
+    let component_path = env::var("NTX_COMPONENT")
+        .unwrap_or_else(|_| "./component/wac/scheduler-composed.wasm".to_string());
 
     let cfg = EngineConfig {
         component_path: component_path.into(),
-        // This example calls the typed `run()` export, so entry candidates are irrelevant.
-        entry_candidates: vec![],
     };
 
     let mut engine = ComponentEngine::new(cfg)?;
-    engine.run()?;
-
-    println!("guest run() completed");
+    let n = engine.notify_rx(Vec::new(), Vec::new())?;
+    println!("notify-rx completed (n={n})");
     Ok(())
 }

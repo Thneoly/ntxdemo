@@ -3,8 +3,10 @@ use crate::error::SchedulerError;
 use crate::event_bus::{Bytes, EventBus, SimpleEventBus, build_event};
 use crate::kernel::non_blocking_recv_udp;
 use crate::time::{PollTimeManager, TimeManager, TimerToken};
+use crate::wasm_engine::shared_mem;
 use crate::wasm_engine::{EngineConfig, EngineHandle, EngineManager};
 use once_cell::sync::Lazy;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::{
@@ -27,6 +29,11 @@ const PRIORITY_LEVELS: usize = 64;
 const IDLE_SPIN_LIMIT: usize = 2;
 const RESIDENT_BACKOFF_MIN: Duration = Duration::from_micros(50);
 const RESIDENT_BACKOFF_MAX: Duration = Duration::from_millis(2);
+
+// RX ring batch sizing for the host->composed-scheduler ABI.
+// These are intentionally conservative defaults; the goal is to amortize allocations.
+const RX_BATCH_DESC_CAP: u32 = 64;
+const RX_BATCH_PAYLOAD_CAP: u32 = 64 * 2048; // 64 packets * 2KiB
 
 /// Common task priorities.
 ///
@@ -326,7 +333,6 @@ impl Scheduler {
 
         let engine_cfg = EngineConfig {
             component_path: component_path,
-            entry_candidates: cfg.entry_candidates,
         };
 
         let mut mgr = EngineManager::global()
@@ -340,7 +346,7 @@ impl Scheduler {
             return;
         }
 
-        match mgr.load_and_register_demo(EngineHandle("default".into()), engine_cfg) {
+        match mgr.load_and_register(EngineHandle("default".into()), engine_cfg) {
             Ok(()) => {
                 tracing::info!(
                     target: "ntx::scheduler",
@@ -530,14 +536,30 @@ impl Scheduler {
                     return false;
                 };
 
-                // Enqueue into the guest shared buffers. The WasmCall will run `notify-rx`.
-                // If no engine is configured we still enqueue nothing and report no work.
+                // For the composed scheduler component path, the ABI is:
+                //   notify-rx(desc_mem: list<u8>, payload_mem: list<u8>) -> result<u32, string>
+                //
+                // desc_mem/payload_mem format is defined by the component scheduler
+                // implementation (`component/scheduler/src/lib.rs::drain_rx_ring`).
+                // We reuse `wasm_engine::shared_mem` helpers to encode the same layout:
+                // - A control block at offset 0
+                // - A descriptor ring starting at DESCS_OFF
+                // - payload_mem is a plain byte region, with offsets referenced by desc
+                let (desc_mem, payload_mem) = RX_RING.with_borrow_mut(|r| {
+                    r.push_and_maybe_flush_one(rx.sock_id.map(|s| s as u64), &rx.payload)
+                });
                 let mut mgr = EngineManager::global()
                     .lock()
                     .expect("engine manager poisoned");
-                let _ = mgr.enqueue_rx(rx.sock_id.map(|s| s as u64), &rx.payload);
-                self.submit(Task::wasm_call("wasm-rx", "notify-rx"));
-                true
+                if let (Some(desc_mem), Some(payload_mem)) = (desc_mem, payload_mem) {
+                    match mgr.notify_rx(desc_mem, payload_mem) {
+                        Ok(n) => n > 0,
+                        Err(_e) => false,
+                    }
+                } else {
+                    // Buffered but not flushed yet.
+                    true
+                }
             }
             TaskKind::NetworkIo(NetworkIoTask::NicTx) => {
                 // Placeholder: real Tx path will drain a queue and flush to NIC.
@@ -550,39 +572,10 @@ impl Scheduler {
                     input_len = wasm.input.len(),
                     "executing wasm call"
                 );
-                // Drive guest processing.
-                let mut mgr = EngineManager::global()
-                    .lock()
-                    .expect("engine manager poisoned");
-
-                match wasm.function.as_str() {
-                    "run" => {
-                        // One-shot demo entrypoint: drive guest-side acquire/bind/send loop.
-                        // If no engine is configured, this becomes a no-op.
-                        match mgr.run() {
-                            Ok(()) => {
-                                tracing::info!(target: "ntx::scheduler", "wasm run() completed");
-                                true
-                            }
-                            Err(e) => {
-                                tracing::error!(target: "ntx::scheduler", error = %e, "wasm run() failed");
-                                false
-                            }
-                        }
-                    }
-                    "notify-rx" => match mgr.notify_rx() {
-                        Ok(n) => n > 0,
-                        Err(_e) => false,
-                    },
-                    // Backwards-compat for earlier demo tasks.
-                    _ => {
-                        let input = std::str::from_utf8(&wasm.input).unwrap_or("");
-                        match mgr.tick_demo(input) {
-                            Ok(result) => result.did_work,
-                            Err(_e) => false,
-                        }
-                    }
-                }
+                // NicRx already executed the required notify call inline.
+                // Keep WasmCall tasks reserved for future explicit guest calls.
+                let _ = wasm;
+                false
             }
             // Timer is handled in `execute()` because it consumes action and publishes.
             TaskKind::Timer(_) => false,
@@ -685,6 +678,136 @@ impl Scheduler {
             }
         }
     }
+}
+
+/// A reusable RX ring writer for the host->composed-scheduler `notify-rx` ABI.
+///
+/// Contract:
+/// - `desc_mem` contains a control block at 0 and desc ring at DESCS_OFF.
+/// - `payload_mem` is a byte region referenced by descriptors.
+/// - We keep `head=0` and advance `tail` up to N, then flush by handing ownership
+///   of the buffers to the wasm engine.
+///
+/// Notes:
+/// - We deliberately *don't* implement wraparound yet. When near capacity, we flush.
+/// - This already removes per-packet allocations/copies of the descriptor ring.
+struct RxRingBatch {
+    desc_cap: u32,
+    payload_cap: u32,
+    desc_mem: Vec<u8>,
+    payload_mem: Vec<u8>,
+    tail: u32,
+    seq: u64,
+}
+
+impl RxRingBatch {
+    fn new(desc_cap: u32, payload_cap: u32) -> Self {
+        let mut r = Self {
+            desc_cap,
+            payload_cap,
+            desc_mem: Vec::new(),
+            payload_mem: Vec::new(),
+            tail: 0,
+            seq: 0,
+        };
+        r.reset_buffers();
+        r
+    }
+
+    fn reset_buffers(&mut self) {
+        self.payload_mem.clear();
+        self.payload_mem.reserve(self.payload_cap as usize);
+        self.tail = 0;
+
+        // desc_mem needs to hold control + full desc ring region.
+        let desc_bytes = self.desc_cap as usize * shared_mem::DESC_LEN;
+        let total = shared_mem::DESCS_OFF as usize + desc_bytes;
+        self.desc_mem.clear();
+        self.desc_mem.resize(total, 0u8);
+
+        // Initial control: head=0, tail=0.
+        let cb = shared_mem::ControlBlock::new(self.desc_cap, self.payload_cap);
+        let cb_enc = shared_mem::encode_control(&cb);
+        self.desc_mem
+            [shared_mem::CONTROL_OFF as usize..shared_mem::CONTROL_OFF as usize + cb_enc.len()]
+            .copy_from_slice(&cb_enc);
+    }
+
+    fn can_fit(&self, payload_len: usize) -> bool {
+        if self.tail >= self.desc_cap {
+            return false;
+        }
+        (self.payload_mem.len() + payload_len) <= self.payload_cap as usize
+    }
+
+    fn push_one(&mut self, sock_id: Option<u64>, payload: &[u8]) {
+        let payload_off = shared_mem::PAYLOAD_OFF + self.payload_mem.len() as u32;
+        self.payload_mem.extend_from_slice(payload);
+
+        self.seq = self.seq.wrapping_add(1);
+        let desc = shared_mem::Descriptor::rx(sock_id, payload_off, payload.len() as u32, self.seq);
+        let desc_enc = shared_mem::encode_desc(&desc);
+
+        let idx = self.tail as usize;
+        let base = shared_mem::DESCS_OFF as usize + idx * shared_mem::DESC_LEN;
+        self.desc_mem[base..base + desc_enc.len()].copy_from_slice(&desc_enc);
+
+        self.tail += 1;
+
+        // Patch desc_tail in control block.
+        let tail_off = shared_mem::CONTROL_OFF as usize + 16;
+        self.desc_mem[tail_off..tail_off + 4].copy_from_slice(&self.tail.to_le_bytes());
+
+        // Patch payload_tail too (mostly informational for now).
+        let payload_tail_off = shared_mem::CONTROL_OFF as usize + 28;
+        let pt = self.payload_mem.len() as u32;
+        self.desc_mem[payload_tail_off..payload_tail_off + 4].copy_from_slice(&pt.to_le_bytes());
+    }
+
+    fn flush(&mut self) -> Option<(Vec<u8>, Vec<u8>)> {
+        if self.tail == 0 {
+            return None;
+        }
+        let mut out_desc = Vec::new();
+        let mut out_payload = Vec::new();
+        std::mem::swap(&mut out_desc, &mut self.desc_mem);
+        std::mem::swap(&mut out_payload, &mut self.payload_mem);
+        self.reset_buffers();
+        Some((out_desc, out_payload))
+    }
+
+    /// Push one packet and flush if we hit capacity.
+    /// Returns:
+    /// - (None,None): buffered, not flushed yet.
+    /// - (Some(desc),Some(payload)): ready to notify.
+    fn push_and_maybe_flush_one(
+        &mut self,
+        sock_id: Option<u64>,
+        payload: &[u8],
+    ) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+        if !self.can_fit(payload.len()) {
+            // Notifying the currently-buffered batch is better than dropping.
+            // We'll flush it now and buffer the current packet into a fresh batch.
+            let flushed = self.flush();
+            self.push_one(sock_id, payload);
+            if let Some((d, p)) = flushed {
+                return (Some(d), Some(p));
+            }
+        }
+
+        self.push_one(sock_id, payload);
+        if self.tail >= self.desc_cap {
+            if let Some((d, p)) = self.flush() {
+                return (Some(d), Some(p));
+            }
+        }
+
+        (None, None)
+    }
+}
+
+thread_local! {
+    static RX_RING: RefCell<RxRingBatch> = RefCell::new(RxRingBatch::new(RX_BATCH_DESC_CAP, RX_BATCH_PAYLOAD_CAP));
 }
 
 fn setup_shutdown_flag() -> Result<Arc<AtomicBool>, SchedulerError> {

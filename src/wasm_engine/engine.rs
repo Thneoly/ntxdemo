@@ -1,18 +1,13 @@
 use anyhow::Context;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use wasmtime::component::{Component, Func, Instance, Linker, types::ComponentItem};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView, p2::add_to_linker_sync};
 
-use super::shared_mem;
-use crate::event_bus::Bytes;
 use crate::kernel;
 use ntx_network;
 
-// Strongly-typed host bindings for our guest packet-engine component.
-//
-// This replaces string-based export lookup for the shared-memory dataplane ABI.
-// Demo entrypoints (`handle-packet`, `run-scenario`) intentionally remain dynamic.
+// Strongly-typed host bindings for imports required by the composed scheduler component.
 mod packet_engine_bindings {
     wasmtime::component::bindgen!({
         world: "ntx:host/hostnet",
@@ -33,17 +28,12 @@ use packet_engine_bindings::ntx::host::udp_socket_control::{
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     pub component_path: PathBuf,
-    /// Candidate function names to try at the component top-level.
-    ///
-    /// For the first demo we keep this generic. Later we can switch to typed bindgen.
-    pub entry_candidates: Vec<String>,
 }
 
 impl EngineConfig {
-    pub fn demo_default(component_path: impl Into<PathBuf>) -> Self {
+    pub fn composed_scheduler_default(component_path: impl Into<PathBuf>) -> Self {
         Self {
             component_path: component_path.into(),
-            entry_candidates: vec!["handle-packet".into(), "run-scenario".into()],
         }
     }
 }
@@ -64,18 +54,6 @@ impl From<anyhow::Error> for EngineError {
     fn from(value: anyhow::Error) -> Self {
         Self::Call(value)
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TxPacket {
-    pub sock_id: Option<u64>,
-    pub payload: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct EngineResult {
-    pub did_work: bool,
-    pub tx: Vec<TxPacket>,
 }
 
 pub struct State {
@@ -251,19 +229,9 @@ impl UdpHost for State {
 
 pub struct ComponentEngine {
     cfg: EngineConfig,
-    engine: Engine,
     store: Store<State>,
-    instance: Instance,
-
-    // Cached exports for the packet-engine ABI (optional).
-    desc_get: Option<Func>,
-    desc_put: Option<Func>,
-    payload_put: Option<Func>,
-    notify_rx: Option<Func>,
-
-    // Shared-memory state (v1 single-memory layout, best-effort).
-    shm_initialized: bool,
-    next_seq: u64,
+    // Composed scheduler export: `ntx:scenario-scheduler/packet-ingest@0.1.0#notify-rx`
+    notify_rx: Func,
 }
 
 impl ComponentEngine {
@@ -310,347 +278,99 @@ impl ComponentEngine {
             .context("instantiate component")
             .map_err(EngineError::Init)?;
 
-        // Best-effort caching of known exports. Not all components implement these.
-        let mut tmp = Self {
+        // Compose output exports `packet-ingest` under an interface. Wasmtime flattens
+        // to a string export name for dynamic lookup.
+        let notify_rx = find_packet_ingest_notify_rx(&mut store, &instance)?;
+
+        Ok(Self {
             cfg,
-            engine,
             store,
-            instance,
-            shm_initialized: false,
-            next_seq: 1,
-            desc_get: None,
-            desc_put: None,
-            payload_put: None,
-            notify_rx: None,
-        };
-
-        tmp.cache_packet_engine_exports();
-
-        return Ok(tmp);
+            notify_rx,
+        })
     }
 
-    fn cache_packet_engine_exports(&mut self) {
-        self.desc_get = self.find_export_func("desc-get").ok();
-        self.desc_put = self.find_export_func("desc-put").ok();
-        self.payload_put = self.find_export_func("payload-put").ok();
-        self.notify_rx = self.find_export_func("notify-rx").ok();
-    }
-
-    #[cfg(any(test, feature = "wasm-engine-test-access"))]
-    pub fn store_mut(&mut self) -> &mut Store<State> {
-        &mut self.store
-    }
-
-    /// Initialize shared-memory ABI structures inside guest memory.
+    /// Host -> scheduler RX notification.
     ///
-    /// For now this is best-effort and only flips an internal flag.
-    /// The next step is to locate the exported linear memory from the component
-    /// (or add explicit guest accessor funcs) and write `ControlBlock`.
-    pub fn ensure_shared_mem_initialized(&mut self) {
-        if self.shm_initialized {
-            return;
-        }
-        // Best-effort: initialize the control block in the guest's `desc` buffer.
-        // The guest demo component stores these buffers internally.
-        let _ = self.init_ring_if_needed();
-        self.shm_initialized = true;
-    }
-
-    /// Encode a demo input for the guest handler.
-    ///
-    /// Until the guest implements the shared-memory ABI, we feed JSON as string
-    /// through the existing demo entrypoint, but we already structure sock+payload.
-    pub fn build_demo_input_json(&mut self, sock_id: Option<u64>, payload: &[u8]) -> Bytes {
-        self.ensure_shared_mem_initialized();
-        let _seq = self.next_seq;
-        self.next_seq = self.next_seq.wrapping_add(1);
-        shared_mem::demo_json(sock_id, payload)
-    }
-
-    /// Enqueue one RX packet into the guest's shared buffers.
-    ///
-    /// This uses the demo guest ABI of `desc-put`/`payload-put`.
-    pub fn enqueue_rx(&mut self, sock_id: Option<u64>, payload: &[u8]) -> Result<(), EngineError> {
-        self.ensure_shared_mem_initialized();
-        self.init_ring_if_needed()?;
-
-        // Read current control block to get tail pointers.
-        let mut desc_mem = self.desc_get()?;
-        let cb = shared_mem::decode_control(&desc_mem).ok_or_else(|| {
-            EngineError::Call(anyhow::anyhow!("guest desc buffer missing control block"))
-        })?;
-
-        // Payload ring: for the demo we just append at payload_tail (mod capacity).
-        // We keep it simple (no wrap handling beyond truncation) because this is
-        // an integration stepping stone.
-        let mut payload_tail = cb.payload_tail as usize;
-        let payload_capacity = cb.payload_capacity as usize;
-        if payload_capacity == 0 {
-            return Err(EngineError::Call(anyhow::anyhow!(
-                "guest payload_capacity is 0"
-            )));
-        }
-
-        // If payload is too large for remaining space, wrap to 0.
-        if payload_tail + payload.len() > payload_capacity {
-            payload_tail = 0;
-        }
-
-        self.payload_put(payload_tail as u32, payload)?;
-
-        // Descriptor ring.
-        let desc_capacity = cb.desc_capacity as usize;
-        if desc_capacity == 0 {
-            return Err(EngineError::Call(anyhow::anyhow!(
-                "guest desc_capacity is 0"
-            )));
-        }
-
-        let desc_tail = cb.desc_tail as usize;
-        let slot = desc_tail % desc_capacity;
-        let desc_off = shared_mem::DESCS_OFF as usize + slot * shared_mem::DESC_LEN;
-
-        let seq = self.next_seq;
-        self.next_seq = self.next_seq.wrapping_add(1);
-        let desc = shared_mem::Descriptor::rx(
-            sock_id,
-            (shared_mem::PAYLOAD_OFF as usize + payload_tail) as u32,
-            payload.len() as u32,
-            seq,
-        );
-        let enc_desc = shared_mem::encode_desc(&desc);
-        // Ensure vec is large enough.
-        if desc_mem.len() < desc_off + enc_desc.len() {
-            desc_mem.resize(desc_off + enc_desc.len(), 0);
-        }
-        desc_mem[desc_off..desc_off + enc_desc.len()].copy_from_slice(&enc_desc);
-
-        // Advance tail pointers.
-        let mut new_cb = cb;
-        new_cb.desc_tail = cb.desc_tail.wrapping_add(1);
-        new_cb.payload_tail = (payload_tail + payload.len()) as u32;
-        let enc_cb = shared_mem::encode_control(&new_cb);
-        desc_mem[shared_mem::CONTROL_OFF as usize..shared_mem::CONTROL_OFF as usize + enc_cb.len()]
-            .copy_from_slice(&enc_cb);
-
-        // Write back descriptors/control.
-        self.desc_put(0, &desc_mem)?;
-        Ok(())
-    }
-
-    /// Smoke-test helper: calls the guest export `hostnet-smoke-create-owner`.
-    ///
-    /// This export may not exist in older component artifacts; in that case this
-    /// function returns an error that callers can treat as "not supported".
-    pub fn hostnet_smoke_create_owner(&mut self, name: &str) -> Result<String, EngineError> {
-        // Dynamic fallback: try to call the export by name.
-        let func = self.find_export_func("hostnet-smoke-create-owner")?;
-        let typed = func
-            .typed::<(&str,), (Result<String, String>,)>(&self.store)
-            .context("hostnet-smoke-create-owner signature mismatch")
-            .map_err(EngineError::Call)?;
-        match typed
-            .call(&mut self.store, (name,))
-            .context("hostnet-smoke-create-owner call")
-            .map_err(EngineError::Call)?
-            .0
-        {
-            Ok(id) => Ok(id),
-            Err(e) => Err(EngineError::Call(anyhow::anyhow!(e))),
-        }
-    }
-
-    /// Call the guest `notify-rx` export.
-    pub fn notify_rx(&mut self) -> Result<u32, EngineError> {
-        let func = self
+    /// The composed scheduler component expects two owned buffers:
+    /// - `desc_mem`: metadata ring + control structure (guest-defined), opaque to host.
+    /// - `payload_mem`: payload bytes, opaque to host.
+    pub fn notify_rx(
+        &mut self,
+        desc_mem: Vec<u8>,
+        payload_mem: Vec<u8>,
+    ) -> Result<u32, EngineError> {
+        let typed = self
             .notify_rx
-            .clone()
-            .ok_or_else(|| EngineError::EntryNotFound {
-                candidates: vec!["notify-rx".to_string()],
-            })?;
-        let typed = func
-            .typed::<(), (u32,)>(&self.store)
+            .typed::<(Vec<u8>, Vec<u8>), (Result<u32, String>,)>(&self.store)
             .context("notify-rx signature mismatch")
             .map_err(EngineError::Call)?;
-        let (n,) = typed
-            .call(&mut self.store, ())
-            .context("notify-rx call")
-            .map_err(EngineError::Call)?;
-        Ok(n)
-    }
 
-    /// Call the guest `run` export (packet-engine demo).
-    pub fn run(&mut self) -> Result<(), EngineError> {
-        tracing::info!(
-            target: "ntx::wasm_engine",
-            component = %self.cfg.component_path.display(),
-            "ComponentEngine::run: calling guest export"
-        );
-        let func = self.find_export_func("run")?;
-        let typed = func
-            .typed::<(), (Result<(), String>,)>(&self.store)
-            .context("run signature mismatch")
-            .map_err(EngineError::Call)?;
         match typed
-            .call(&mut self.store, ())
-            .context("run call")
+            .call(&mut self.store, (desc_mem, payload_mem))
+            .context("notify-rx call")
             .map_err(EngineError::Call)?
             .0
         {
-            Ok(()) => {
-                tracing::info!(target: "ntx::wasm_engine", "ComponentEngine::run: guest returned Ok (dynamic)");
-                Ok(())
-            }
+            Ok(n) => Ok(n),
             Err(e) => Err(EngineError::Call(anyhow::anyhow!(e))),
         }
-    }
-
-    /// Convenience for tests: read current descriptor buffer.
-    pub fn read_desc_buffer(&mut self) -> Result<Vec<u8>, EngineError> {
-        self.desc_get()
     }
 
     pub fn config(&self) -> &EngineConfig {
         &self.cfg
     }
+}
 
-    /// Demo call wrapper.
-    ///
-    /// We support two styles for the first iteration:
-    /// - `handle-packet(payload: string) -> result<string, string>` (interprets payload as utf8)
-    /// - `run-scenario(yaml: string) -> result<string, string>` (same signature as `examples/call.rs`)
-    pub fn call_demo(&mut self, input: &str) -> Result<EngineResult, EngineError> {
-        let candidates = self.cfg.entry_candidates.clone();
-        let func = self.find_top_level_func(&candidates)?;
+fn find_packet_ingest_notify_rx(
+    store: &mut Store<State>,
+    instance: &Instance,
+) -> Result<Func, EngineError> {
+    // WAC composed exports are typically an *interface instance* export named like:
+    //   "ntx:scenario-scheduler/packet-ingest@0.1.0"
+    // and then the function inside that instance is named "notify-rx".
+    // Some builds may additionally flatten to a single top-level function name.
 
-        // Both demo candidates use the same function signature.
-        let typed = func
-            .typed::<(&str,), (Result<String, String>,)>(&self.store)
-            .context("component function signature mismatch")
-            .map_err(EngineError::Call)?;
+    let mut tried: Vec<String> = vec![];
 
-        match typed
-            .call(&mut self.store, (input,))
-            .context("component call")
-            .map_err(EngineError::Call)?
-            .0
-        {
-            Ok(_summary) => Ok(EngineResult {
-                did_work: true,
-                tx: vec![],
-            }),
-            Err(e) => Err(EngineError::Call(anyhow::anyhow!(e))),
-        }
-    }
-
-    fn find_top_level_func(&mut self, candidates: &[String]) -> Result<Func, EngineError> {
-        for name in candidates {
-            if let Some((item, idx)) = self.instance.get_export(&mut self.store, None, name) {
-                if matches!(item, ComponentItem::ComponentFunc(_)) {
-                    if let Some(f) = self.instance.get_func(&mut self.store, idx) {
-                        return Ok(f);
+    // 1) Preferred: interface instance export -> lookup func under that export index.
+    let iface_names = [
+        "ntx:scenario-scheduler/packet-ingest@0.1.0",
+        "packet-ingest",
+    ];
+    for iface in iface_names {
+        let func_name = "notify-rx";
+        tried.push(iface.to_string());
+        if let Some((iface_item, iface_idx)) = instance.get_export(&mut *store, None, iface) {
+            if matches!(iface_item, ComponentItem::ComponentInstance(_)) {
+                tried.push(format!("{iface}::{func_name}"));
+                if let Some((func_item, func_idx)) =
+                    instance.get_export(&mut *store, Some(&iface_idx), func_name)
+                {
+                    if matches!(func_item, ComponentItem::ComponentFunc(_)) {
+                        if let Some(f) = instance.get_func(&mut *store, func_idx) {
+                            return Ok(f);
+                        }
                     }
                 }
             }
         }
-        Err(EngineError::EntryNotFound {
-            candidates: candidates.to_vec(),
-        })
     }
 
-    fn find_export_func(&mut self, name: &str) -> Result<Func, EngineError> {
-        if let Some((item, idx)) = self.instance.get_export(&mut self.store, None, name) {
+    // 2) Fallback: flattened name(s)
+    let flat_names = [
+        "ntx:scenario-scheduler/packet-ingest@0.1.0#notify-rx",
+        "notify-rx",
+    ];
+    for name in flat_names {
+        tried.push(name.to_string());
+        if let Some((item, idx)) = instance.get_export(&mut *store, None, name) {
             if matches!(item, ComponentItem::ComponentFunc(_)) {
-                if let Some(f) = self.instance.get_func(&mut self.store, idx) {
+                if let Some(f) = instance.get_func(&mut *store, idx) {
                     return Ok(f);
                 }
             }
         }
-        Err(EngineError::EntryNotFound {
-            candidates: vec![name.to_string()],
-        })
     }
 
-    fn init_ring_if_needed(&mut self) -> Result<(), EngineError> {
-        // If control block already present, do nothing.
-        if let Ok(desc) = self.desc_get() {
-            if let Some(cb) = shared_mem::decode_control(&desc) {
-                if cb.magic == shared_mem::NTX_MAGIC && cb.version == shared_mem::NTX_VERSION {
-                    return Ok(());
-                }
-            }
-        }
-
-        // Pick small but non-trivial capacities for demo/testing.
-        let cb = shared_mem::ControlBlock::new(64, 64 * 1024);
-        let mut desc_mem = vec![
-            0u8;
-            shared_mem::DESCS_OFF as usize
-                + (cb.desc_capacity as usize * shared_mem::DESC_LEN)
-        ];
-        let enc = shared_mem::encode_control(&cb);
-        desc_mem[shared_mem::CONTROL_OFF as usize..shared_mem::CONTROL_OFF as usize + enc.len()]
-            .copy_from_slice(&enc);
-        self.desc_put(0, &desc_mem)?;
-        Ok(())
-    }
-
-    fn desc_get(&mut self) -> Result<Vec<u8>, EngineError> {
-        let func = self
-            .desc_get
-            .clone()
-            .ok_or_else(|| EngineError::EntryNotFound {
-                candidates: vec!["desc-get".to_string()],
-            })?;
-        let typed = func
-            .typed::<(), (Vec<u8>,)>(&self.store)
-            .context("desc-get signature mismatch")
-            .map_err(EngineError::Call)?;
-        let (buf,) = typed
-            .call(&mut self.store, ())
-            .context("desc-get call")
-            .map_err(EngineError::Call)?;
-        Ok(buf)
-    }
-
-    fn desc_put(&mut self, off: u32, data: &[u8]) -> Result<(), EngineError> {
-        let func = self
-            .desc_put
-            .clone()
-            .ok_or_else(|| EngineError::EntryNotFound {
-                candidates: vec!["desc-put".to_string()],
-            })?;
-        let typed = func
-            .typed::<(u32, Vec<u8>), ()>(&self.store)
-            .context("desc-put signature mismatch")
-            .map_err(EngineError::Call)?;
-        typed
-            .call(&mut self.store, (off, data.to_vec()))
-            .context("desc-put call")
-            .map_err(EngineError::Call)?;
-        Ok(())
-    }
-
-    fn payload_put(&mut self, off: u32, data: &[u8]) -> Result<(), EngineError> {
-        let func = self
-            .payload_put
-            .clone()
-            .ok_or_else(|| EngineError::EntryNotFound {
-                candidates: vec!["payload-put".to_string()],
-            })?;
-        let typed = func
-            .typed::<(u32, Vec<u8>), ()>(&self.store)
-            .context("payload-put signature mismatch")
-            .map_err(EngineError::Call)?;
-        typed
-            .call(&mut self.store, (off, data.to_vec()))
-            .context("payload-put call")
-            .map_err(EngineError::Call)?;
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    fn component_path(&self) -> &Path {
-        &self.cfg.component_path
-    }
+    Err(EngineError::EntryNotFound { candidates: tried })
 }
