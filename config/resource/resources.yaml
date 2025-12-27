@@ -8,17 +8,17 @@
 # The client will send echo requests to BOTH server identities (2 targets).
 
 ipv4:
-  - name: client
+  - name: default
     cidr: "10.0.0.0/28"
     # Make it obvious we don't want to use server IPs.
     exclude: ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
 
 mac:
-  - name: client
+  - name: default
     start: "02:00:00:00:00:10"
     end:   "02:00:00:00:00:19"
 
 udp_port:
-  - name: client
+  - name: default
     start: 40000
     end: 40009

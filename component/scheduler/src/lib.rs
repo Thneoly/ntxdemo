@@ -33,8 +33,10 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
         let scenario = load_scenario_config(&config_dir)?;
         log_config_summary(&scenario)?;
         let ctx = SchedulerContext { scenario };
-        init_runtime(&ctx)?;
 
+        // IMPORTANT: subscribe first, then publish/init.
+        // Our eventbus is best-effort (no durable backlog), so publishing user.start before
+        // subscribing to scheduler.user.* would drop the first user.start and stall the workflow.
         let sub_tx = subscribe_or_log("packet.tx-request");
         let sub_send = subscribe_or_log("send.schedule-request");
         let sub_ar = subscribe_or_log("scheduler.action-result");
@@ -43,6 +45,9 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
         let sub_timer = subscribe_or_log("scheduler.timer.*");
         let sub_user = subscribe_or_log("scheduler.user.*");
         let sub_topo = subscribe_or_log("topology.changed");
+
+        // Now safe to publish scheduler.user.start based on the scenario's ramp-up.
+        init_runtime(&ctx)?;
 
         publish_scheduler_state(SchedulerState::Running, None);
 
@@ -2506,6 +2511,14 @@ fn on_user_start_event(
         return Ok(());
     }
 
+    // High-signal workflow start trace: if the scheduler never reaches dispatch/executor,
+    // these logs tell us whether user init and start-node enqueue happened.
+    eprintln!(
+        "[scheduler] on_user_start: user_id={user_id} scenario_version={ver} workflows_nodes={} start_nodes={:?}",
+        sc.workflows.nodes.len(),
+        find_start_nodes(sc)
+    );
+
     let resources = build_resources_json(sc);
     let mut user = UserInstance {
         tasks: HashMap::new(),
@@ -2527,6 +2540,9 @@ fn on_user_start_event(
 
     if let Ok(mut rt) = RUNTIME.lock() {
         if rt.users.contains_key(user_id) {
+            eprintln!(
+                "[scheduler] on_user_start: user already exists, ignoring: user_id={user_id}"
+            );
             return Ok(());
         }
         rt.users.insert(user_id.to_string(), user);
@@ -2545,7 +2561,26 @@ fn on_user_start_event(
             },
         )
     };
+
+    // Effects should include enqueue of start nodes; if it's empty, the state-machine rejected the reset.
+    eprintln!(
+        "[scheduler] on_user_start: sm.apply(UserReset) effects_len={} user_id={user_id}",
+        effects.len()
+    );
     apply_sm_effects(effects)?;
+
+    if let Ok(rt) = RUNTIME.lock() {
+        let running = rt
+            .users
+            .get(user_id)
+            .map(|u| (u.meta.running, u.meta.max_running))
+            .unwrap_or((0, 0));
+        eprintln!(
+            "[scheduler] on_user_start: after effects user_id={user_id} ready_empty={} running={}/{}",
+            rt.ready.is_empty(),
+            running.0, running.1
+        );
+    }
     Ok(())
 }
 
@@ -2742,7 +2777,9 @@ fn publish_user_start_event(spawn_users: u64, start_seq: Option<u64>) {
             ntx::scenario_eventbus::event_bus::publish(&ntx::scenario_eventbus::event_bus::Event {
                 id,
                 kind: "scheduler.user.start".to_string(),
-                user_id: None,
+                // IMPORTANT: downstream scheduler logic often keys off `ev.user_id`.
+                // Keep `payload.user_id` for compatibility, but always set the structured field.
+                user_id: Some(user_id),
                 task_id: None,
                 action_id: None,
                 payload,
@@ -2842,6 +2879,8 @@ fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, Stri
             break;
         };
 
+        eprintln!("[scheduler] dispatch: pop_ready user_id={user_id} node_id={node_id}");
+
         // per-user scenario (old users do not migrate)
         let (_ver, sc_arc, wf_idx) = match get_user_scenario_ctx(&user_id) {
             Ok(v) => v,
@@ -2862,6 +2901,8 @@ fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, Stri
                 .map_err(|_| "lock state-machine".to_string())?;
             sm.get_step(&user_id, &node_id)
         };
+
+        eprintln!("[scheduler] dispatch: resolve_step user_id={user_id} node_id={node_id} step_idx={step_idx}");
 
         let (action_id, step_timeout_ms, step_retry) = {
             // prefer steps
@@ -2889,10 +2930,17 @@ fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, Stri
             }
         };
 
+        eprintln!("[scheduler] dispatch: select_action user_id={user_id} node_id={node_id} action_id={action_id}");
+
         let action = match sc.actions.actions.iter().find(|a| a.id == action_id) {
             Some(a) => a,
             None => continue,
         };
+
+        eprintln!(
+            "[scheduler] dispatch: action_call user_id={user_id} node_id={node_id} call={}",
+            action.call
+        );
 
         // B) 真实资源绑定：为 udp action 确保 user 已绑定 socket，并注入 socket_id
         if action.call.starts_with("udp.") {
@@ -2909,6 +2957,11 @@ fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, Stri
                     .get_mut(&user_id)
                     .ok_or_else(|| format!("user not found: {}", user_id))?;
                 if u.meta.running >= u.meta.max_running {
+                    eprintln!(
+                        "[scheduler] dispatch: concurrency_cap user_id={user_id} running={}/{} requeue node_id={node_id}",
+                        u.meta.running,
+                        u.meta.max_running
+                    );
                     rt.ready.push(
                         node_priority(sc, &node_id),
                         user_id.to_string(),
@@ -2934,6 +2987,7 @@ fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, Stri
             };
             if effects.is_empty() {
                 // stale ready item
+                eprintln!("[scheduler] dispatch: stale_ready user_id={user_id} node_id={node_id}");
                 continue;
             }
             apply_sm_effects(effects)?;
@@ -3035,9 +3089,23 @@ fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, Stri
             );
         }
 
+        eprintln!(
+            "[scheduler] dispatch: execute_action user_id={user_id} node_id={node_id} action_id={} corr_id={}",
+            def.id,
+            act_ctx
+                .correlation_id
+                .as_deref()
+                .unwrap_or("<none>")
+        );
+
         let outcome =
             ntx::scenario_actions_executor::action_component::execute_action(&def, Some(&act_ctx))
                 .map_err(|e| format!("execute_action failed: {e}"))?;
+
+        eprintln!(
+            "[scheduler] dispatch: action_outcome user_id={user_id} node_id={node_id} action_id={} status={:?}",
+            def.id, outcome.status
+        );
 
         // 结果事件化：发布 action-result，由事件处理器更新状态/重试/超时（兼容 future async）
         publish_action_result_event(
@@ -3047,6 +3115,11 @@ fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, Stri
             act_ctx.correlation_id.as_deref(),
             &outcome,
         )?;
+
+        eprintln!(
+            "[scheduler] dispatch: published action-result user_id={user_id} node_id={node_id} action_id={}",
+            def.id
+        );
         did = true;
     }
     Ok(did)

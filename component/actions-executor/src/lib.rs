@@ -292,7 +292,7 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
         action: ActionDef,
         ctx: Option<ActionContext>,
     ) -> Result<ActionOutcome, String> {
-        let user_id = ctx.as_ref().and_then(|c| c.user_id.clone());
+        let user_id: Option<String> = ctx.as_ref().and_then(|c| c.user_id.clone());
         let task_id = ctx.as_ref().and_then(|c| c.task_id.clone());
         let correlation_id = ctx.as_ref().and_then(|c| c.correlation_id.clone());
 
