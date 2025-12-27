@@ -18,11 +18,6 @@ interface packet-ingest {
     notify-rx: func(desc-mem: list<u8>, payload-mem: list<u8>) -> result<u32, string>;
 }
 
-/// 处理 executor 发出的发包请求事件（packet.tx-request），由 scheduler 调用 host 发送。
-interface packet-tx {
-    process-tx-request: func(payload-json: string) -> result<_, string>;
-}
-
 world scheduler-main {
     import action-component;
     import event-bus;
@@ -31,6 +26,5 @@ world scheduler-main {
     import types;
     export scheduler-component;
     export packet-ingest;
-    export packet-tx;
 }
 

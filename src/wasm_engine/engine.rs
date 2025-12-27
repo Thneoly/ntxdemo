@@ -232,6 +232,7 @@ pub struct ComponentEngine {
     store: Store<State>,
     // Composed scheduler export: `ntx:scenario-scheduler/packet-ingest@0.1.0#notify-rx`
     notify_rx: Func,
+    run: Func,
 }
 
 impl ComponentEngine {
@@ -280,12 +281,21 @@ impl ComponentEngine {
 
         // Compose output exports `packet-ingest` under an interface. Wasmtime flattens
         // to a string export name for dynamic lookup.
-        let notify_rx = find_packet_ingest_notify_rx(&mut store, &instance)?;
-
+        let iframe_names = [
+            "ntx:scenario-scheduler/packet-ingest@0.1.0",
+            "packet-ingest",
+        ];
+        let notify_rx = find_packet(&iframe_names, &mut store, &instance)?;
+        let iframe_names = [
+            "ntx:scenario-scheduler/scheduler-component@0.1.0",
+            "scheduler-component",
+        ];
+        let run = find_packet(&iframe_names, &mut store, &instance)?;
         Ok(Self {
             cfg,
             store,
             notify_rx,
+            run,
         })
     }
 
@@ -321,7 +331,8 @@ impl ComponentEngine {
     }
 }
 
-fn find_packet_ingest_notify_rx(
+fn find_packet(
+    iface_names: &[&str],
     store: &mut Store<State>,
     instance: &Instance,
 ) -> Result<Func, EngineError> {
@@ -333,10 +344,6 @@ fn find_packet_ingest_notify_rx(
     let mut tried: Vec<String> = vec![];
 
     // 1) Preferred: interface instance export -> lookup func under that export index.
-    let iface_names = [
-        "ntx:scenario-scheduler/packet-ingest@0.1.0",
-        "packet-ingest",
-    ];
     for iface in iface_names {
         let func_name = "notify-rx";
         tried.push(iface.to_string());
@@ -351,22 +358,6 @@ fn find_packet_ingest_notify_rx(
                             return Ok(f);
                         }
                     }
-                }
-            }
-        }
-    }
-
-    // 2) Fallback: flattened name(s)
-    let flat_names = [
-        "ntx:scenario-scheduler/packet-ingest@0.1.0#notify-rx",
-        "notify-rx",
-    ];
-    for name in flat_names {
-        tried.push(name.to_string());
-        if let Some((item, idx)) = instance.get_export(&mut *store, None, name) {
-            if matches!(item, ComponentItem::ComponentFunc(_)) {
-                if let Some(f) = instance.get_func(&mut *store, idx) {
-                    return Ok(f);
                 }
             }
         }

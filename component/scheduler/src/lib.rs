@@ -112,13 +112,6 @@ impl exports::ntx::scenario_scheduler::packet_ingest::Guest for SchedulerExports
     }
 }
 
-impl exports::ntx::scenario_scheduler::packet_tx::Guest for SchedulerExports {
-    fn process_tx_request(payload_json: String) -> Result<(), String> {
-        // host direct call: no correlation_id available
-        handle_tx_request(&payload_json, None)
-    }
-}
-
 export!(SchedulerExports);
 
 use once_cell::sync::Lazy;
