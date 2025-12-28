@@ -131,9 +131,9 @@ guest `run()` 主循环每次迭代：
 - `run()` 必须运行在一个独占执行体中，但该执行体 **不得**长期持有 `EngineManager` 等全局锁。
 - 运行期任何 host 侧锁（`std::sync`/`parking_lot`/`tokio`）都 **不允许跨 wasm call 持有**（包括 `run()` 以及任何未来的导出调用）。
 
-### 模式 B（长期推荐）：Tokio + Wasmtime async（Tokio-native）
+### 最终方案：Tokio-native + Wasmtime component async
 
-这一节只描述终局版：host 全面 Tokio 化，并把 guest `run()` 变成 **可被 Tokio 调度的 async wasm 调用**；不再依赖“专用 OS 线程 / `spawn_blocking` 承载 `run()`”作为推荐落地方向。
+这一节只描述最终形态：host 全面 Tokio 化，并把 guest `run()` 变成 **可被 Tokio 调度的 async wasm 调用**。
 
 核心思想：
 
@@ -182,7 +182,7 @@ guest `run()` 主循环每次迭代：
 
 - 需要 Wasmtime component async 能力与本仓库的 WIT binding 生成方式兼容；若升级 Wasmtime 版本，务必同时校验 `component::bindgen` 生成的 async host trait/签名。
 - 即使是 async，也必须坚持“单 owner 驱动一个 `Store/Instance`”；不要试图并发地从多个 task 调用同一个 instance。
-- 对 `rx-ring` 的实现：如果 `wait-rx` 内部用条件变量/阻塞锁等待，等价于把阻塞重新塞回 async 线程；终局版应该用 Tokio 原语实现真正的 async 等待与唤醒。
+- 对 `rx-ring` 的实现：`wait-rx` 必须是 **Tokio 原语驱动的异步等待**（例如 `Notify`/`Semaphore`/`mpsc` + `timeout`）；如果内部仍用条件变量/阻塞锁等待，等价于把阻塞重新塞回 Tokio worker，最终仍会出现“系统推进停滞”。
 
 ## 整改计划 & TODO
 
@@ -191,11 +191,13 @@ guest `run()` 主循环每次迭代：
 ### 0. Host 运行模型异步化（Tokio / Engine Owner）
 
 - [ ] 将 host 主入口改为 Tokio runtime（`#[tokio::main]`），统一调度 NIC RX/TX 与控制面任务
-- [ ] 引入 **Engine Owner actor**（单一所有权执行体）：独占持有 `ComponentEngine/Store`，并只调用一次 `scheduler-component.run()`
+- [ ] 启用 Wasmtime component async（以本仓库 Wasmtime 版本/API 为准，必要时升级并同步更新 bindgen 生成代码）
+- [ ] 引入 **Engine Owner actor**（单一所有权执行体）：独占持有同一个 `ComponentEngine/Store`，以 **async** 方式驱动 `scheduler-component.run()`（只调用一次）
 - [ ] 严禁在持有 `EngineManager`（或其他全局锁）时调用 `run()`：启动期构造完成后 move ownership 给 owner
-- [ ] 为 host 增加 guardrail：任何锁都不允许跨 wasm call 持有（至少对 `run()` 增加 debug 断言/注释约束 + code review checklist）
-- [ ] shutdown 验收：触发关机时必须唤醒 `wait-rx` 并保证任务可退出/可收敛（避免 run-loop 永久阻塞导致进程无法优雅结束）
-- [ ] 增加最小观测：记录 `EngineManager`/owner 的健康状态（例如 owner 心跳、run 线程存活、阻塞告警）
+- [ ] 将 `rx-ring.wait-rx` 的等待/唤醒/超时改为 Tokio 原语实现（避免阻塞锁/condvar 重新把阻塞塞回 Tokio 线程）
+- [ ] 为 host 增加 guardrail：任何锁都不允许跨 wasm call 持有（对 `run()`/其他 wasm 调用路径增加 debug 断言/注释约束 + code review checklist）
+- [ ] shutdown 验收：触发关机时必须唤醒 `wait-rx` 并保证任务可退出/可收敛（避免 run-loop 无法响应 shutdown）
+- [ ] 增加最小观测：记录 owner 健康状态（心跳/卡顿告警/队列深度等），用于定位“推进停滞”
 
 ### A. 接口契约（WIT/WAC）
 
