@@ -54,9 +54,7 @@ loop {
 
 - `run(config-dir: string) -> result<_, string>`
 
-**Host 启动流程必须先调用 `run()` 拉起 scheduler 的调度循环**，之后才会进入后续的收包驱动（`notify-rx`）与发包调度（事件总线）链路。
-
-终局版修订：Host 启动流程仍然必须先调用 `run()`；但收包驱动不再通过 `notify-rx`（host→guest 导出调用）完成，而是由 guest `run()` 在循环中主动调用 `rx-ring.poll-rx/wait-rx` 拉取一批 RX ring 并转译为 `packet.rx` 事件。
+**Host 启动流程必须先调用 `run()` 拉起 scheduler 的调度循环**。终局版中：运行期收包驱动不再通过任何 host→guest 导出调用完成，而是由 guest `run()` 在循环中主动调用 `rx-ring.poll-rx/wait-rx` 拉取 RX batch，并转译为 `packet.rx` 事件。
 
 > 重要约束（与 `component/doc/HOST.md` 口径一致）：
 >
@@ -83,8 +81,10 @@ loop {
 
 > 备注（终局版）：`run()` 是“拉起组件内部事件循环”的入口；RX 注入不再有 host→guest 导出入口，而是 **先 run，再由 run 内部通过 host import 拉取并消费数据**。
 >
-> 现状对齐：当前 host 的 wasm engine 已稳定支持 `packet-ingest.notify-rx(desc_mem, payload_mem)`（用于收包驱动）；
-> `scheduler-component.run(config-dir)` 已在 WIT/WAC 中定义并导出，但 host 侧还需要在 wasm engine 的 WasmCall 执行路径中把 `run()` 真正调起来（目前 `TaskKind::WasmCall` 分支只做日志占位）。
+> 现状对齐（提醒，非终局契约）：仓库当前代码/接口里仍保留 `packet-ingest.notify-rx(desc_mem, payload_mem)`；
+> 终局版要求删除该 export 以及 host 侧对应调用链，避免在 `run()` 长循环期间出现同实例导出调用重入。
+
+> 同时，`scheduler-component.run(config-dir)` 已在 WIT/WAC 中定义并导出；host 侧需要确保 `run()` 由 engine owner（专用执行体）拉起并长期运行。
 
 > ⚠️ 注意：如果 `run()` 是死循环且同实例不可重入，那么 host 侧“WasmCall 路径调起 run()”与“NIC RX 路径调用 notify-rx()”不能通过并发重入来同时发生；必须改为 run 内部消费 ring/eventbus 的事件驱动范式（Mode-A）。
 ```
@@ -286,8 +286,8 @@ State: Ready → Running
 Event: ActionResult(success=true, call="udp.send-reply")
 State: Running → Waiting
 
-// 3. host 收到 echo 回复，写入 RX ring，scheduler 通过 packet-ingest.notify-rx 解析出数据包，
-//    按 sock_ctx 映射到对应 user/task/action，生成 PacketRx 事件
+// 3. host 收到 echo 回复，写入 RX ring；scheduler 的 run-loop 通过 host import `rx-ring.wait-rx/poll-rx`
+//    主动拉取并解析出数据包，然后按 sock_ctx 映射到对应 user/task/action，生成 PacketRx 事件
 Event: PacketRx(user_id, task_id, action_id="udp-echo-client", payload=...)
 State: Waiting → Completed （若 payload 校验通过）
 
@@ -590,7 +590,7 @@ user_resources:
 
 1. user 进入 workflow 的 `start` 节点，scheduler 调度 `udp-send-reply`，actions-executor 执行并发布 `packet.tx-request`。
 2. scheduler 解析 `packet.tx-request`，调用 host 发包，并在 `sock_ctx` 中记录 `{sock_id, user_id, task_id, action_id}`。
-3. host 收到 echo 回复后，通过共享内存 + `packet-ingest.notify-rx` 通知 scheduler，scheduler 解析 RX ring，生成 `packet.rx` 事件并携带 user/task/action 上下文。
+3. host 收到 echo 回复后，将数据写入 RX ring；scheduler 的 `run()` 主循环通过 host import `rx-ring.wait-rx/poll-rx` 拉取并解析 RX ring，生成 `packet.rx` 事件并携带 user/task/action 上下文。
 4. 状态机在 `wait-echo` 节点上收到与该 task 匹配的 `packet.rx` 事件，将 task 从 `Waiting` 迁移到 `Completed`，并沿 workflow 边进入 `end` 节点，整个场景完成。
 
 ### 2. 校验要求（静态）
@@ -744,7 +744,7 @@ on_tick(now):
 ```text
 execute-action(udp.send)  -> publish(packet.tx-request) -> return Success
                           scheduler 处理 tx 并建立 sock_ctx
-host 收到包 -> notify-rx -> scheduler 解析 ring -> publish(packet.rx)
+host 收到包 -> 写入 RX ring -> scheduler(run-loop) 通过 rx-ring import 拉取并解析 -> publish(packet.rx)
 workflow wait 节点消费 packet.rx -> 状态机迁移 Waiting -> Completed
 若超时：TimerFired -> 状态机迁移 Waiting -> Failed/Ready(重试)
 ```
@@ -1073,7 +1073,9 @@ execute_action(action: ActionDef, ctx: Option<ActionContext>) -> ActionOutcome:
 3. **UDP 收包通知机制（统一经由 scheduler）**：
 
    - host 在收到 UDP 包后，将数据包放入共享内存，并通过 **事件/回调机制** 唤醒 scheduler 组件
-   - scheduler 导出 `packet-ingest.notify-rx(desc-mem, payload-mem)` 接口，host 调用该接口：
+   - （终局版）scheduler **不再导出** `packet-ingest.notify-rx`；host 也不再调用任何“导出注入 RX”接口。
+     取而代之的是：scheduler 的 `run()` 在循环中通过 host import `rx-ring.wait-rx/poll-rx + read-* + release` 拉取并解析 RX ring。
+   - （现状提醒）仓库当前实现仍保留 `packet-ingest.notify-rx(desc-mem, payload-mem)`，落地终局版时需要删除。
      - scheduler 内部参考 packet-engine 的 `drain_rx_ring` 逻辑解析 RX ring：
        - 校验 `MAGIC` / `VERSION` / `head` / `tail` / `desc_capacity`
        - 批量读取若干描述符（每轮最多 N 条），解析出 `(sock_id, payload_off, payload_len)`
