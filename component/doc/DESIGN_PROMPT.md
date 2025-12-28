@@ -42,10 +42,13 @@ loop {
 
 #### 1.0 Host 如何拉起 scheduler 的主循环（WAC 组装后的启动契约）
 
-本仓库中，scheduler 作为 `wasm32-wasip2` component 被 **WAC 组装**（见 `component/wac/scheduler-composition.wac`）后，会对外导出两个接口实例：
+本仓库中，scheduler 作为 `wasm32-wasip2` component 被 **WAC 组装**（见 `component/wac/scheduler-composition.wac`）后，终局版对外仅保留 scheduler 主循环导出：
 
 - `ntx:scenario-scheduler/scheduler-component@0.1.0`
-- `ntx:scenario-scheduler/packet-ingest@0.1.0`
+
+并新增 guest → host 的 RX ring 拉取 import（用于收包驱动，不再使用 host→guest 的 notify 注入导出函数）：
+
+- `ntx:host/rx-ring@0.1.0`
 
 其中，`scheduler-component` 明确提供 scheduler 的主循环入口（见 `component/wit/scheduler/world.wit`）：
 
@@ -53,25 +56,37 @@ loop {
 
 **Host 启动流程必须先调用 `run()` 拉起 scheduler 的调度循环**，之后才会进入后续的收包驱动（`notify-rx`）与发包调度（事件总线）链路。
 
+终局版修订：Host 启动流程仍然必须先调用 `run()`；但收包驱动不再通过 `notify-rx`（host→guest 导出调用）完成，而是由 guest `run()` 在循环中主动调用 `rx-ring.poll-rx/wait-rx` 拉取一批 RX ring 并转译为 `packet.rx` 事件。
+
+> 重要约束（与 `component/doc/HOST.md` 口径一致）：
+>
+> - 在我们的设计中，`scheduler-component.run()` 是一个 `loop {}` 风格的**长期事件循环**：它会长期运行、通常不会返回。
+> - 在 Wasmtime 同步模型（常见配置：`async_support(false)`）下，组件实例的导出函数调用通常**不可重入/不可并发**（同一个 `Store/Instance` 不能同时在两个线程里执行）。
+> - 因此，终局版**完全移除** host→guest 的 `packet-ingest.notify-rx()` 收包注入导出调用（避免任何同实例重入风险）。
+> - 正确的 Mode-A（终局版）语义是：host 写入（或缓存）RX ring 数据；guest 的 `run()` 主循环在每次迭代中通过 host import `rx-ring.poll-rx/wait-rx` 主动拉取并 `drain_rx_ring()`，把数据包转译为 `packet.rx` 事件驱动状态机。
+
 推荐的 host 行为模型如下：
 
 1. host 加载 `component/wac/scheduler-composed.wasm`（WAC 产物），并在启动时配置 `scheduler.wasm.component_path` 指向该文件。
 2. host 启动后会先初始化 **host scheduler**（root crate 的 `Scheduler`），并由该 host scheduler 统一调度：
   - NIC RX resident 任务（持续收包）
   - wasm 相关调用（WasmCall 任务）
-3. （**按当前实现**）host 会向 host scheduler 提交一个 “run” 类型的 wasm 调用任务，用于触发 guest 的 `run()`：
-  - 入口参考：`src/main.rs` 中提交 `Task::wasm_call("wasm-run", "run")`，随后 `Scheduler::global().run()` 进入 host 调度循环。
-  - wasm engine 的加载参考：`src/scheduler.rs::apply_wasm_config()` 会通过 `EngineManager::load_and_register()` 实例化 composed component。
+3. host 初始化 wasm engine（加载 composed component）：
+  - 入口参考（当前代码）：`src/scheduler.rs::apply_wasm_config()` 会通过 `EngineManager::load_and_register()` 实例化 composed component。
+  - 注：本文档早期版本曾描述“向 host scheduler 提交一个 wasm-run 任务触发 run()”，但当前实现已改为在 `src/main.rs` 中启动一个专用线程直接调用 `scheduler-component.run(config-dir)`（细节以代码为准）。
 4. （**接口契约**）当 host 需要真正拉起 component scheduler 的主循环时，应该由 wasm engine 调用导出
   `scheduler-component.run(config-dir)`；其中 `config-dir` 指向 scenario/workflow/workbook/load 的所在目录。
-5. 为避免阻塞 host 的其他子系统（例如 NIC RX poll、控制面、日志等），host **可以在单独线程**中执行该 `run()`：
-  - 该线程负责长期运行 scheduler 的 loop；
-  - 其他线程（例如 NIC RX 线程）通过 host→guest 的导出接口调用（例如 `packet-ingest.notify-rx`）向 scheduler 注入外部刺激。
+5. 为避免阻塞 host 的其他子系统（例如 NIC RX poll、控制面、日志等），host 应将 wasm 运行放在**专用执行体**上（推荐：engine owner 线程/actor）：
+  - 该执行体负责调用 `scheduler-component.run(config-dir)` 并长期运行（`loop {}`）。
+  - 其他 host 子系统（NIC RX、控制面等）**不允许**重入调用同一实例的任何导出函数来注入 RX（包括 `notify-rx` / 通过 eventbus 的导出调用等）。
+  - host 侧只负责将 RX ring 批次写入 bounded 队列；guest `run()` 通过 `rx-ring.wait-rx(...)` 拉取批次并消费。
 
-> 备注：`run()` 是“拉起组件内部事件循环”的入口；`notify-rx()` 是“外部事件注入”的入口。两者不是互斥关系，而是 **先 run，再 notify**。
+> 备注（终局版）：`run()` 是“拉起组件内部事件循环”的入口；RX 注入不再有 host→guest 导出入口，而是 **先 run，再由 run 内部通过 host import 拉取并消费数据**。
 >
 > 现状对齐：当前 host 的 wasm engine 已稳定支持 `packet-ingest.notify-rx(desc_mem, payload_mem)`（用于收包驱动）；
 > `scheduler-component.run(config-dir)` 已在 WIT/WAC 中定义并导出，但 host 侧还需要在 wasm engine 的 WasmCall 执行路径中把 `run()` 真正调起来（目前 `TaskKind::WasmCall` 分支只做日志占位）。
+
+> ⚠️ 注意：如果 `run()` 是死循环且同实例不可重入，那么 host 侧“WasmCall 路径调起 run()”与“NIC RX 路径调用 notify-rx()”不能通过并发重入来同时发生；必须改为 run 内部消费 ring/eventbus 的事件驱动范式（Mode-A）。
 ```
 
 ### 2. actions-executor 运行形态
@@ -1333,43 +1348,18 @@ execute_action(action: ActionDef, ctx: Option<ActionContext>) -> ActionOutcome:
 │ 2. 解析 UDP/IP/Ethernet 头                                  │
 │ 3. 将 payload 写入共享内存                                  │
 │ 4. 创建 PacketDesc（描述符，指向共享内存位置）              │
-│ 5. 通过事件机制通知 guest（如 WASI poll_oneoff）             │
+│ 5. host 将 RX ring 批次写入 bounded 队列（供 guest 拉取）     │
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ Scheduler 主循环（Guest 侧）                                │
 ├─────────────────────────────────────────────────────────────┤
 │ loop {                                                       │
-│     // 1. 轮询事件（非阻塞）                                │
-│     events = poll_oneoff([EventKind::Packet, ...])          │
+│     // 1. 拉取一批 RX ring（阻塞或带超时）                   │
+│     batch = rx_ring.wait_rx(...)                            │
 │                                                              │
-│     // 2. 处理 Packet 事件                                   │
-│     for event in events {                                   │
-│         if event.kind == Packet {                           │
-│             // 3. 从共享内存读取数据包                       │
-│             while let Some(desc) = poll_packet() {         │
-│                 payload = read_from_shm(desc)               │
-│                 meta = extract_meta(desc)                   │
-│                                                              │
-│                 // 4. 根据 socket_id 或 flow_key 找到对应   │
-│                 //    的 task（可能处于 Waiting 状态）      │
-│                 task = find_task_by_socket(desc.socket_id)  │
-│                                                              │
-│                 // 5. 创建事件并更新状态机（统一把收包转为显式事件） │
-│                 event = UdpPacketReceived {                 │
-│                     task_id: task.id,                       │
-│                     payload: payload,                       │
-│                     meta: meta,                              │
-│                 }                                           │
-│                 apply_event_to_state_machine(event)         │
-│                                                              │
-│                 // 6. 如果 task 状态变为 Ready，加入调度队列 │
-│                 if task.state == Ready {                    │
-│                     runnable_queues[task.priority].push(task)│
-│                 }                                           │
-│             }                                               │
-│         }                                                   │
-│     }                                                       │
+│     // 2. decode shared_mem ring -> 生成 packet.rx 事件并 publish 到 eventbus │
+│     // 3. 状态机消费 packet.rx 推进 Waiting->Completed/Failed │
 │                                                              │
 │     // 7. 调度就绪的 task                                    │
 │     dispatch_ready_tasks()                                  │
@@ -1380,7 +1370,7 @@ execute_action(action: ActionDef, ctx: Option<ActionContext>) -> ActionOutcome:
 > 说明：本系统**不支持 Mode-B（host 直接调用 actions-executor 导出函数）**。收包永远先进入 scheduler，
 > 由 scheduler 统一转译为 `packet.rx` 事件，再驱动状态机与后续 action 执行。
 >
-> 备注：为避免口径冲突，`ntx:scenario-types` 的核心类型（`component/wit/core-types/types.wit`）不再包含任何 Mode-B 相关结构；如需研究 host→guest 直调的实验性方案，请参考独立的插件协议（例如 `plugins/wit/net/packet.wit`）。
+> 备注：终局版中的收包注入不再使用 host→guest 导出函数（包括 `packet-ingest.notify-rx`），而是 guest 在 `run()` 中通过 host import 拉取 batch；这与“事件是唯一合法动态入口”的原则天然一致。
 
 ##### 为什么不支持 Mode-B（host 直调 guest）
 
