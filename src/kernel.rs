@@ -21,7 +21,7 @@ use parking_lot::{Mutex, RwLock};
 use serde::Deserialize;
 use std::path::Path;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::audit_registry;
 
@@ -831,7 +831,13 @@ pub fn non_blocking_recv_udp() -> Option<UdpRx> {
         .find(|l| l.id == LayerId::Udp)
         .and_then(|l| l.downcast_ref::<Udp>());
 
-    let (Some(ip), Some(udp)) = (ip, udp) else {
+    let Some(ip) = ip else {
+        warn!("non-IPv4 packet received; dropping");
+        return None;
+    };
+
+    let Some(udp) = udp else {
+        warn!("non-UDP packet received; dropping");
         return None;
     };
 
