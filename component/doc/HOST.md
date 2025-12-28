@@ -190,13 +190,13 @@ guest `run()` 主循环每次迭代：
 
 ### 0. Host 运行模型异步化（Tokio / Engine Owner）
 
-- [ ] 将 host 主入口改为 Tokio runtime（`#[tokio::main]`），统一调度 NIC RX/TX 与控制面任务
-- [ ] 启用 Wasmtime component async（以本仓库 Wasmtime 版本/API 为准，必要时升级并同步更新 bindgen 生成代码）
-- [ ] 引入 **Engine Owner actor**（单一所有权执行体）：独占持有同一个 `ComponentEngine/Store`，以 **async** 方式驱动 `scheduler-component.run()`（只调用一次）
-- [ ] 严禁在持有 `EngineManager`（或其他全局锁）时调用 `run()`：启动期构造完成后 move ownership 给 owner
-- [ ] 将 `rx-ring.wait-rx` 的等待/唤醒/超时改为 Tokio 原语实现（避免阻塞锁/condvar 重新把阻塞塞回 Tokio 线程）
+- [x] 将 host 主入口改为 Tokio runtime（`#[tokio::main]`），统一调度 NIC RX/TX 与控制面任务
+- [x] 启用 Wasmtime component async（以本仓库 Wasmtime 版本/API 为准，必要时升级并同步更新 bindgen 生成代码）
+- [x] 引入 **Engine Owner actor**（单一所有权执行体）：独占持有同一个 `ComponentEngine/Store`，以 **async** 方式驱动 `scheduler-component.run()`（只调用一次）
+- [x] 严禁在持有 `EngineManager`（或其他全局锁）时调用 `run()`：启动期构造完成后 move ownership 给 owner
+- [x] 将 `rx-ring.wait-rx` 的等待/唤醒/超时改为 Tokio 原语实现（避免阻塞锁/condvar 重新把阻塞塞回 Tokio 线程）
 - [ ] 为 host 增加 guardrail：任何锁都不允许跨 wasm call 持有（对 `run()`/其他 wasm 调用路径增加 debug 断言/注释约束 + code review checklist）
-- [ ] shutdown 验收：触发关机时必须唤醒 `wait-rx` 并保证任务可退出/可收敛（避免 run-loop 无法响应 shutdown）
+- [x] shutdown 验收：触发关机时必须唤醒 `wait-rx` 并保证任务可退出/可收敛（避免 run-loop 无法响应 shutdown）
 - [ ] 增加最小观测：记录 owner 健康状态（心跳/卡顿告警/队列深度等），用于定位“推进停滞”
 
 ### A. 接口契约（WIT/WAC）
@@ -210,15 +210,15 @@ guest `run()` 主循环每次迭代：
 
 - [x] 修改 scheduler `world.wit`
 	- [x] `import ntx:host/rx-ring@0.1.0`
-	- [ ] 删除 `export ntx:scenario-scheduler/packet-ingest@0.1.0`（`notify-rx`）
+	- [x] 删除 `export ntx:scenario-scheduler/packet-ingest@0.1.0`（`notify-rx`）
 
 - [x] 修改 `scheduler-composition.wac`
 	- [x] composed scheduler **不再 export** `packet-ingest`
 	- [x] 为 scheduler world 接入 host `rx-ring` 实现（import wiring）
 
 - [ ] 验收
-	- [ ] composed 产物对外仅 export：`scheduler-component.run`
-	- [ ] composed 产物对内 import：`rx-ring.*`（以及其他必要 imports）
+	- [x] composed 产物对外仅 export：`scheduler-component.run`
+	- [x] composed 产物对内 import：`rx-ring.*`（以及其他必要 imports）
 
 ### B. Guest（scheduler component）
 
@@ -265,7 +265,7 @@ guest `run()` 主循环每次迭代：
 ### D. Host（删除 notify-rx 链路）
 
 - [ ] 删除 notify-rx 全链路
-	- [ ] 删除/废弃 `EngineManager::notify_rx`（及其调用点）
+	- [x] 删除/废弃 `EngineManager::notify_rx`（及其调用点）（已完成：EngineManager 已降级为 init-only，不再提供运行期注入 API）
 	- [ ] 删除/废弃 `ComponentEngine::notify_rx`（及其调用点）
 	- [x] 删除 NIC RX 路径中任何“导出注入 RX”调用
 

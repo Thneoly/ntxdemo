@@ -5,6 +5,11 @@
 /// Instead, it uses an already-built component artifact if present.
 #[test]
 fn hostnet_imports_are_wired() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime");
+
     // Use the same component location that other integration tests expect.
     // If the output path changes in the future, reuse the existing helper.
     // Keep consistent with `tests/wasm_packet_guest_integration.rs`.
@@ -26,10 +31,12 @@ fn hostnet_imports_are_wired() {
     // NOTE: This uses the host's generated bindings (not the guest's).
     let cfg = ntx::wasm_engine::EngineConfig { component_path };
 
-    let mut engine =
-        ntx::wasm_engine::ComponentEngine::new(cfg).expect("failed to create ComponentEngine");
+    let engine = rt
+        .block_on(async { ntx::wasm_engine::ComponentEngine::new(cfg).await })
+        .expect("failed to create ComponentEngine");
 
     // Instantiation already exercises import resolution.
     // If host wiring is missing, `ComponentEngine::new` would fail above.
-    engine.enqueue_rx_batch(Vec::new(), Vec::new());
+    // End-state: enqueue into rx-ring; guest pulls via import.
+    engine.rx_ring().enqueue_batch(Vec::new(), Vec::new());
 }

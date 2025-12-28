@@ -1,9 +1,13 @@
 use anyhow::Result;
 use ntx::{app_config::AppConfig, kernel, logger, scheduler};
 use std::path::PathBuf;
-use std::thread;
 
-fn main() -> Result<()> {
+/// Host entrypoint.
+///
+/// Final direction (see `component/doc/HOST.md`): Tokio-native orchestration and
+/// a single owner that drives the guest scheduler `run()`.
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> Result<()> {
     logger::logger_init();
     tracing::info!(target: "ntx::main", "ntx starting");
 
@@ -26,20 +30,26 @@ fn main() -> Result<()> {
         .clone()
         .unwrap_or_else(|| PathBuf::from("."));
 
-    scheduler::init_with_config(cfg.scheduler);
-    tracing::info!(target: "ntx::main", "scheduler initialized; submitting wasm-run task");
-    thread::Builder::new()
-        .name("ntx-guest-scheduler".into())
-        .spawn(move || {
-            let cfg_dir = guest_config_dir.display().to_string();
-            tracing::info!(target: "ntx::main", config_dir = %cfg_dir, "starting guest scheduler run() thread");
-            let mut mgr = ntx::wasm_engine::EngineManager::global()
-                .lock()
-                .expect("engine manager poisoned");
-            if let Err(e) = mgr.run(cfg_dir) {
-                tracing::error!(target: "ntx::main", error = %e, error_dbg = ?e, "guest scheduler run() exited with error");
-            }
-        })?;
+    let scheduler_cfg = cfg.scheduler.clone();
+    scheduler::init_with_config(scheduler_cfg.clone());
+    tracing::info!(target: "ntx::main", "scheduler initialized; starting guest scheduler run() task");
+
+    // End-state: WASM engine initialization is async and must be explicit.
+    scheduler::init_wasm_engine_with_config(scheduler_cfg.wasm.clone()).await;
+
+    // Engine owner: move the default engine out of EngineManager so we never hold
+    // the EngineManager mutex across the long-running `run()` call.
+    let cfg_dir = guest_config_dir.display().to_string();
+    let engine = {
+        let mut mgr = ntx::wasm_engine::EngineManager::global()
+            .lock()
+            .expect("engine manager poisoned");
+        mgr.take_default_engine()
+    };
+
+    // Spawn the engine owner and give scheduler the TX for RX batches.
+    let engine_tx = ntx::engine_owner::spawn_engine_owner(engine, cfg_dir);
+    scheduler::set_engine_tx(engine_tx);
 
     // Keep WasmCall tasks reserved for future non-blocking guest calls.
     // (The long-running guest `run()` is now executed on the dedicated thread above.)
@@ -48,5 +58,15 @@ fn main() -> Result<()> {
     // Keep the process alive: run the scheduler on the main thread.
     // (The thread-spawned scheduler is mainly for embedding; for a standalone binary
     // we want the main thread to block so tasks keep executing.)
-    scheduler::Scheduler::global().run();
+    // Keep the process alive.
+    // NOTE: the current scheduler loop is blocking/condvar-based; until it's fully
+    // Tokio-native, we run it on a blocking threadpool.
+    tokio::task::spawn_blocking(|| scheduler::Scheduler::global().run())
+        .await
+        .expect("scheduler task join");
+
+    // If we ever exit the scheduler loop (tests/embedders), request engine shutdown.
+    scheduler::request_engine_shutdown();
+
+    Ok(())
 }

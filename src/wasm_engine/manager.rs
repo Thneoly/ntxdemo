@@ -31,12 +31,12 @@ impl EngineManager {
         self.engines.push((handle, engine));
     }
 
-    pub fn load_and_register(
+    pub async fn load_and_register_async(
         &mut self,
         handle: EngineHandle,
         cfg: EngineConfig,
     ) -> Result<(), EngineError> {
-        let engine = ComponentEngine::new(cfg)?;
+        let engine = ComponentEngine::new(cfg).await?;
         self.register(handle, engine);
         Ok(())
     }
@@ -45,30 +45,23 @@ impl EngineManager {
         self.default.is_some()
     }
 
-    pub fn enqueue_rx_batch(&mut self, desc_mem: Vec<u8>, payload_mem: Vec<u8>) {
-        let Some(default) = self.default.clone() else {
-            return;
-        };
+    /// Move the default engine out of the manager.
+    ///
+    /// This is used by the host "engine owner" task so that the long-running
+    /// `scheduler-component.run()` is not executed while holding the global
+    /// `EngineManager` mutex.
+    pub fn take_default_engine(&mut self) -> ComponentEngine {
+        let default = self
+            .default
+            .clone()
+            .expect("default engine not set; did you forget to register?");
 
-        for (handle, engine) in &mut self.engines {
-            if *handle == default {
-                engine.enqueue_rx_batch(desc_mem, payload_mem);
-                return;
-            }
-        }
-    }
+        let idx = self
+            .engines
+            .iter()
+            .position(|(h, _)| *h == default)
+            .expect("default engine missing from registry");
 
-    pub fn run(&mut self, config_dir: String) -> Result<(), EngineError> {
-        let Some(default) = self.default.clone() else {
-            return Ok(());
-        };
-
-        for (handle, engine) in &mut self.engines {
-            if *handle == default {
-                return engine.run(config_dir);
-            }
-        }
-
-        Ok(())
+        self.engines.swap_remove(idx).1
     }
 }

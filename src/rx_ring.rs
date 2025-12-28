@@ -1,6 +1,9 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use tokio::sync::Notify;
+use tokio::time;
 
 /// Host-side provider for `ntx:host/rx-ring@0.1.0`.
 ///
@@ -26,7 +29,7 @@ pub struct RxRing {
 #[derive(Debug)]
 struct Inner {
     state: Mutex<State>,
-    cv: Condvar,
+    notify: Notify,
 
     cfg: RxRingConfig,
     metrics: RxRingMetrics,
@@ -110,7 +113,7 @@ impl RxRing {
                 inflight: HashMap::new(),
                 bytes_in_queue: 0,
             }),
-            cv: Condvar::new(),
+            notify: Notify::new(),
             cfg,
             metrics: RxRingMetrics::default(),
         };
@@ -134,7 +137,7 @@ impl RxRing {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         // Wake any `wait_rx`.
-        self.inner.cv.notify_all();
+        self.inner.notify.notify_waiters();
     }
 
     /// Enqueue a batch.
@@ -176,7 +179,7 @@ impl RxRing {
             .metrics
             .wait_wake_total
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.inner.cv.notify_one();
+        self.inner.notify.notify_one();
 
         // Note: handle is not created until a batch is dequeued into inflight.
         let _ = generation;
@@ -207,30 +210,49 @@ impl RxRing {
     }
 
     pub fn wait_rx(&self, max_desc: u32, max_payload: u32, timeout_ms: u32) -> Option<RxBatch> {
+        // Compatibility shim: sync callers still exist (WIT host import traits currently
+        // sync in this repo). Prefer `wait_rx_async` in Tokio contexts.
+        tokio::runtime::Handle::try_current()
+            .ok()
+            .map(|h| h.block_on(self.wait_rx_async(max_desc, max_payload, timeout_ms)))
+            .unwrap_or_else(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to build tokio runtime")
+                    .block_on(self.wait_rx_async(max_desc, max_payload, timeout_ms))
+            })
+    }
+
+    /// Async wait variant used by Tokio-native host paths.
+    ///
+    /// Semantics:
+    /// - returns `None` on timeout
+    /// - returns `None` on shutdown
+    /// - wakes when `enqueue_batch` is called
+    pub async fn wait_rx_async(
+        &self,
+        max_desc: u32,
+        max_payload: u32,
+        timeout_ms: u32,
+    ) -> Option<RxBatch> {
         let timeout = Duration::from_millis(timeout_ms as u64);
-        let mut st = self.inner.state.lock().expect("rx-ring mutex poisoned");
 
-        if st.shutdown {
-            return None;
+        // Fast path: try to dequeue under lock.
+        {
+            let mut st = self.inner.state.lock().expect("rx-ring mutex poisoned");
+            if st.shutdown {
+                return None;
+            }
+            self.expire_leases_locked(&mut st);
+            if let Some(b) = self.dequeue_one_locked(&mut st, max_desc, max_payload) {
+                return Some(b);
+            }
         }
 
-        self.expire_leases_locked(&mut st);
-        if let Some(b) = self.dequeue_one_locked(&mut st, max_desc, max_payload) {
-            return Some(b);
-        }
-
-        let (st2, wait_res) = self
-            .inner
-            .cv
-            .wait_timeout_while(st, timeout, |s| !s.shutdown && s.ready.is_empty())
-            .expect("rx-ring mutex poisoned");
-        st = st2;
-
-        if st.shutdown {
-            return None;
-        }
-
-        if wait_res.timed_out() {
+        // Slow path: wait for either enqueue/shutdown or timeout.
+        let notified = self.inner.notify.notified();
+        if time::timeout(timeout, notified).await.is_err() {
             self.inner
                 .metrics
                 .wait_timeout_total
@@ -238,6 +260,11 @@ impl RxRing {
             return None;
         }
 
+        // Re-check under lock after wake.
+        let mut st = self.inner.state.lock().expect("rx-ring mutex poisoned");
+        if st.shutdown {
+            return None;
+        }
         self.expire_leases_locked(&mut st);
         self.dequeue_one_locked(&mut st, max_desc, max_payload)
     }

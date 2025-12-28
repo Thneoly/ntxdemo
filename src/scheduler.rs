@@ -1,4 +1,5 @@
 use crate::app_config::{SchedulerConfig, WasmConfig};
+use crate::engine_owner::EngineMsg;
 use crate::error::SchedulerError;
 use crate::event_bus::{Bytes, EventBus, SimpleEventBus, build_event};
 use crate::kernel::non_blocking_recv_udp;
@@ -258,6 +259,8 @@ pub struct Scheduler {
 }
 
 static SCHEDULER: Lazy<Scheduler> = Lazy::new(Scheduler::new);
+static ENGINE_TX: Lazy<Mutex<Option<tokio::sync::mpsc::Sender<EngineMsg>>>> =
+    Lazy::new(|| Mutex::new(None));
 
 /// Start the global scheduler in a background thread.
 ///
@@ -286,6 +289,36 @@ pub fn init_with_config(cfg: SchedulerConfig) {
     seed_net_io_wait();
     Scheduler::global().apply_config(cfg);
 }
+
+/// Provide the scheduler with a channel to the engine owner.
+///
+/// End-state: NIC RX pushes batches to the engine owner, not via EngineManager.
+pub fn set_engine_tx(tx: tokio::sync::mpsc::Sender<EngineMsg>) {
+    *ENGINE_TX.lock().expect("engine tx poisoned") = Some(tx);
+}
+
+fn engine_tx() -> Option<tokio::sync::mpsc::Sender<EngineMsg>> {
+    ENGINE_TX.lock().expect("engine tx poisoned").clone()
+}
+
+/// Request the engine-owner to begin shutdown.
+///
+/// End-state requirement (see `component/doc/HOST.md`): host shutdown must wake
+/// guest `wait-rx` calls so the run-loop can converge.
+pub fn request_engine_shutdown() {
+    if let Some(tx) = engine_tx() {
+        // Best-effort: shutdown is idempotent.
+        let _ = tx.try_send(EngineMsg::Shutdown);
+    }
+}
+
+/// Initialize the default WASM engine (async).
+///
+/// End-state rule: scheduler configuration must not implicitly depend on a Tokio runtime.
+/// Instead, the host entrypoint (`main`) is responsible for awaiting this initialization.
+pub async fn init_wasm_engine_with_config(cfg: WasmConfig) {
+    Scheduler::global().init_wasm_engine(cfg).await;
+}
 fn seed_net_io_wait() {
     // Make NIC RX a resident task by default: it doesn't need re-submit.
     Scheduler::global().register_resident(Task::net_io("netio-wait", NetworkIoTask::NicRx));
@@ -312,10 +345,18 @@ impl Scheduler {
     }
 
     fn apply_config(&self, cfg: SchedulerConfig) {
+        // NOTE: WASM engine initialization is async and must be triggered explicitly
+        // via `init_wasm_engine_with_config`.
         self.apply_wasm_config(cfg.wasm);
     }
 
     fn apply_wasm_config(&self, cfg: WasmConfig) {
+        // End-state: no implicit async work here.
+        // The engine init is performed by `Scheduler::init_wasm_engine`.
+        let _ = cfg;
+    }
+
+    async fn init_wasm_engine(&self, cfg: WasmConfig) {
         let Some(component_path) = cfg.component_path else {
             tracing::info!(
                 target: "ntx::scheduler",
@@ -331,8 +372,32 @@ impl Scheduler {
             "attempting to auto-load wasm engine from config"
         );
 
-        let engine_cfg = EngineConfig {
-            component_path: component_path,
+        // Fast check: avoid work if already configured.
+        if EngineManager::global()
+            .lock()
+            .expect("engine manager poisoned")
+            .has_default()
+        {
+            tracing::info!(
+                target: "ntx::scheduler",
+                "wasm engine default already configured; skip auto-load"
+            );
+            return;
+        }
+
+        let engine_cfg = EngineConfig { component_path };
+        let engine = match crate::wasm_engine::ComponentEngine::new(engine_cfg).await {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::error!(
+                    target: "ntx::scheduler",
+                    component = %component_str,
+                    error = %e,
+                    error_dbg = ?e,
+                    "wasm engine auto-load failed"
+                );
+                return;
+            }
         };
 
         let mut mgr = EngineManager::global()
@@ -345,25 +410,12 @@ impl Scheduler {
             );
             return;
         }
-
-        match mgr.load_and_register(EngineHandle("default".into()), engine_cfg) {
-            Ok(()) => {
-                tracing::info!(
-                    target: "ntx::scheduler",
-                    component = %component_str,
-                    "wasm engine auto-load succeeded"
-                );
-            }
-            Err(e) => {
-                tracing::error!(
-                    target: "ntx::scheduler",
-                    component = %component_str,
-                    error = %e,
-                    error_dbg = ?e,
-                    "wasm engine auto-load failed"
-                );
-            }
-        }
+        mgr.register(EngineHandle("default".into()), engine);
+        tracing::info!(
+            target: "ntx::scheduler",
+            component = %component_str,
+            "wasm engine auto-load succeeded"
+        );
     }
 
     pub fn event_bus(&self) -> Arc<SimpleEventBus> {
@@ -428,6 +480,9 @@ impl Scheduler {
 
     pub fn request_shutdown(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
+        // End-state requirement: host shutdown must also wake guest waiters.
+        // Best-effort and idempotent.
+        request_engine_shutdown();
         let (_, cv) = &*self.shared;
         cv.notify_all();
     }
@@ -551,11 +606,15 @@ impl Scheduler {
                     r.push_and_maybe_flush_one(rx.sock_id.map(|s| s as u64), &rx.payload)
                 });
                 if let (Some(desc_mem), Some(payload_mem)) = (desc_mem, payload_mem) {
-                    if let Ok(mut mgr) = EngineManager::global().lock() {
-                        mgr.enqueue_rx_batch(desc_mem, payload_mem);
+                    if let Some(tx) = engine_tx() {
+                        // Best-effort; if the channel is closed/full, drop newest.
+                        let _ = tx.try_send(EngineMsg::RxBatch {
+                            desc: desc_mem,
+                            payload: payload_mem,
+                        });
                         true
                     } else {
-                        // If engine manager is poisoned, drop (observability handled elsewhere).
+                        // Engine not configured yet.
                         false
                     }
                 } else {

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use wasmtime::component::{Component, Func, Instance, Linker, types::ComponentItem};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{
-    DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView, p2::add_to_linker_sync,
+    DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView, p2::add_to_linker_async,
 };
 
 use crate::kernel;
@@ -245,8 +245,18 @@ impl RxRingHost for State {
     }
 
     fn wait_rx(&mut self, max_desc: u32, max_payload: u32, timeout_ms: u32) -> Option<WitRxBatch> {
-        self.rx_ring
-            .wait_rx(max_desc, max_payload, timeout_ms)
+        // NOTE: bindgen currently generates sync host trait methods for this interface.
+        // We still want the underlying wait primitive to be Tokio-native; use the
+        // async implementation under the hood.
+        tokio::runtime::Handle::try_current()
+            .ok()
+            .map(|h| {
+                h.block_on(
+                    self.rx_ring
+                        .wait_rx_async(max_desc, max_payload, timeout_ms),
+                )
+            })
+            .unwrap_or_else(|| self.rx_ring.wait_rx(max_desc, max_payload, timeout_ms))
             .map(|b| WitRxBatch {
                 handle: b.handle,
                 desc_len: b.desc_len,
@@ -275,10 +285,18 @@ pub struct ComponentEngine {
 }
 
 impl ComponentEngine {
-    pub fn new(cfg: EngineConfig) -> Result<Self, EngineError> {
+    /// Get a clone of the host-side RX ring backing this engine.
+    ///
+    /// This enables the EngineOwner to accept RX batches without needing a mutable
+    /// borrow of the Wasmtime `Store` (and without calling into wasm).
+    pub fn rx_ring(&self) -> crate::rx_ring::RxRing {
+        self.store.data().rx_ring.clone()
+    }
+
+    pub async fn new(cfg: EngineConfig) -> Result<Self, EngineError> {
         let mut wasm_cfg = Config::new();
         wasm_cfg.wasm_component_model(true);
-        wasm_cfg.async_support(false);
+        wasm_cfg.async_support(true);
 
         let engine =
             Engine::new(&wasm_cfg).map_err(|e| EngineError::Init(anyhow::Error::from(e)))?;
@@ -307,7 +325,7 @@ impl ComponentEngine {
         );
 
         let mut linker: Linker<State> = Linker::new(&engine);
-        add_to_linker_sync(&mut linker).map_err(|e| EngineError::Init(anyhow::Error::from(e)))?;
+        add_to_linker_async(&mut linker).map_err(|e| EngineError::Init(anyhow::Error::from(e)))?;
 
         // Wire the host WIT imports (`ntx:hostnet/*`) into the component linker.
         //
@@ -326,7 +344,8 @@ impl ComponentEngine {
             .map_err(EngineError::Init)?;
 
         let instance = linker
-            .instantiate(&mut store, &component)
+            .instantiate_async(&mut store, &component)
+            .await
             .context("instantiate component")
             .map_err(EngineError::Init)?;
 
@@ -339,7 +358,13 @@ impl ComponentEngine {
     }
 
     /// Enqueue a RX batch into the host rx-ring for the guest to pull.
-    pub fn enqueue_rx_batch(&mut self, desc_mem: Vec<u8>, payload_mem: Vec<u8>) {
+    ///
+    /// Guardrail: in the end-state architecture, *only* the EngineOwner should
+    /// enqueue RX batches, and it should do so via the cloned `RxRing` obtained
+    /// from [`Self::rx_ring`]. Keep this method crate-private to reduce the
+    /// chance of re-introducing a host->guest “injection” call chain.
+    #[allow(dead_code)]
+    pub(crate) fn enqueue_rx_batch(&mut self, desc_mem: Vec<u8>, payload_mem: Vec<u8>) {
         self.store
             .data_mut()
             .rx_ring
@@ -353,7 +378,7 @@ impl ComponentEngine {
     ///
     /// This call is expected to block (the guest loop). The host typically runs it on a
     /// dedicated thread.
-    pub fn run(&mut self, config_dir: String) -> Result<(), EngineError> {
+    pub async fn run(&mut self, config_dir: String) -> Result<(), EngineError> {
         // In WIT, `result<_, string>` is lowered to `Result<(), String>`.
         let typed = self
             .run
@@ -362,7 +387,8 @@ impl ComponentEngine {
             .map_err(EngineError::Call)?;
 
         match typed
-            .call(&mut self.store, (config_dir,))
+            .call_async(&mut self.store, (config_dir,))
+            .await
             .context("run call")
             .map_err(EngineError::Call)?
             .0
