@@ -22,9 +22,8 @@
 
 - `ntx:host/rx-ring@0.1.0`：在 guest `run()` 内拉取 RX 批次（handle/offset ABI）。
 
-> ✅ 现状提示（已对齐）：仓库代码路径已不再依赖 `packet-ingest.notify-rx` 注入 RX；
-> WAC 产物也已不再 export `packet-ingest`。
-> 但文档/旧设计稿中可能仍残留 `packet-ingest.notify-rx` 的叙事，需要持续清理，避免误读。
+> ✅ 现状提示：仓库当前仍 export 了 `packet-ingest.notify-rx`（WIT/WAC 均可见）。
+> 终局版落地时必须删除对应 export + host 调用链，避免误用回退。
 
 ## `ntx:host/rx-ring@0.1.0`（handle/offset ABI）
 
@@ -72,8 +71,7 @@
 	- 约束（写死）：超时回收后
 		- 后续 `read-*` 必须稳定返回 `err("invalid handle")`
 		- host 可以复用底层 backing store，但**不得让旧 handle 误读新数据**：建议实现 `handle = (slot_id, generation)`（或等价机制），并在复用时递增 generation；旧 handle 必须被识别为 `invalid handle`。
-5) `desc/payload` 的内存布局复用 host 的 `src/rx_layout.rs`（control block + desc ring + payload ring；desc 32 bytes），
-	guest 侧 decode 参考 `component/scheduler/src/rx_decode.rs`。
+5) `desc/payload` 的内存布局复用 `src/wasm_engine/shared_mem.rs`（control block + desc ring + payload ring；desc 32 bytes）。
 
 ## Host 侧最终运行模型（只保留两条链路）
 
@@ -83,14 +81,10 @@
 - engine owner 仅负责：实例化 composed scheduler，并调用一次 `scheduler-component.run(config-dir)` 进入长期运行。
 - 关键约束：运行期 engine owner 不再对同一实例执行任何“额外导出调用”。
 
-> ✅ 当前实现对齐（仓库 `src/`）：
-> - `src/main.rs` 会启动一个专用线程 `ntx-guest-scheduler` 调用 `EngineManager::run(config_dir)`，该调用预期长期阻塞。
-> - host 的 NIC RX 路径不会再调用任何 guest 导出函数；它只会构造 `(desc_mem, payload_mem)` 并 enqueue 到 host `rx-ring`。
-
 ### 2) NIC RX → 入队 batch（bounded + backpressure）
 
 - NIC RX 任务持续收包。
-- 将包写入共享布局格式的 desc/payload buffer（复用 `rx_layout` 约定）。
+- 将包写入 shared-mem 格式的 desc/payload buffer（复用 `shared_mem` 约定）。
 - 将该 batch 放入 **bounded 队列**（供 `rx-ring.poll-rx/wait-rx` 取走）。
 
 - 队列满时策略（写死，默认）：**drop newest（丢当前入队的 batch/包）**，并记录可观测指标。
@@ -117,9 +111,84 @@ guest `run()` 主循环每次迭代：
 3) 压测下系统不因锁/重入卡死；只允许出现“背压/丢弃”的可观测行为。
 4) `lease timeout` 生效：即便 guest 故障不 release，host 也能回收并打点。
 
+## Host 侧运行方式整改（避免 `run()` 常驻导致的死锁）：Tokio 异步化方案
+
+### 背景：现有多线程模型的典型死锁触发点
+
+当前 `src/main.rs` 会在专用线程中执行 `EngineManager::global().lock()` 并调用 `mgr.run(...)`，而 `run()` 是 guest 内部 `loop {}` 常驻，不会退出。
+
+这会引入一个非常危险的结构：
+
+1) **`EngineManager` 的 Mutex 被 `run()` 线程长期持有**（因为 lock 在 `run()` 返回前不会释放）。
+2) 运行期只要 host 其他线程/任务需要通过 `EngineManager` 做任何事情（哪怕是 enqueue RX batch、未来的控制面调用等），就会永久阻塞在同一个 Mutex 上。
+3) 更坏的情况是：如果阻塞发生在持锁/资源持有的上下文里（例如某些共享资源、日志/指标回调、或未来引入的跨 wasm call 锁），会形成 **锁序反转** 或 **等待环**，从而表现为死锁。
+
+> 关键结论：问题不在于“线程多”，而在于“把长期运行的 `run()` 放在持有全局锁的临界区内”。
+
+### 目标约束（写死，作为 guardrail）
+
+- host **只能调用一次** `scheduler-component.run(config-dir)`。
+- `run()` 必须运行在一个独占执行体中，但该执行体 **不得**长期持有 `EngineManager` 等全局锁。
+- 运行期任何 host 侧锁（`std::sync`/`parking_lot`/`tokio`）都 **不允许跨 wasm call 持有**（包括 `run()` 以及任何未来的导出调用）。
+
+### 推荐落地：Tokio + “Engine Owner Actor” 单线程所有权模型
+
+把“操作 Wasmtime store/instance 的所有权”集中到一个 Tokio 任务（actor）里，外部通过 channel 与它通讯：
+
+- **Engine owner**：单一任务（建议 `tokio::task::spawn_blocking` 或独立 OS 线程 + `tokio::sync` 通道）
+  - 持有 `ComponentEngine`（或持有 default engine 的可变引用/所有权）
+  - 唯一负责执行 `scheduler-component.run()`（只执行一次）
+  - 以及（如果未来需要）执行其他“对同一个实例的调用”（但终局版要求运行期不再做额外导出调用）
+
+- **其他任务（NIC RX / 控制面 / 指标）**：不直接碰 `Store/Instance`，只做：
+  - `rx_ring.enqueue_batch(...)`：这已经在 `ComponentEngine` 的 `State.rx_ring` 内部完成，不需要通过 `EngineManager` 持锁调用。
+  - 控制面请求（若未来需要）：发送消息给 engine owner，由 owner 在合适的时机处理。
+
+#### 具体实现建议（最小侵入、兼容当前结构）
+
+1) **去除“在持有 `EngineManager` 锁时调用 `run()`”**：
+	- 在启动阶段：`let engine = ComponentEngine::new(cfg)` 完成后，把它 move 到 engine owner。
+	- `EngineManager` 只作为“注册表/启动期构造器”，启动完成后不再要求运行期持锁访问。
+
+2) **Tokio runtime 统一调度**（避免“主线程 scheduler loop + guest thread”这种容易引入锁/生命周期交错的结构）：
+	- `#[tokio::main(flavor = "multi_thread")]`
+	- NIC RX/TX、指标、控制面都使用 `tokio::spawn`。
+
+3) **承认 `run()` 是阻塞的（Wasm async_support=false）**，因此要：
+	- 用 `tokio::task::spawn_blocking(move || engine.run(config_dir))` 来跑 guest run loop。
+	- 或者保持专用 OS 线程，但与 Tokio 通过 `tokio::sync::mpsc` / `watch` 连接。
+
+4) **shutdown 语义**（避免 `wait-rx` 卡死）：
+	- host 触发 shutdown 时：先让 NIC RX 停止入队，然后显式调用 `rx_ring.shutdown()`（若已有）或设置共享 flag 并 `notify`，保证 `wait-rx` 尽快返回 `none`。
+	- engine owner 任务可选择：继续运行（直到进程退出），或在 guest 支持退出信号后再做可控停止。
+
+5) **锁使用纪律（强制）**：
+	- `EngineManager`/`ComponentEngine` 相关可变访问，统一发生在 engine owner 任务内。
+	- 跨 wasm call（尤其是 `run()`）前必须确保：没有持有任何会被其他任务也需要的锁。
+
+### 为什么 Tokio 能改善“死锁概率”
+
+- Tokio 并不会“自动消除死锁”，但它强迫我们把长期阻塞的工作隔离到 `spawn_blocking`，并用 message passing 管理共享状态。
+- 一旦 `run()` 不再占用全局 Mutex 临界区，host 侧锁竞争就不会被“永远不释放的 run()”放大成系统级卡死。
+
+### 最小验收（与本文档验收标准对齐）
+
+- host 启动后：只发生一次 `scheduler-component.run()` 调用。
+- 运行期：`EngineManager` 不会因为 `run()` 常驻而长期被锁住（可通过打点/trace 或 debug assert 验证）。
+- 压测下：允许 drop/backpressure，但不允许出现“线程全部卡死/任务不再推进”。
+
 ## 整改计划 & TODO
 
 本节是从当前仓库状态推进到本文档“终局版契约”的落地 checklist（按依赖顺序）。
+
+### 0. Host 运行模型异步化（Tokio / Engine Owner）
+
+- [ ] 将 host 主入口改为 Tokio runtime（`#[tokio::main]`），统一调度 NIC RX/TX 与控制面任务
+- [ ] 引入 **Engine Owner actor**（单一所有权执行体）：独占持有 `ComponentEngine/Store`，并只调用一次 `scheduler-component.run()`
+- [ ] 严禁在持有 `EngineManager`（或其他全局锁）时调用 `run()`：启动期构造完成后 move ownership 给 owner
+- [ ] 为 host 增加 guardrail：任何锁都不允许跨 wasm call 持有（至少对 `run()` 增加 debug 断言/注释约束 + code review checklist）
+- [ ] shutdown 验收：触发关机时必须唤醒 `wait-rx` 并保证任务可退出/可收敛（避免 run-loop 永久阻塞导致进程无法优雅结束）
+- [ ] 增加最小观测：记录 `EngineManager`/owner 的健康状态（例如 owner 心跳、run 线程存活、阻塞告警）
 
 ### A. 接口契约（WIT/WAC）
 
@@ -132,7 +201,7 @@ guest `run()` 主循环每次迭代：
 
 - [x] 修改 scheduler `world.wit`
 	- [x] `import ntx:host/rx-ring@0.1.0`
-	- [x] 删除 `export ntx:scenario-scheduler/packet-ingest@0.1.0`（`notify-rx`）
+	- [ ] 删除 `export ntx:scenario-scheduler/packet-ingest@0.1.0`（`notify-rx`）
 
 - [x] 修改 `scheduler-composition.wac`
 	- [x] composed scheduler **不再 export** `packet-ingest`
@@ -146,12 +215,12 @@ guest `run()` 主循环每次迭代：
 
 - [x] `run()` 主循环内 pull RX
 	- [x] `wait-rx/poll-rx` 获取 `rx-batch(handle, ...)`
-	- [x] `read-desc/read-payload` 按需读取 slice，并按 `rx_layout`（shared layout）协议 decode
+	- [x] `read-desc/read-payload` 按需读取 slice，并按 `shared_mem` 协议 decode
 	- [x] decode 后发布 `packet.rx` 事件（component eventbus）
 	- [x] `finally { release(handle) }`：成功/失败都必须释放
 
-- [x] 删除 notify-rx 导出
-	- [x] 移除 `packet-ingest.notify-rx` 的导出实现与所有调用点
+- [ ] 删除 notify-rx 导出
+	- [ ] 移除 `packet-ingest.notify-rx` 的导出实现与所有调用点
 
 - [ ] 验收
 	- [ ] 无包时不 busy-loop（使用 `wait-rx` 或合理 timeout/poll 节律）
@@ -215,49 +284,4 @@ guest `run()` 主循环每次迭代：
 	- [ ] lease timeout 能兜底回收，不会无限积压
 	- [ ] shutdown 验收：host 触发关机后 `wait-rx` 能被唤醒；guest run-loop 能可控停止（或进入可退出态）
 	- [ ] shutdown：host 触发关机后，`wait-rx` 能被唤醒；guest run-loop 能在可控时间内停止（或进入 idle 可退出态）
-
----
-
-## （补回）Host `src/` 的 Tokio async 改造建议（vNext / 可选但推荐）
-
-本节把我们之前讨论过的“host 侧 Tokio/async 化”补回文档，作为 **增强版运行时架构**。
-它不改变本文档的终局数据流（仍是 guest pull `rx-ring`），但会显著改善：
-
-- 可取消/可超时（对 wasm 驱动与 shutdown 更友好）
-- 更清晰的线程/所有权隔离（避免未来又走回“跨锁 + wasm call”）
-- 便于扩展更细粒度的 async ABI（`pollable/stream/async func`）
-
-### 目标形态
-
-1) host 使用 Tokio runtime 作为顶层调度器（控制面/网络 IO/退出信号/metrics）。
-2) 引入一个 **Wasm Engine Actor**（单任务/单 owner）：
-	 - 独占持有 `Store/Instance/Linker`（避免并发调用同一个实例）
-	 - 对外暴露 `async` 请求队列（mpsc + oneshot）
-	 - 在 actor 内部串行执行所有 wasm 相关动作（load/run/shutdown/metrics）
-3) NIC RX 走独立的 async 任务链路：收包 → 构造 `(desc_mem,payload_mem)` → `rx_ring.enqueue_batch(...)`。
-4) guest `run()` 仍然是“长期运行”的导出调用：
-	 - 过渡期可继续放在 `spawn_blocking` 的专属线程里跑（与当前实现一致）
-	 - 如果未来启用 wasmtime `async_support(true)` + WIT async ABI（pollable/tick），则可在 Tokio 内
-		 直接 `await` 驱动，不再依赖“额外线程跑 run()”。
-
-### 关键约束（必须写死）
-
-- **任何 host 锁都不允许跨 wasm call 持有**：
-	- actor 内部调用 wasm 前必须释放外部锁；
-	- actor 管理自身状态（队列/metrics）使用无锁或细粒度锁，禁止把全局大锁包住一次 wasm 调用。
-- **wasm instance 调用必须串行化**：同一实例/Store 不允许并发 `call_*`。
-
-### shutdown / 健壮性建议
-
-- `rx-ring.wait-rx(...)` 本身要求可被 shutdown 唤醒；host 进入 shutdown 时应：
-	1) 先触发 `rx_ring.shutdown()`（或等价 flag + notify_all）
-	2) 再通知 guest（通过 control event 或未来的 `shutdown()` 导出）进入可退出态
-	3) 最后 join/await engine owner 退出
-
-### 迁移路线（不破坏当前同步 ABI）
-
-- Step 1（现在即可）：host 引入 Tokio runtime，但 `run()` 仍放在 `spawn_blocking`/专用线程。
-- Step 2：把 host 的控制面（signals/http/metrics）统一迁入 Tokio，NIC RX 也迁入 async。
-- Step 3（可选，较大改动）：启用 WIT async ABI vNext（tick/ready pollable/stream）并打开 wasmtime async support，
-	由 Tokio 直接驱动 guest，不再依赖“线程隔离 run()”。
 
