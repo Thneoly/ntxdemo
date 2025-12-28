@@ -36,6 +36,22 @@ use tracing::{error, info};
 /// pool internals). We iterate the owners tracked by the kernel's registry list.
 fn publish_kernel_abr_all_owners(pools: &ResourcePools, store: &mut abr::BindingStore) {
     pools.publish_abr_for_all_owners(store, abr::BindingOwner::KernelIface);
+
+    // Debugging aid: confirm ABR contents after publishing.
+    // This is intentionally cheap (snapshot is already stored by publish call).
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        let view = abr::load_view();
+        // Common lab IP, convenient for logs; harmless if not used.
+        let ip_10_0_0_4_be = u32::from_be_bytes([10, 0, 0, 4]);
+        tracing::debug!(
+            target: "ntx::kernel::abr",
+            ipv4_empty = view.ipv4.is_empty(),
+            udp_ports_empty = view.udp_ports.is_empty(),
+            tcp_ports_empty = view.tcp_ports.is_empty(),
+            has_10_0_0_4 = view.ipv4.contains_be(ip_10_0_0_4_be),
+            "abr published (union)"
+        );
+    }
 }
 
 /// Minimal error type for hostnet/WIT adapters.
