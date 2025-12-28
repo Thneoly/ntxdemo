@@ -168,6 +168,17 @@ impl ResourceRegistry {
             .map(|s| s.iter().copied().collect())
             .unwrap_or_default()
     }
+
+    /// List all registered socket owner ids (socket ResourceIds).
+    pub fn socket_owner_ids(&self) -> Vec<ResourceId> {
+        self.by_id
+            .iter()
+            .filter_map(|(rid, rec)| match rec {
+                ResourceRecord::Socket { .. } => Some(*rid),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

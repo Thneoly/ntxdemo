@@ -60,6 +60,66 @@ impl ResourcePools {
 
         abr::store_view(store.snapshot());
     }
+
+    /// Publish a union ABR view for **all** socket owners currently known to the registry.
+    ///
+    /// This is the correct helper for dataplane-accept semantics: the dataplane has no
+    /// per-socket context, so ABR must represent the union of active bindings.
+    pub fn publish_abr_for_all_owners(
+        &self,
+        store: &mut abr::BindingStore,
+        abr_owner: BindingOwner,
+    ) {
+        store.clear();
+
+        // Owners are socket ResourceIds.
+        // ResourceRegistry doesn't expose an owner iterator directly, so we discover
+        // owners by scanning registry records.
+        let owners: Vec<super::OwnerId> = self.registry().socket_owner_ids();
+
+        for owner in owners {
+            // Reuse existing helper but merge into union store.
+            // We can't call publish_abr_for_owner directly because it clears `store`.
+
+            // IPv4 pinned allocations.
+            for pool in self.ipv4.inner.values() {
+                if let Some(ip) = pool.owner_to_pinned.get(&owner).copied() {
+                    let ip_be = u32::from_be_bytes(ip.octets());
+                    store.add(abr::Binding::ipv4_be(ip_be, abr_owner));
+                }
+            }
+
+            // Port bindings pinned allocations.
+            let pinned_ip = self
+                .ipv4
+                .inner
+                .values()
+                .find_map(|p| p.owner_to_pinned.get(&owner).copied());
+
+            let ip_be = pinned_ip
+                .map(|ip| u32::from_be_bytes(ip.octets()))
+                .unwrap_or(0);
+
+            publish_ports(
+                store,
+                &self.udp_port,
+                &owner,
+                ip_be,
+                abr_owner,
+                |ip, port, o| abr::Binding::udp_port_be(ip, port, o),
+            );
+            publish_ports(
+                store,
+                &self.tcp_port,
+                &owner,
+                ip_be,
+                abr_owner,
+                |ip, port, o| abr::Binding::tcp_port_be(ip, port, o),
+            );
+        }
+
+        abr::store_view(store.snapshot());
+    }
 }
 
 fn publish_ports(

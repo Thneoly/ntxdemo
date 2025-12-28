@@ -22,6 +22,22 @@ use serde::Deserialize;
 use std::path::Path;
 use tracing::{error, info};
 
+/// Publish a fresh ABR snapshot that includes resources for *all* currently-registered
+/// socket owners.
+///
+/// Why this exists:
+/// `ResourcePools::publish_abr_for_owner` clears the `BindingStore` and then publishes
+/// bindings for a *single* owner. In a multi-socket/multi-owner runtime, doing that on
+/// every acquire/bind causes "last writer wins" behavior and can make
+/// `network::packet::layers::Ipv4::accept()` return `Poison` for other owners' dst_ip.
+///
+/// Implementation detail:
+/// We intentionally build the union view using only **public APIs** (no peeking into
+/// pool internals). We iterate the owners tracked by the kernel's registry list.
+fn publish_kernel_abr_all_owners(pools: &ResourcePools, store: &mut abr::BindingStore) {
+    pools.publish_abr_for_all_owners(store, abr::BindingOwner::KernelIface);
+}
+
 /// Minimal error type for hostnet/WIT adapters.
 ///
 /// This lives in `kernel` so `wasm_engine` can delegate WIT host calls here,
@@ -97,9 +113,9 @@ pub fn hostnet_acquire_udp_resource(pool: &str, owner: &str) -> Result<(), Hostn
         unreachable!("resource kind/value mismatch")
     };
 
-    // Publish updated ABR snapshot so dataplane accept() sees bound ports.
+    // Publish updated ABR snapshot including all owners.
     let mut store = KERNEL.store.lock();
-    pools.publish_abr_for_owner(&mut store, &owner, abr::BindingOwner::KernelIface);
+    publish_kernel_abr_all_owners(&pools, &mut store);
     Ok(())
 }
 
@@ -128,10 +144,10 @@ pub fn hostnet_acquire_udp_identity(
         unreachable!("resource kind/value mismatch")
     };
 
-    // Publish updated ABR snapshot so dataplane accept() sees our IPv4 and UDP port.
+    // Publish updated ABR snapshot including all owners.
     // This is critical because `Ipv4::accept()` will Poison packets whose dst_ip isn't in ABR.
     let mut store = KERNEL.store.lock();
-    pools.publish_abr_for_owner(&mut store, &owner, abr::BindingOwner::KernelIface);
+    publish_kernel_abr_all_owners(&pools, &mut store);
 
     Ok((ip, mac, port))
 }
@@ -749,6 +765,22 @@ mod tests {
             )
         });
 
+        // Important for union-ABR publishing: ensure the owner exists as a registered socket.
+        // In production, owners are created via `acquire_socket_owner`, which registers them.
+        // This test helper also allows callers to pass `req.owner`, so we must register it.
+        if pools.registry().socket_info(&owner).is_none() {
+            pools.registry_mut().register_socket(
+                owner,
+                ntx_network::resources::SocketInfo {
+                    name: req
+                        .owner_name
+                        .clone()
+                        .unwrap_or_else(|| "socket".to_string()),
+                    sock_id: None,
+                },
+            );
+        }
+
         let ipv4_pool = if req.ipv4_pool.is_empty() {
             "default"
         } else {
@@ -852,7 +884,7 @@ mod tests {
             };
         }
 
-        pools.publish_abr_for_owner(store, &owner, abr::BindingOwner::KernelIface);
+        pools.publish_abr_for_all_owners(store, abr::BindingOwner::KernelIface);
         Ok(())
     }
 
