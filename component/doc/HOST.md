@@ -131,18 +131,17 @@ guest `run()` 主循环每次迭代：
 - `run()` 必须运行在一个独占执行体中，但该执行体 **不得**长期持有 `EngineManager` 等全局锁。
 - 运行期任何 host 侧锁（`std::sync`/`parking_lot`/`tokio`）都 **不允许跨 wasm call 持有**（包括 `run()` 以及任何未来的导出调用）。
 
-### 推荐落地：Tokio + “Engine Owner Actor” 单线程所有权模型
+### 模式 B（长期推荐）：Tokio + Wasmtime async（Tokio-native）
 
-把“操作 Wasmtime store/instance 的所有权”集中到一个 Tokio 任务（actor）里，外部通过 channel 与它通讯：
+这一节只描述终局版：host 全面 Tokio 化，并把 guest `run()` 变成 **可被 Tokio 调度的 async wasm 调用**；不再依赖“专用 OS 线程 / `spawn_blocking` 承载 `run()`”作为推荐落地方向。
 
-- **Engine owner**：单一任务（建议 `tokio::task::spawn_blocking` 或独立 OS 线程 + `tokio::sync` 通道）
-  - 持有 `ComponentEngine`（或持有 default engine 的可变引用/所有权）
-  - 唯一负责执行 `scheduler-component.run()`（只执行一次）
-  - 以及（如果未来需要）执行其他“对同一个实例的调用”（但终局版要求运行期不再做额外导出调用）
+核心思想：
 
-- **其他任务（NIC RX / 控制面 / 指标）**：不直接碰 `Store/Instance`，只做：
-  - `rx_ring.enqueue_batch(...)`：这已经在 `ComponentEngine` 的 `State.rx_ring` 内部完成，不需要通过 `EngineManager` 持锁调用。
-  - 控制面请求（若未来需要）：发送消息给 engine owner，由 owner 在合适的时机处理。
+- host 使用 Tokio 统一调度：NIC RX/TX、控制面、指标、wasm 侧等待（`wait-rx`）都在同一个 async 体系里。
+- Wasmtime 启用 component async 支持：`scheduler-component.run()` 以 async 方式 drive，避免“run() 常驻 = 永久占用一个线程”的结构性问题。
+- 仍然坚持 **单一所有权/串行化访问 Wasm 实例**：即使是 async，也只允许一个 task 驱动同一个 `Store/Instance`；其他任务只能通过消息/共享状态与其协作。
+
+> 目标不是“并发调用 wasm”，而是让 wasm 的阻塞点（如 `wait-rx(timeout-ms)`）能让出执行权，从而把系统推进交还给 Tokio。
 
 #### 具体实现建议（最小侵入、兼容当前结构）
 
@@ -154,9 +153,10 @@ guest `run()` 主循环每次迭代：
 	- `#[tokio::main(flavor = "multi_thread")]`
 	- NIC RX/TX、指标、控制面都使用 `tokio::spawn`。
 
-3) **承认 `run()` 是阻塞的（Wasm async_support=false）**，因此要：
-	- 用 `tokio::task::spawn_blocking(move || engine.run(config_dir))` 来跑 guest run loop。
-	- 或者保持专用 OS 线程，但与 Tokio 通过 `tokio::sync::mpsc` / `watch` 连接。
+3) **打开 Wasmtime async 支持**（终局前置条件）：
+	- host 侧使用支持 async 的 Engine/Linker/Store 配置（以本仓库现用 Wasmtime 版本/API 为准）。
+	- `scheduler-component.run()` 以 async 方式执行，允许在 import（例如 `wait-rx`）内部发生 await/yield。
+	- 对应地，host 的 WIT import 实现应尽量使用 `tokio::sync`（例如 `Notify`/`Semaphore`/`mpsc`）来实现“等待 + 唤醒 + timeout”。
 
 4) **shutdown 语义**（避免 `wait-rx` 卡死）：
 	- host 触发 shutdown 时：先让 NIC RX 停止入队，然后显式调用 `rx_ring.shutdown()`（若已有）或设置共享 flag 并 `notify`，保证 `wait-rx` 尽快返回 `none`。
@@ -166,16 +166,23 @@ guest `run()` 主循环每次迭代：
 	- `EngineManager`/`ComponentEngine` 相关可变访问，统一发生在 engine owner 任务内。
 	- 跨 wasm call（尤其是 `run()`）前必须确保：没有持有任何会被其他任务也需要的锁。
 
-### 为什么 Tokio 能改善“死锁概率”
+### 为什么“Tokio-native + Wasmtime async”是必要的（而不是临时线程方案）
 
-- Tokio 并不会“自动消除死锁”，但它强迫我们把长期阻塞的工作隔离到 `spawn_blocking`，并用 message passing 管理共享状态。
-- 一旦 `run()` 不再占用全局 Mutex 临界区，host 侧锁竞争就不会被“永远不释放的 run()”放大成系统级卡死。
+- 本问题的根因是：`run()` 常驻 + 同步执行 + 非重入，使得“任何需要与 wasm 交互的路径”都容易被结构性阻塞放大。
+- 仅仅把 `run()` 放到专用线程，最多是把卡死从“抢 Mutex”变成“跨线程协作困难、退出不可控、等待/唤醒不在同一调度体系”。
+- 开启 Wasmtime async 后，`wait-rx(timeout-ms)` 这类等待点可以在同一 Tokio runtime 下自然地 yield/timeout/shutdown，host 的推进逻辑更清晰，观测也更统一。
 
 ### 最小验收（与本文档验收标准对齐）
 
 - host 启动后：只发生一次 `scheduler-component.run()` 调用。
 - 运行期：`EngineManager` 不会因为 `run()` 常驻而长期被锁住（可通过打点/trace 或 debug assert 验证）。
 - 压测下：允许 drop/backpressure，但不允许出现“线程全部卡死/任务不再推进”。
+
+### 前置条件与风险提示（写在这里，避免误用）
+
+- 需要 Wasmtime component async 能力与本仓库的 WIT binding 生成方式兼容；若升级 Wasmtime 版本，务必同时校验 `component::bindgen` 生成的 async host trait/签名。
+- 即使是 async，也必须坚持“单 owner 驱动一个 `Store/Instance`”；不要试图并发地从多个 task 调用同一个 instance。
+- 对 `rx-ring` 的实现：如果 `wait-rx` 内部用条件变量/阻塞锁等待，等价于把阻塞重新塞回 async 线程；终局版应该用 Tokio 原语实现真正的 async 等待与唤醒。
 
 ## 整改计划 & TODO
 
