@@ -58,9 +58,7 @@ pub fn spawn_engine_owner(
         info!(target: "ntx::engine-owner", "engine owner started; entering message loop");
         while let Some(msg) = rx.recv().await {
             info!(
-                target: "ntx::engine-owner",
-                "received engine message: {:?}",
-                msg
+                target: "ntx::engine-owner", "received engine message",
             );
             match msg {
                 EngineMsg::RxBatch { desc, payload } => {

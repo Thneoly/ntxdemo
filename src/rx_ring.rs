@@ -324,7 +324,7 @@ impl RxRing {
                     .load(Ordering::Relaxed);
                 if (n % 128) == 0 {
                     let st = self.inner.state.lock().expect("rx-ring mutex poisoned");
-                    tracing::warn!(
+                    tracing::trace!(
                         target: "ntx::rx-ring",
                         timeout_ms,
                         max_desc,

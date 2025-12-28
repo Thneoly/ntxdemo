@@ -8,7 +8,7 @@ use crate::codec;
 // This module is currently not wired into the main event loop in all builds.
 // Keep it available for host/guest integration, but don't spam warnings.
 #[allow(dead_code)]
-pub(crate) const NTX_MAGIC: u32 = 0x4E_54_58_00; // "NTX\0"
+pub(crate) const NTX_MAGIC: u32 = 0x4E54_5830; // "NTX0"
 #[allow(dead_code)]
 pub(crate) const NTX_VERSION: u16 = 1;
 #[allow(dead_code)]
@@ -29,13 +29,19 @@ pub(crate) static PACKET_RX_SEQ: std::sync::atomic::AtomicU64 =
 /// Returns number of descriptors consumed.
 #[allow(dead_code)]
 pub fn drain_rx_ring(desc_mem: Vec<u8>, payload_mem: Vec<u8>) -> u32 {
+    println!("[scheduler] drain_rx_ring: called");
     if desc_mem.len() < CONTROL_LEN {
+        println!("[scheduler] drain_rx_ring: desc_mem too small");
         return 0;
     }
 
     let magic = codec::le_u32(&desc_mem[0..4]);
     let version = codec::le_u16(&desc_mem[4..6]);
     if magic != NTX_MAGIC || version != NTX_VERSION {
+        println!(
+            "[scheduler] drain_rx_ring: invalid magic/version: {:08X}/{:04X}",
+            magic, version
+        );
         return 0;
     }
 
@@ -44,11 +50,15 @@ pub fn drain_rx_ring(desc_mem: Vec<u8>, payload_mem: Vec<u8>) -> u32 {
     let tail = codec::le_u32(&desc_mem[16..20]) as usize;
 
     if desc_capacity == 0 {
+        println!("[scheduler] drain_rx_ring: desc_capacity is 0");
         return 0;
     }
 
     let mut consumed: u32 = 0;
-
+    println!(
+        "[scheduler] drain_rx_ring: desc_capacity={}, head={}, tail={}",
+        desc_capacity, head, tail
+    );
     while head != tail {
         let idx = head % desc_capacity;
         let base = DESCS_OFF + idx * DESC_LEN;

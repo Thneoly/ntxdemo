@@ -12,6 +12,7 @@
 use crate::event_bus::Bytes;
 
 pub const NTX_MAGIC: u32 = 0x4E54_5830; // "NTX0"
+
 pub const NTX_VERSION: u16 = 1;
 
 /// Fixed offsets used by the demo packet engine.

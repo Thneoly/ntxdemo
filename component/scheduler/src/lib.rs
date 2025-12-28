@@ -234,31 +234,6 @@ fn pump_rx_once_nonblocking() {
         return;
     }
 
-    {
-        let mut s = STATS.lock().unwrap();
-        s.polls = s.polls.saturating_add(1);
-        if s.last_log.elapsed() >= Duration::from_secs(1) {
-            // println!(
-            //     "[scheduler] rx-pump hb: polls={} batches={} timeouts={} read_errs={} decode_errs={} last_seq={} last_desc_len={} last_payload_len={}",
-            //     s.polls,
-            //     s.batches,
-            //     s.timeouts,
-            //     s.read_errors,
-            //     s.decode_errors,
-            //     s.last_seq,
-            //     s.last_desc_len,
-            //     s.last_payload_len
-            // );
-            s.last_log = Instant::now();
-            // reset counters so we get per-second rates
-            s.polls = 0;
-            s.batches = 0;
-            s.timeouts = 0;
-            s.read_errors = 0;
-            s.decode_errors = 0;
-        }
-    }
-
     // Non-blocking poll: timeout 0ms.
     let batch = ntx::host::rx_ring::wait_rx(64 * 1024, 256 * 1024, 0);
     let Some(batch) = batch else {
@@ -266,7 +241,10 @@ fn pump_rx_once_nonblocking() {
         s.timeouts = s.timeouts.saturating_add(1);
         return;
     };
-
+    println!(
+        "[scheduler] pump_rx_once_nonblocking: got batch seq {}",
+        batch.seq
+    );
     {
         let mut s = STATS.lock().unwrap();
         s.batches = s.batches.saturating_add(1);
