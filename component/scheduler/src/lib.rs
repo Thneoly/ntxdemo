@@ -976,7 +976,7 @@ fn run_event_loop(
         // send-scheduler tick：检查到期的 send-request 并发包
         send_scheduler::tick_send_scheduler(now_ms());
         // best-effort cleanup
-        cleanup_sock_ctx(now_ms(), 60_000);
+        // cleanup_sock_ctx(now_ms(), 60_000);
 
         if did_work {
             idle = 0;
@@ -1110,9 +1110,35 @@ fn parse_duration_ms(s: &str) -> Option<u64> {
     t.parse::<u64>().ok()
 }
 
+#[allow(dead_code)]
 fn cleanup_sock_ctx(now_ms: u64, max_age_ms: u64) {
     if let Ok(mut map) = SOCK_CTX.lock() {
-        map.retain(|_, ctx| now_ms.saturating_sub(ctx.last_seen_ms) <= max_age_ms);
+        // Log removals due to TTL expiry.
+        let mut removed: u64 = 0;
+        map.retain(|sock_id, ctx| {
+            let expired = now_ms.saturating_sub(ctx.last_seen_ms) > max_age_ms;
+            if expired {
+                removed = removed.saturating_add(1);
+                println!(
+                    "[scheduler][sock_ctx] remove(ttl): sock_id={} age_ms={} user_id={:?} task_id={:?} action_id={:?} corr_id={:?}",
+                    sock_id,
+                    now_ms.saturating_sub(ctx.last_seen_ms),
+                    ctx.user_id,
+                    ctx.task_id,
+                    ctx.action_id,
+                    ctx.correlation_id
+                );
+            }
+            !expired
+        });
+
+        if removed > 0 {
+            println!(
+                "[scheduler][sock_ctx] cleanup(ttl): removed={} remaining={}",
+                removed,
+                map.len()
+            );
+        }
     }
 }
 

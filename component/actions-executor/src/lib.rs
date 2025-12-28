@@ -337,8 +337,6 @@ impl exports::ntx::scenario_actions_executor::action_component::Guest for Action
                 })
             }
             "udp.send-recv" => {
-                // P0: 不在 executor 内部等待 packet.rx（避免单线程自旋/阻塞）。
-                // 该 action 仅委托发包；收包等待/超时/重试由 scheduler 的 wait 节点 + timer event 推进。
                 let params: serde_json::Value = serde_json::from_str(&action.params)
                     .map_err(|e| format!("parse params as json: {e}"))?;
                 let sock_id = params

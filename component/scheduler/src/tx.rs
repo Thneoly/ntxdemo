@@ -69,14 +69,51 @@ pub fn handle_tx_request(payload_json: &str, correlation_id: Option<&str>) -> Re
 /// In socket close: remove ctx for this sock_id.
 pub fn clear_sock_ctx_for_socket(sock_id: u64) {
     if let Ok(mut map) = crate::SOCK_CTX.lock() {
-        map.remove(&sock_id);
+        if let Some(prev) = map.remove(&sock_id) {
+            println!(
+                "[scheduler][sock_ctx] remove(sock): sock_id={} user_id={:?} task_id={:?} action_id={:?} corr_id={:?}",
+                sock_id,
+                prev.user_id,
+                prev.task_id,
+                prev.action_id,
+                prev.correlation_id
+            );
+        } else {
+            println!(
+                "[scheduler][sock_ctx] remove(sock): sock_id={} (not found)",
+                sock_id
+            );
+        }
     }
 }
 
 /// In user finish: remove any ctx belonging to that user.
 pub fn clear_sock_ctx_for_user(user_id: &str) {
     if let Ok(mut map) = crate::SOCK_CTX.lock() {
-        map.retain(|_, ctx| ctx.user_id.as_deref() != Some(user_id));
+        let before = map.len();
+        map.retain(|sock_id, ctx| {
+            let is_match = ctx.user_id.as_deref() == Some(user_id);
+            if is_match {
+                println!(
+                    "[scheduler][sock_ctx] remove(user): sock_id={} user_id={:?} task_id={:?} action_id={:?} corr_id={:?}",
+                    sock_id,
+                    ctx.user_id,
+                    ctx.task_id,
+                    ctx.action_id,
+                    ctx.correlation_id
+                );
+            }
+            !is_match
+        });
+        let removed = before.saturating_sub(map.len());
+        if removed > 0 {
+            println!(
+                "[scheduler][sock_ctx] remove(user): user_id={} removed={} remaining={}",
+                user_id,
+                removed,
+                map.len()
+            );
+        }
     }
 }
 
@@ -92,16 +129,41 @@ pub fn send_udp(
 
     // record sock context for later packet.rx correlation
     if let Ok(mut map) = crate::SOCK_CTX.lock() {
-        map.insert(
-            sock_id,
-            crate::SockCtx {
-                user_id: user_id.map(|s| s.to_string()),
-                task_id: task_id.map(|s| s.to_string()),
-                action_id: action_id.map(|s| s.to_string()),
-                correlation_id: correlation_id.map(|s| s.to_string()),
-                last_seen_ms: now_ms,
-            },
-        );
+        let new_ctx = crate::SockCtx {
+            user_id: user_id.map(|s| s.to_string()),
+            task_id: task_id.map(|s| s.to_string()),
+            action_id: action_id.map(|s| s.to_string()),
+            correlation_id: correlation_id.map(|s| s.to_string()),
+            last_seen_ms: now_ms,
+        };
+
+        match map.insert(sock_id, new_ctx.clone()) {
+            None => {
+                println!(
+                    "[scheduler][sock_ctx] add: sock_id={} user_id={:?} task_id={:?} action_id={:?} corr_id={:?}",
+                    sock_id,
+                    new_ctx.user_id,
+                    new_ctx.task_id,
+                    new_ctx.action_id,
+                    new_ctx.correlation_id
+                );
+            }
+            Some(prev) => {
+                // Overwrite is expected when the same socket is reused across actions.
+                println!(
+                    "[scheduler][sock_ctx] update: sock_id={} prev(user_id={:?} task_id={:?} action_id={:?} corr_id={:?}) -> new(user_id={:?} task_id={:?} action_id={:?} corr_id={:?})",
+                    sock_id,
+                    prev.user_id,
+                    prev.task_id,
+                    prev.action_id,
+                    prev.correlation_id,
+                    new_ctx.user_id,
+                    new_ctx.task_id,
+                    new_ctx.action_id,
+                    new_ctx.correlation_id
+                );
+            }
+        }
     }
 
     let frame = udp_socket_control::build_reply(sock_id, payload)

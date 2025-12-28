@@ -154,12 +154,14 @@ pub fn decode_control(mem: &[u8]) -> Option<ControlBlock> {
 
 pub fn encode_desc(d: &Descriptor) -> [u8; DESC_LEN] {
     let mut b = [0u8; DESC_LEN];
+    println!("encode_desc: {:?}", d);
     b[0..8].copy_from_slice(&d.sock_id.to_le_bytes());
     b[8..12].copy_from_slice(&d.payload_off.to_le_bytes());
     b[12..16].copy_from_slice(&d.payload_len.to_le_bytes());
     b[16..20].copy_from_slice(&d.meta.to_le_bytes());
     b[20..24].copy_from_slice(&0u32.to_le_bytes());
     b[24..32].copy_from_slice(&d.seq.to_le_bytes());
+    println!("encode_desc: encoded sock_id bytes: {:02X?}", &b[0..8]);
     b
 }
 

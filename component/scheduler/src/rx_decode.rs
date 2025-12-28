@@ -12,13 +12,65 @@ pub(crate) const NTX_MAGIC: u32 = 0x4E54_5830; // "NTX0"
 #[allow(dead_code)]
 pub(crate) const NTX_VERSION: u16 = 1;
 #[allow(dead_code)]
-pub(crate) const CONTROL_LEN: usize = 16;
+pub(crate) const CONTROL_LEN: usize = 48;
 #[allow(dead_code)]
 pub(crate) const DESC_LEN: usize = 32;
 #[allow(dead_code)]
-pub(crate) const DESCS_OFF: usize = CONTROL_LEN;
+pub(crate) const DESCS_OFF: usize = 0x1000;
 #[allow(dead_code)]
 pub(crate) const MAX_CONSUME: u32 = 64;
+
+#[derive(Debug, Clone, Copy)]
+struct ControlBlockV1 {
+    desc_capacity: u32,
+    desc_head: u32,
+    desc_tail: u32,
+    payload_capacity: u32,
+    payload_head: u32,
+    payload_tail: u32,
+}
+
+fn decode_control_v1(desc_mem: &[u8]) -> Result<ControlBlockV1, String> {
+    if desc_mem.len() < CONTROL_LEN {
+        return Err(format!(
+            "desc_mem too small for control block: len={} need={}",
+            desc_mem.len(),
+            CONTROL_LEN
+        ));
+    }
+
+    let magic = codec::le_u32(&desc_mem[0..4]);
+    let version = codec::le_u16(&desc_mem[4..6]);
+    if magic != NTX_MAGIC || version != NTX_VERSION {
+        return Err(format!(
+            "invalid magic/version: {:08X}/{:04X}",
+            magic, version
+        ));
+    }
+
+    // Host layout (src/rx_layout.rs):
+    //  8..12  desc_capacity
+    // 12..16  desc_head
+    // 16..20  desc_tail
+    // 20..24  payload_capacity
+    // 24..28  payload_head
+    // 28..32  payload_tail
+    let desc_capacity = codec::le_u32(&desc_mem[8..12]);
+    let desc_head = codec::le_u32(&desc_mem[12..16]);
+    let desc_tail = codec::le_u32(&desc_mem[16..20]);
+    let payload_capacity = codec::le_u32(&desc_mem[20..24]);
+    let payload_head = codec::le_u32(&desc_mem[24..28]);
+    let payload_tail = codec::le_u32(&desc_mem[28..32]);
+
+    Ok(ControlBlockV1 {
+        desc_capacity,
+        desc_head,
+        desc_tail,
+        payload_capacity,
+        payload_head,
+        payload_tail,
+    })
+}
 
 #[allow(dead_code)]
 pub(crate) static PACKET_RX_SEQ: std::sync::atomic::AtomicU64 =
@@ -30,24 +82,17 @@ pub(crate) static PACKET_RX_SEQ: std::sync::atomic::AtomicU64 =
 #[allow(dead_code)]
 pub fn drain_rx_ring(desc_mem: Vec<u8>, payload_mem: Vec<u8>) -> u32 {
     println!("[scheduler] drain_rx_ring: called");
-    if desc_mem.len() < CONTROL_LEN {
-        println!("[scheduler] drain_rx_ring: desc_mem too small");
-        return 0;
-    }
+    let cb = match decode_control_v1(&desc_mem) {
+        Ok(cb) => cb,
+        Err(e) => {
+            println!("[scheduler] drain_rx_ring: control decode failed: {e}");
+            return 0;
+        }
+    };
 
-    let magic = codec::le_u32(&desc_mem[0..4]);
-    let version = codec::le_u16(&desc_mem[4..6]);
-    if magic != NTX_MAGIC || version != NTX_VERSION {
-        println!(
-            "[scheduler] drain_rx_ring: invalid magic/version: {:08X}/{:04X}",
-            magic, version
-        );
-        return 0;
-    }
-
-    let desc_capacity = codec::le_u32(&desc_mem[8..12]) as usize;
-    let mut head = codec::le_u32(&desc_mem[12..16]) as usize;
-    let tail = codec::le_u32(&desc_mem[16..20]) as usize;
+    let desc_capacity = cb.desc_capacity as usize;
+    let mut head = cb.desc_head as usize;
+    let tail = cb.desc_tail as usize;
 
     if desc_capacity == 0 {
         println!("[scheduler] drain_rx_ring: desc_capacity is 0");
@@ -55,10 +100,7 @@ pub fn drain_rx_ring(desc_mem: Vec<u8>, payload_mem: Vec<u8>) -> u32 {
     }
 
     let mut consumed: u32 = 0;
-    println!(
-        "[scheduler] drain_rx_ring: desc_capacity={}, head={}, tail={}",
-        desc_capacity, head, tail
-    );
+
     while head != tail {
         let idx = head % desc_capacity;
         let base = DESCS_OFF + idx * DESC_LEN;
@@ -71,6 +113,7 @@ pub fn drain_rx_ring(desc_mem: Vec<u8>, payload_mem: Vec<u8>) -> u32 {
         let payload_off = codec::le_u32(&desc[8..12]) as usize;
         let payload_len = codec::le_u32(&desc[12..16]) as usize;
 
+        // Host layout uses PAYLOAD_OFF=0, so payload_off is relative to payload_mem[0].
         if payload_off + payload_len <= payload_mem.len() {
             let payload = &payload_mem[payload_off..payload_off + payload_len];
 
@@ -82,12 +125,46 @@ pub fn drain_rx_ring(desc_mem: Vec<u8>, payload_mem: Vec<u8>) -> u32 {
                     .as_mut()
                     .and_then(|map| map.get_mut(&sock_id))
                     .map(|c| {
+                        // Refresh last_seen and emit a low-volume trace for correlation.
+                        // This is intentionally `println!` (not `tracing`) because the guest
+                        // component often runs without a tracing subscriber.
+                        //
+                        // Note: this will be noisy under high packet rates; if needed we can
+                        // add sampling or a per-sock rate limit later.
+                        println!(
+                            "[scheduler][sock_ctx] touch(rx): sock_id={:02X} user_id={:?} task_id={:?} action_id={:?} corr_id={:?}",
+                            sock_id,
+                            c.user_id,
+                            c.task_id,
+                            c.action_id,
+                            c.correlation_id
+                        );
                         c.last_seen_ms = now_ms;
                         c.clone()
                     })
             };
 
+            if ctx.is_none() {
+                println!(
+                    "[scheduler][sock_ctx] miss(rx): sock_id={:02X} (no mapping)",
+                    sock_id
+                );
+            }
+
             publish_packet_event(sock_id, payload, ctx.as_ref(), now_ms);
+        }
+
+        // Debug signal for layout mismatch: descriptor points outside payload buffer.
+        // (Most commonly caused by DESCS_OFF/CONTROL_LEN mismatch between host & guest.)
+        if payload_off + payload_len > payload_mem.len() {
+            println!(
+                "[scheduler] drain_rx_ring: desc payload out of bounds: sock_id={} payload_off={} payload_len={} payload_mem_len={} cb_payload_tail={}",
+                sock_id,
+                payload_off,
+                payload_len,
+                payload_mem.len(),
+                cb.payload_tail
+            );
         }
 
         head = head.wrapping_add(1);
@@ -116,8 +193,13 @@ fn publish_packet_event(sock_id: u64, payload: &[u8], ctx: Option<&crate::SockCt
         "ts_ms": now_ms,
     })
     .to_string();
-
-    let _ = crate::ntx::scenario_eventbus::event_bus::publish(
+    println!(
+        "[scheduler] publish_packet_event: sock_id={}, seq={}, len={}",
+        sock_id,
+        seq,
+        payload.len()
+    );
+    let res = crate::ntx::scenario_eventbus::event_bus::publish(
         &crate::ntx::scenario_eventbus::event_bus::Event {
             id,
             kind: "packet.rx".to_string(),
@@ -129,4 +211,10 @@ fn publish_packet_event(sock_id: u64, payload: &[u8], ctx: Option<&crate::SockCt
             timestamp_ms: now_ms,
         },
     );
+    if let Err(e) = res {
+        println!(
+            "[scheduler] publish_packet_event: failed to publish event: {}",
+            e
+        );
+    }
 }

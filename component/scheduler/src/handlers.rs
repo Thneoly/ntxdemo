@@ -17,6 +17,7 @@ pub fn on_packet_rx(
     ctx: &SchedulerContext,
     ev: &ntx::scenario_eventbus::event_bus::Event,
 ) -> Result<(), String> {
+    println!("[scheduler] on_packet_rx: invoked");
     handle_packet_rx_trigger(ctx, ev)
 }
 
@@ -584,6 +585,7 @@ fn handle_packet_rx_trigger(
     ev: &ntx::scenario_eventbus::event_bus::Event,
 ) -> Result<(), String> {
     let Some(ctx_user) = ev.user_id.as_deref() else {
+        println!("[scheduler] handle_packet_rx_trigger: missing user_id");
         return Ok(());
     };
     let action_id = ev.action_id.as_deref().unwrap_or("");
