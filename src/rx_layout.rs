@@ -181,9 +181,6 @@ pub fn decode_desc(b: &[u8]) -> Option<Descriptor> {
 }
 
 /// A small helper to build a JSON string for the current demo path.
-///
-/// This keeps the scheduler demo working even before the guest implements
-/// shared-memory consumption; it also provides a convenient logging tool.
 pub fn demo_json(sock_id: Option<u64>, payload: &[u8]) -> Bytes {
     let sid = sock_id.unwrap_or(0);
     let payload_hex = hex_encode(payload);

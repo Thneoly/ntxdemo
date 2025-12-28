@@ -1,4 +1,4 @@
-package ntx:host;
+package ntx:host@0.1.0;
 
 /// 基础网络类型
 interface types {
@@ -83,6 +83,8 @@ world hostnet {
     import types;
     import resources;
     import udp-socket-control;
+    // End-state RX pulling interface used by the composed scheduler.
+    import rx-ring;
     export types;
     export resources;
     export udp-socket-control;

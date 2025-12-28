@@ -7,6 +7,7 @@ use wasmtime_wasi::{
 };
 
 use crate::kernel;
+use crate::rx_ring::{RxRing, RxRingConfig};
 use ntx_network;
 
 // Strongly-typed host bindings for imports required by the composed scheduler component.
@@ -23,6 +24,7 @@ use packet_engine_bindings::ntx::host::resources::{
 };
 use packet_engine_bindings::ntx::host::types::{Host as TypesHost, Ipv4Addr, MacAddr};
 // (types imported via WIT bindings in signatures; concrete conversions use ntx_network types)
+use packet_engine_bindings::ntx::host::rx_ring::{Host as RxRingHost, RxBatch as WitRxBatch};
 use packet_engine_bindings::ntx::host::udp_socket_control::{
     FrameHandle, Host as UdpHost, SocketError, UdpBind, UdpSocket,
 };
@@ -61,6 +63,7 @@ impl From<anyhow::Error> for EngineError {
 pub struct State {
     wasi: WasiCtx,
     table: wasmtime::component::ResourceTable,
+    rx_ring: RxRing,
 }
 
 impl WasiView for State {
@@ -229,11 +232,45 @@ impl UdpHost for State {
     }
 }
 
+impl RxRingHost for State {
+    fn poll_rx(&mut self, max_desc: u32, max_payload: u32) -> Option<WitRxBatch> {
+        self.rx_ring
+            .poll_rx(max_desc, max_payload)
+            .map(|b| WitRxBatch {
+                handle: b.handle,
+                desc_len: b.desc_len,
+                payload_len: b.payload_len,
+                seq: b.seq,
+            })
+    }
+
+    fn wait_rx(&mut self, max_desc: u32, max_payload: u32, timeout_ms: u32) -> Option<WitRxBatch> {
+        self.rx_ring
+            .wait_rx(max_desc, max_payload, timeout_ms)
+            .map(|b| WitRxBatch {
+                handle: b.handle,
+                desc_len: b.desc_len,
+                payload_len: b.payload_len,
+                seq: b.seq,
+            })
+    }
+
+    fn read_desc(&mut self, handle: u64, off: u32, len: u32) -> Result<Vec<u8>, String> {
+        self.rx_ring.read_desc(handle, off, len)
+    }
+
+    fn read_payload(&mut self, handle: u64, off: u32, len: u32) -> Result<Vec<u8>, String> {
+        self.rx_ring.read_payload(handle, off, len)
+    }
+
+    fn release(&mut self, handle: u64) -> Result<(), String> {
+        self.rx_ring.release(handle)
+    }
+}
+
 pub struct ComponentEngine {
     cfg: EngineConfig,
     store: Store<State>,
-    // Composed scheduler export: `ntx:scenario-scheduler/packet-ingest@0.1.0#notify-rx`
-    notify_rx: Func,
     run: Func,
 }
 
@@ -265,6 +302,7 @@ impl ComponentEngine {
             State {
                 wasi: wasi_builder.build(),
                 table: wasmtime::component::ResourceTable::default(),
+                rx_ring: RxRing::new(RxRingConfig::default()),
             },
         );
 
@@ -292,51 +330,20 @@ impl ComponentEngine {
             .context("instantiate component")
             .map_err(EngineError::Init)?;
 
-        // Compose output exports `packet-ingest` under an interface. Wasmtime flattens
-        // to a string export name for dynamic lookup.
-        let iframe_names = [
-            "ntx:scenario-scheduler/packet-ingest@0.1.0",
-            "packet-ingest",
-        ];
-        let notify_rx = find_packet_ingest_notify_rx(&iframe_names, &mut store, &instance)?;
         let iframe_names = [
             "ntx:scenario-scheduler/scheduler-component@0.1.0",
             "scheduler-component",
         ];
         let run = find_scheduler_component_run(&iframe_names, &mut store, &instance)?;
-        Ok(Self {
-            cfg,
-            store,
-            notify_rx,
-            run,
-        })
+        Ok(Self { cfg, store, run })
     }
 
-    /// Host -> scheduler RX notification.
-    ///
-    /// The composed scheduler component expects two owned buffers:
-    /// - `desc_mem`: metadata ring + control structure (guest-defined), opaque to host.
-    /// - `payload_mem`: payload bytes, opaque to host.
-    pub fn notify_rx(
-        &mut self,
-        desc_mem: Vec<u8>,
-        payload_mem: Vec<u8>,
-    ) -> Result<u32, EngineError> {
-        let typed = self
-            .notify_rx
-            .typed::<(Vec<u8>, Vec<u8>), (Result<u32, String>,)>(&self.store)
-            .context("notify-rx signature mismatch")
-            .map_err(EngineError::Call)?;
-
-        match typed
-            .call(&mut self.store, (desc_mem, payload_mem))
-            .context("notify-rx call")
-            .map_err(EngineError::Call)?
-            .0
-        {
-            Ok(n) => Ok(n),
-            Err(e) => Err(EngineError::Call(anyhow::anyhow!(e))),
-        }
+    /// Enqueue a RX batch into the host rx-ring for the guest to pull.
+    pub fn enqueue_rx_batch(&mut self, desc_mem: Vec<u8>, payload_mem: Vec<u8>) {
+        self.store
+            .data_mut()
+            .rx_ring
+            .enqueue_batch(desc_mem, payload_mem)
     }
 
     /// Start the guest scheduler main loop.
@@ -368,35 +375,6 @@ impl ComponentEngine {
     pub fn config(&self) -> &EngineConfig {
         &self.cfg
     }
-}
-
-fn find_packet_ingest_notify_rx(
-    iface_names: &[&str],
-    store: &mut Store<State>,
-    instance: &Instance,
-) -> Result<Func, EngineError> {
-    let mut tried: Vec<String> = vec![];
-
-    for iface in iface_names {
-        let func_name = "notify-rx";
-        tried.push(iface.to_string());
-        if let Some((iface_item, iface_idx)) = instance.get_export(&mut *store, None, iface) {
-            if matches!(iface_item, ComponentItem::ComponentInstance(_)) {
-                tried.push(format!("{iface}::{func_name}"));
-                if let Some((func_item, func_idx)) =
-                    instance.get_export(&mut *store, Some(&iface_idx), func_name)
-                {
-                    if matches!(func_item, ComponentItem::ComponentFunc(_)) {
-                        if let Some(f) = instance.get_func(&mut *store, func_idx) {
-                            return Ok(f);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Err(EngineError::EntryNotFound { candidates: tried })
 }
 
 fn find_scheduler_component_run(

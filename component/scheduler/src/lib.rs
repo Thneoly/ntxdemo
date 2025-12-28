@@ -25,8 +25,8 @@ mod conditions;
 mod events;
 mod handlers;
 mod load_controller;
-mod packet_ingest;
 mod runtime_state;
+mod rx_decode;
 mod scenario_registry;
 mod send_scheduler;
 mod state_machine;
@@ -107,6 +107,10 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
         let sub_user = subscribe_or_log("scheduler.user.*");
         let sub_topo = subscribe_or_log("topology.changed");
 
+        // Start pulling RX from host and publishing `packet.rx`.
+        // Must happen after subscribing to `packet.rx` to avoid dropping the first RX events.
+        spawn_rx_pump();
+
         // Now safe to publish scheduler.user.start based on the scenario's ramp-up.
         init_runtime(&ctx)?;
 
@@ -131,10 +135,54 @@ impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerE
     }
 }
 
-impl exports::ntx::scenario_scheduler::packet_ingest::Guest for SchedulerExports {
-    fn notify_rx(desc_mem: Vec<u8>, payload_mem: Vec<u8>) -> Result<u32, String> {
-        Ok(packet_ingest::drain_rx_ring(desc_mem, payload_mem))
-    }
+/// Pull RX batches from host via `ntx:host/rx-ring@0.1.0` and publish `packet.rx` events.
+///
+/// This must never panic; errors are logged and the loop continues.
+fn spawn_rx_pump() {
+    // NOTE: `wit-bindgen` guest components are single-threaded by default, but WASI threads
+    // may be available depending on runtime. We keep this as best-effort:
+    // if thread spawn fails, we fall back to no RX pumping (the rest of scheduler still runs).
+    let _ = std::thread::Builder::new()
+        .name("rx-pump".to_string())
+        .spawn(|| loop {
+            // Stop flag
+            if RUNTIME.lock().map(|rt| rt.stop).unwrap_or(false) {
+                return;
+            }
+
+            // Use wait to avoid busy-loop. Timeout keeps us responsive to stop flag.
+            let batch = ntx::host::rx_ring::wait_rx(64 * 1024, 256 * 1024, 50);
+            let Some(batch) = batch else {
+                continue;
+            };
+
+            // Always release handle.
+            let handle = batch.handle;
+
+            // Read full buffers currently (simple + correct). We can optimize to slice reads later.
+            // Any read error must not panic.
+            let desc_mem = match ntx::host::rx_ring::read_desc(handle, 0, batch.desc_len) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("[scheduler] rx-ring read-desc failed: {e}");
+                    let _ = ntx::host::rx_ring::release(handle);
+                    continue;
+                }
+            };
+            let payload_mem = match ntx::host::rx_ring::read_payload(handle, 0, batch.payload_len) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("[scheduler] rx-ring read-payload failed: {e}");
+                    let _ = ntx::host::rx_ring::release(handle);
+                    continue;
+                }
+            };
+
+            // Drain and publish packet.rx events.
+            let _ = crate::rx_decode::drain_rx_ring(desc_mem, payload_mem);
+
+            let _ = ntx::host::rx_ring::release(handle);
+        });
 }
 
 /// 运行期上下文，占位后续扩展。

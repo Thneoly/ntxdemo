@@ -4,6 +4,8 @@ pub mod error;
 pub mod event_bus;
 pub mod kernel;
 pub mod logger;
+pub mod rx_layout;
+pub mod rx_ring;
 pub mod scheduler;
 pub mod time;
 pub mod wasm_engine;

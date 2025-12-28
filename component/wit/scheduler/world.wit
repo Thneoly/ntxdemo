@@ -2,8 +2,9 @@ package ntx:scenario-scheduler@0.1.0;
 
 use ntx:scenario-actions-executor/action-component@0.1.0;
 use ntx:scenario-eventbus/event-bus@0.1.0;
-use ntx:host/resources;
-use ntx:host/udp-socket-control;
+use ntx:host/rx-ring@0.1.0;
+use ntx:host/resources@0.1.0;
+use ntx:host/udp-socket-control@0.1.0;
 use ntx:core-types/types@0.1.0;
 
 /// Scheduler 主循环入口
@@ -12,19 +13,13 @@ interface scheduler-component {
     run: func(config-dir: string) -> result<_, string>;
 }
 
-/// 接收 host 共享内存中的 RX ring 通知（参考 packet-engine 的 drain_rx_ring）。
-interface packet-ingest {
-    /// 解析 desc/payload buffer，返回消费的条目数。
-    notify-rx: func(desc-mem: list<u8>, payload-mem: list<u8>) -> result<u32, string>;
-}
-
 world scheduler-main {
     import action-component;
     import event-bus;
-    import ntx:host/resources;
-    import ntx:host/udp-socket-control;
+    import rx-ring;
+    import resources;
+    import udp-socket-control;
     import types;
     export scheduler-component;
-    export packet-ingest;
 }
 

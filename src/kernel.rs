@@ -808,6 +808,7 @@ pub fn non_blocking_recv_udp() -> Option<UdpRx> {
     let n = match nic.recv_nonblocking(&mut buf) {
         Ok(Some(n)) => n,
         Ok(None) => {
+            warn!("nic.recv_nonblocking: no packet available");
             return None;
         }
         Err(e) => {

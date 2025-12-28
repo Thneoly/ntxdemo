@@ -45,22 +45,17 @@ impl EngineManager {
         self.default.is_some()
     }
 
-    pub fn notify_rx(
-        &mut self,
-        desc_mem: Vec<u8>,
-        payload_mem: Vec<u8>,
-    ) -> Result<u32, EngineError> {
+    pub fn enqueue_rx_batch(&mut self, desc_mem: Vec<u8>, payload_mem: Vec<u8>) {
         let Some(default) = self.default.clone() else {
-            return Ok(0);
+            return;
         };
 
         for (handle, engine) in &mut self.engines {
             if *handle == default {
-                return engine.notify_rx(desc_mem, payload_mem);
+                engine.enqueue_rx_batch(desc_mem, payload_mem);
+                return;
             }
         }
-
-        Ok(0)
     }
 
     pub fn run(&mut self, config_dir: String) -> Result<(), EngineError> {

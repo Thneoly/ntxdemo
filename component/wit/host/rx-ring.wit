@@ -1,0 +1,53 @@
+package ntx:host@0.1.0;
+
+/// RX batch pulling interface (end-state): guest scheduler pulls RX ring batches from host
+/// inside `scheduler-component.run()` instead of host pushing via an exported `notify-rx`.
+///
+/// ABI goals:
+/// - Avoid copying large `desc/payload` buffers into guest per batch.
+/// - Host owns buffers; guest reads slices via (handle, offset, len) and then releases.
+/// - Handle reuse must be generation-isolated to prevent stale-handle reads.
+interface rx-ring {
+    /// Opaque logical handle for one RX batch.
+    type batch-handle = u64;
+
+    /// Metadata of an RX batch.
+    record rx-batch {
+        handle: batch-handle,
+        /// Total bytes available in desc buffer for this batch.
+        desc-len: u32,
+        /// Total bytes available in payload buffer for this batch.
+        payload-len: u32,
+        /// Batch-level monotonically increasing sequence number for observability.
+        /// May skip when batches are dropped/merged.
+        seq: u64,
+    }
+
+    /// Non-blocking poll.
+    ///
+    /// Required semantics:
+    /// - If queue is empty, return `none`.
+    /// - Host MUST NOT return truncated views. If a batch exceeds max limits, host must
+    ///   split/select batches before returning; otherwise return `none` and record metrics.
+    poll-rx: func(max-desc: u32, max-payload: u32) -> option<rx-batch>;
+
+    /// Blocking/timeout wait.
+    ///
+    /// Required semantics:
+    /// - On timeout, must return `none`.
+    /// - When a new batch is enqueued, host must wake waiters promptly.
+    /// - On host shutdown, host must wake waiters so this call returns `none` quickly.
+    wait-rx: func(max-desc: u32, max-payload: u32, timeout-ms: u32) -> option<rx-batch>;
+
+    /// Read a slice of the desc buffer by offset.
+    /// Errors (string) MUST be stable:
+    /// - "invalid handle" for unknown/released/expired handle
+    /// - "out of bounds" for invalid offset/length
+    read-desc: func(handle: batch-handle, off: u32, len: u32) -> result<list<u8>, string>;
+
+    /// Read a slice of the payload buffer by offset.
+    read-payload: func(handle: batch-handle, off: u32, len: u32) -> result<list<u8>, string>;
+
+    /// Release a batch handle so host can reclaim/reuse buffers.
+    release: func(handle: batch-handle) -> result<_, string>;
+}

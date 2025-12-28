@@ -17,8 +17,8 @@ fn main() -> Result<()> {
     // Start guest scheduler main loop on a dedicated thread.
     //
     // NOTE: the composed scheduler's `scheduler-component.run(config-dir)` is expected to
-    // block (it owns the guest event loop). We keep host scheduling (NIC RX/TX, notify-rx)
-    // on the main thread.
+    // block (it owns the guest event loop). We keep host scheduling (NIC RX/TX and rx-ring
+    // batch enqueue) on the main thread.
     let guest_config_dir: PathBuf = cfg
         .scheduler
         .wasm

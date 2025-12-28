@@ -31,7 +31,5 @@ fn hostnet_imports_are_wired() {
 
     // Instantiation already exercises import resolution.
     // If host wiring is missing, `ComponentEngine::new` would fail above.
-    let _ = engine
-        .notify_rx(Vec::new(), Vec::new())
-        .expect("notify_rx should be callable");
+    engine.enqueue_rx_batch(Vec::new(), Vec::new());
 }

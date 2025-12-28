@@ -11,7 +11,7 @@ fn main() -> Result<()> {
     };
 
     let mut engine = ComponentEngine::new(cfg)?;
-    let n = engine.notify_rx(Vec::new(), Vec::new())?;
-    println!("notify-rx completed (n={n})");
+    engine.enqueue_rx_batch(Vec::new(), Vec::new());
+    println!("enqueued empty rx batch");
     Ok(())
 }

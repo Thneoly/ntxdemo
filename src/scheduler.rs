@@ -2,8 +2,8 @@ use crate::app_config::{SchedulerConfig, WasmConfig};
 use crate::error::SchedulerError;
 use crate::event_bus::{Bytes, EventBus, SimpleEventBus, build_event};
 use crate::kernel::non_blocking_recv_udp;
+use crate::rx_layout as shared_mem;
 use crate::time::{PollTimeManager, TimeManager, TimerToken};
-use crate::wasm_engine::shared_mem;
 use crate::wasm_engine::{EngineConfig, EngineHandle, EngineManager};
 use once_cell::sync::Lazy;
 use std::cell::RefCell;
@@ -536,25 +536,27 @@ impl Scheduler {
                     return false;
                 };
 
-                // For the composed scheduler component path, the ABI is:
-                //   notify-rx(desc_mem: list<u8>, payload_mem: list<u8>) -> result<u32, string>
+                // For the composed scheduler component path (end-state pull model):
+                // - host builds (desc_mem, payload_mem) buffers in a shared layout
+                // - host enqueues the buffers into the host `rx-ring` provider
+                // - guest `run()` pulls via `ntx:host/rx-ring@0.1.0` and publishes `packet.rx`
                 //
-                // desc_mem/payload_mem format is defined by the component scheduler
-                // implementation (`component/scheduler/src/lib.rs::drain_rx_ring`).
-                // We reuse `wasm_engine::shared_mem` helpers to encode the same layout:
+                // desc_mem/payload_mem layout is defined by the guest decode implementation
+                // (`component/scheduler/src/rx_decode.rs::drain_rx_ring`).
+                // We reuse `rx_layout` helpers to encode the same layout:
                 // - A control block at offset 0
                 // - A descriptor ring starting at DESCS_OFF
                 // - payload_mem is a plain byte region, with offsets referenced by desc
                 let (desc_mem, payload_mem) = RX_RING.with_borrow_mut(|r| {
                     r.push_and_maybe_flush_one(rx.sock_id.map(|s| s as u64), &rx.payload)
                 });
-                let mut mgr = EngineManager::global()
-                    .lock()
-                    .expect("engine manager poisoned");
                 if let (Some(desc_mem), Some(payload_mem)) = (desc_mem, payload_mem) {
-                    match mgr.notify_rx(desc_mem, payload_mem) {
-                        Ok(n) => n > 0,
-                        Err(_e) => false,
+                    if let Ok(mut mgr) = EngineManager::global().lock() {
+                        mgr.enqueue_rx_batch(desc_mem, payload_mem);
+                        true
+                    } else {
+                        // If engine manager is poisoned, drop (observability handled elsewhere).
+                        false
                     }
                 } else {
                     // Buffered but not flushed yet.
@@ -572,7 +574,7 @@ impl Scheduler {
                     input_len = wasm.input.len(),
                     "executing wasm call"
                 );
-                // NicRx already executed the required notify call inline.
+                // Note: in the end-state we avoid host->guest export calls from the RX path.
                 // Keep WasmCall tasks reserved for future explicit guest calls.
                 let _ = wasm;
                 false
@@ -680,7 +682,10 @@ impl Scheduler {
     }
 }
 
-/// A reusable RX ring writer for the host->composed-scheduler `notify-rx` ABI.
+/// A reusable RX batch builder for the host->guest RX handoff.
+///
+/// This produces `(desc_mem, payload_mem)` in the shared layout and hands ownership
+/// to the host `rx-ring` provider (so the guest can pull it inside `run()`).
 ///
 /// Contract:
 /// - `desc_mem` contains a control block at 0 and desc ring at DESCS_OFF.
