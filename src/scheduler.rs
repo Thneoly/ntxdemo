@@ -1,3 +1,37 @@
+//! Host scheduler for Ntx.
+//!
+//! ## Design Goals
+//!
+//! 1. **No deadlock with long-running guest**: The host scheduler must never hold a lock
+//!    while calling the guest's async `run()` export. This is achieved via the **engine owner**
+//!    actor pattern, which pulls from shared queues (RX ring, etc.) without blocking the scheduler loop.
+//!
+//! 2. **Guarantee NicRx polling is never starved by idle wait**:
+//!    - Every scheduler loop iteration calls `poll_one_resident_task()` before entering any idle wait.
+//!    - NicRx is a special resident that is **always polled** (never suppressed by backoff).
+//!    - Bounded idle wait (`IDLE_WAIT_MAX = 2ms`) ensures the loop wakes periodically.
+//!    - After bounded wait timeout/notify, the loop immediately re-polls resident tasks.
+//!
+//! 3. **CPU-friendly**: Exponential backoff for non-NicRx residents reduces spinning; bounded
+//!    idle wait prevents sleeping indefinitely when there's nothing to do.
+//!
+//! 4. **No dependency on plugins**: All scheduling logic is self-contained in root crate.
+//!
+//! ## Idle Wait Fixed
+//!
+//! **Prior issue**: When `no_idle_wait=false`, the scheduler would enter `ingest_blocking_bounded()`
+//! in a loop (due to an internal loop in the old implementation), blocking indefinitely on the
+//! condvar and preventing NicRx from being polled.
+//!
+//! **Fix**: Removed the internal loop from `ingest_blocking_bounded()`. Now it:
+//! 1. Drains ingress queue and due timers (non-blocking).
+//! 2. If work is found, return immediately.
+//! 3. If not, do a single `wait_timeout(max_wait)` (e.g., 2ms).
+//! 4. Return immediately after timeout/notify (don't loop again).
+//! 5. The caller (main run loop) immediately re-polls resident tasks.
+//!
+//! This ensures NicRx polling happens at least every 2ms, even when the run queue is empty.
+
 use crate::app_config::{SchedulerConfig, WasmConfig};
 use crate::engine_owner::EngineMsg;
 use crate::error::SchedulerError;
@@ -16,7 +50,41 @@ use std::sync::{
 };
 use std::thread;
 use std::time::{Duration, Instant};
-// (no direct tracing macro imports; use `tracing::...!` at call sites)
+
+#[derive(Debug, Clone, Copy)]
+struct NicRxHeartbeat {
+    last_log: Instant,
+    calls: u64,
+    no_packet: u64,
+    enqueued_batches: u64,
+    no_engine_tx: u64,
+    buffered_not_flushed: u64,
+    rx_seen: u64,
+    sent_batches: u64,
+}
+
+impl Default for NicRxHeartbeat {
+    fn default() -> Self {
+        Self {
+            last_log: Instant::now(),
+            calls: 0,
+            no_packet: 0,
+            enqueued_batches: 0,
+            no_engine_tx: 0,
+            buffered_not_flushed: 0,
+            rx_seen: 0,
+            sent_batches: 0,
+        }
+    }
+}
+
+static NIC_RX_HEARTBEAT: Lazy<Mutex<NicRxHeartbeat>> = Lazy::new(|| {
+    Mutex::new(NicRxHeartbeat {
+        // Ensure the first poll logs quickly.
+        last_log: Instant::now() - Duration::from_secs(3600),
+        ..NicRxHeartbeat::default()
+    })
+});
 
 /// A self-contained priority scheduler for the root crate.
 ///
@@ -28,6 +96,9 @@ use std::time::{Duration, Instant};
 
 const PRIORITY_LEVELS: usize = 64;
 const IDLE_SPIN_LIMIT: usize = 2;
+// Safety net: even when there are no timers and no new submissions,
+// still wake periodically to poll resident tasks (e.g., NicRx).
+const IDLE_WAIT_MAX: Duration = Duration::from_millis(2);
 const RESIDENT_BACKOFF_MIN: Duration = Duration::from_micros(50);
 const RESIDENT_BACKOFF_MAX: Duration = Duration::from_millis(2);
 
@@ -230,6 +301,7 @@ struct ResidentState {
 
 #[derive(Debug, Clone)]
 struct ResidentTask {
+    #[allow(dead_code)]
     id: String,
     priority: u8,
     kind: TaskKind,
@@ -256,22 +328,13 @@ pub struct Scheduler {
     shutdown: Arc<AtomicBool>,
     tm: Arc<dyn TimeManager>,
     bus: Arc<SimpleEventBus>,
+    resident_count: std::sync::atomic::AtomicUsize,
+    no_idle_wait: AtomicBool,
 }
 
 static SCHEDULER: Lazy<Scheduler> = Lazy::new(Scheduler::new);
 static ENGINE_TX: Lazy<Mutex<Option<tokio::sync::mpsc::Sender<EngineMsg>>>> =
     Lazy::new(|| Mutex::new(None));
-
-/// Start the global scheduler in a background thread.
-///
-/// If you need a blocking scheduler, call `Scheduler::global().run()` directly.
-pub fn start_scheduler() -> Result<(), SchedulerError> {
-    thread::Builder::new()
-        .name("ntx-scheduler".into())
-        .spawn(|| Scheduler::global().run())
-        .map_err(SchedulerError::Io)?;
-    Ok(())
-}
 
 /// Seed the global scheduler with a default "wait for network IO" task.
 ///
@@ -341,6 +404,8 @@ impl Scheduler {
             shutdown,
             tm,
             bus,
+            resident_count: std::sync::atomic::AtomicUsize::new(0),
+            no_idle_wait: AtomicBool::new(false),
         }
     }
 
@@ -348,6 +413,13 @@ impl Scheduler {
         // NOTE: WASM engine initialization is async and must be triggered explicitly
         // via `init_wasm_engine_with_config`.
         self.apply_wasm_config(cfg.wasm);
+
+        // Debug/diagnostic flags.
+        if cfg.no_idle_wait {
+            // This is intentionally sticky: once enabled we don't toggle it off
+            // to avoid surprising behavior in long-running processes.
+            self.no_idle_wait.store(true, Ordering::Relaxed);
+        }
     }
 
     fn apply_wasm_config(&self, cfg: WasmConfig) {
@@ -458,6 +530,7 @@ impl Scheduler {
             kind: task.kind,
             backoff: ResidentBackoff::default(),
         });
+        self.resident_count.fetch_add(1, Ordering::Relaxed);
         cv.notify_one();
     }
 
@@ -491,6 +564,9 @@ impl Scheduler {
     pub fn run(&self) -> ! {
         let mut queues = PriorityQueues::new();
         let mut idle_spins = 0usize;
+        let mut last_loop_log = Instant::now() - Duration::from_secs(3600);
+        let mut loop_iters: u64 = 0;
+        let mut idle_loops: u64 = 0;
 
         loop {
             if self.shutdown.load(Ordering::Relaxed) {
@@ -498,16 +574,52 @@ impl Scheduler {
                 thread::park();
             }
 
+            loop_iters += 1;
+            if Instant::now().duration_since(last_loop_log) >= Duration::from_secs(1) {
+                tracing::trace!(
+                    target: "ntx::scheduler",
+                    iters = loop_iters,
+                    idle_loops = idle_loops,
+                    resident_tasks = self.resident_count.load(Ordering::Relaxed),
+                    no_idle_wait = self.no_idle_wait.load(Ordering::Relaxed),
+                    "scheduler loop heartbeat"
+                );
+                last_loop_log = Instant::now();
+                loop_iters = 0;
+                idle_loops = 0;
+            }
+
+            // A) Resident-first policy: always poll at least one resident task before
+            // we consider any blocking idle wait. This prevents NicRx from being
+            // starved by `Condvar::wait()` when the run queue is empty.
+            self.poll_one_resident_task();
+
             // Keep queues fresh.
             if queues.is_empty() {
-                // short spin/yield to reduce cv contention under bursty workloads
-                if idle_spins < IDLE_SPIN_LIMIT {
-                    idle_spins += 1;
-                    thread::yield_now();
+                idle_loops += 1;
+
+                if self.no_idle_wait.load(Ordering::Relaxed) {
+                    // Diagnostic mode: never block on the condvar. This keeps the loop
+                    // running so we can prove whether RX is happening but was masked
+                    // by blocking waits.
                     self.ingest_nowait(&mut queues);
+                    // Be CPU-friendly: sleep a tiny amount when idle.
+                    std::thread::sleep(Duration::from_millis(1));
                 } else {
-                    idle_spins = 0;
-                    self.ingest_blocking(&mut queues);
+                    // short spin/yield to reduce cv contention under bursty workloads
+                    if idle_spins < IDLE_SPIN_LIMIT {
+                        idle_spins += 1;
+                        thread::yield_now();
+                        self.ingest_nowait(&mut queues);
+                    } else {
+                        idle_spins = 0;
+                        // B) Bounded idle wait: even if there are no timers and no submits,
+                        // wake periodically so resident tasks can be polled.
+                        self.ingest_blocking_bounded(&mut queues, IDLE_WAIT_MAX);
+                        // After bounded wait wakes (timeout or notify), immediately re-poll
+                        // resident tasks so NicRx doesn't miss a polling window.
+                        self.poll_one_resident_task();
+                    }
                 }
             } else {
                 idle_spins = 0;
@@ -515,24 +627,96 @@ impl Scheduler {
                 self.ingest_nowait(&mut queues);
             }
 
-            // Policy: each loop runs at most one resident task (by priority),
-            // then executes one regular queued task.
-            self.poll_one_resident_task();
-
             if let Some(task) = queues.pop() {
                 self.execute(task);
             }
         }
     }
 
+    fn ingest_blocking_bounded(&self, queues: &mut PriorityQueues, max_wait: Duration) {
+        //! Drain ingress and timers, then sleep for at most `max_wait` if idle.
+        //!
+        //! Design contract:
+        //! - This function **must not loop internally** on `wait_timeout`.
+        //!   Previous versions had an internal loop that would block indefinitely,
+        //!   preventing `poll_one_resident_task()` from executing after each wake.
+        //! - Guaranteed semantics: single `wait_timeout(max_wait)` then return.
+        //! - Caller (main loop) immediately re-polls resident tasks after this returns.
+        //!   This ensures NicRx is polled at least every `max_wait` period.
+
+        let (lock, cv) = &*self.shared;
+        let mut state = lock.lock().expect("scheduler mutex poisoned");
+
+        // Drain immediate ingress and due timers (non-blocking).
+        while let Some(task) = state.ingress.pop_front() {
+            queues.push(task);
+        }
+        self.promote_due_timers_locked(&mut state, queues);
+
+        // If we found work, return immediately.
+        if !queues.is_empty() {
+            return;
+        }
+
+        // No runnable work; wait either for submit() or until next timer,
+        // but never longer than `max_wait`.
+        let now = self.tm.now();
+        let next_deadline = self.next_timer_deadline_locked();
+
+        let timeout = match next_deadline {
+            Some(at) if at > now => {
+                let t = at.saturating_duration_since(now);
+                if t < max_wait { t } else { max_wait }
+            }
+            Some(_) => Duration::from_millis(0),
+            None => max_wait,
+        };
+
+        if !timeout.is_zero() {
+            let (guard, _) = cv
+                .wait_timeout(state, timeout)
+                .expect("scheduler mutex poisoned");
+            state = guard;
+
+            // After timeout/notify, drain any newly arrived work.
+            while let Some(task) = state.ingress.pop_front() {
+                queues.push(task);
+            }
+            self.promote_due_timers_locked(&mut state, queues);
+        }
+        // Return immediately after bounded wait, whether we found work or not.
+        // The caller will re-poll resident tasks.
+    }
     fn poll_one_resident_task(&self) {
+        //! Poll at most one resident task, prioritized by priority field.
+        //!
+        //! **Key guarantee: NicRx is always polled.**
+        //! - NicRx's backoff is cleared before evaluation so it's never suppressed.
+        //! - NicRx's backoff is kept clear after execution, ensuring next iteration polls it again.
+        //!
+        //! **Why**: In userspace packet reception, missing a polling window can cause us
+        //! to miss brief packet availability. The bounded idle wait (2ms) ensures we wake
+        //! periodically, but NicRx must always be eligible when we do.
+        //!
+        //! **Other residents** use exponential backoff to avoid spinning when they return
+        //! no work (e.g., `did_work=false`). This keeps the CPU usage low.
+
         let now = self.tm.now();
 
         // Pick one runnable resident by priority.
         let mut chosen: Option<usize> = None;
         {
             let (lock, _) = &*self.shared;
-            let state = lock.lock().expect("scheduler mutex poisoned");
+            let mut state = lock.lock().expect("scheduler mutex poisoned");
+
+            // NicRx must never be suppressed by backoff.
+            // Clear its backoff before evaluating, so it's always eligible.
+            for task in state.resident.tasks.iter_mut() {
+                if matches!(task.kind, TaskKind::NetworkIo(NetworkIoTask::NicRx)) {
+                    task.backoff.until = None;
+                }
+            }
+
             for (idx, task) in state.resident.tasks.iter().enumerate() {
                 if let Some(until) = task.backoff.until {
                     if until > now {
@@ -569,6 +753,17 @@ impl Scheduler {
         let (lock, _) = &*self.shared;
         let mut state = lock.lock().expect("scheduler mutex poisoned");
         let entry = &mut state.resident.tasks[idx];
+
+        // NicRx never uses backoff; it's always eligible for polling.
+        // Other residents use exponential backoff when they return no work.
+        let is_nicrx = matches!(entry.kind, TaskKind::NetworkIo(NetworkIoTask::NicRx));
+        if is_nicrx {
+            // Keep NicRx always eligible
+            entry.backoff.until = None;
+            entry.backoff.current = RESIDENT_BACKOFF_MIN;
+            return;
+        }
+
         if did_work {
             entry.backoff.until = None;
             entry.backoff.current = RESIDENT_BACKOFF_MIN;
@@ -585,11 +780,55 @@ impl Scheduler {
     fn run_kind_once(&self, kind: &TaskKind) -> bool {
         match kind {
             TaskKind::NetworkIo(NetworkIoTask::NicRx) => {
+                let now = self.tm.now();
+                {
+                    let mut hb = NIC_RX_HEARTBEAT.lock().expect("nicrx heartbeat poisoned");
+                    hb.calls += 1;
+                    if now.duration_since(hb.last_log) >= Duration::from_secs(1) {
+                        tracing::trace!(
+                            target: "ntx::scheduler::nicrx",
+                            calls = hb.calls,
+                            no_packet = hb.no_packet,
+                            enqueued_batches = hb.enqueued_batches,
+                            no_engine_tx = hb.no_engine_tx,
+                            buffered_not_flushed = hb.buffered_not_flushed,
+                            rx_seen = hb.rx_seen,
+                            sent_batches = hb.sent_batches,
+                            "nicrx heartbeat"
+                        );
+                        hb.last_log = now;
+                        // rolling 1Hz bucket
+                        hb.calls = 0;
+                        hb.no_packet = 0;
+                        hb.enqueued_batches = 0;
+                        hb.no_engine_tx = 0;
+                        hb.buffered_not_flushed = 0;
+                        hb.rx_seen = 0;
+                        hb.sent_batches = 0;
+                    }
+                }
+
                 // Policy #2: NicRx only receives and enqueues a WasmCall; the WasmCall will
                 // drive the guest handler.
                 let Some(rx) = non_blocking_recv_udp() else {
+                    let mut hb = NIC_RX_HEARTBEAT.lock().expect("nicrx heartbeat poisoned");
+                    hb.no_packet += 1;
                     return false;
                 };
+
+                {
+                    let mut hb = NIC_RX_HEARTBEAT.lock().expect("nicrx heartbeat poisoned");
+                    hb.rx_seen += 1;
+                }
+
+                tracing::debug!(
+                    target: "ntx::scheduler::nicrx",
+                    sock_id = ?rx.sock_id,
+                    src_port = rx.src_port,
+                    dst_port = rx.dst_port,
+                    payload_len = rx.payload.len(),
+                    "nicrx received udp"
+                );
 
                 // For the composed scheduler component path (end-state pull model):
                 // - host builds (desc_mem, payload_mem) buffers in a shared layout
@@ -608,17 +847,56 @@ impl Scheduler {
                 if let (Some(desc_mem), Some(payload_mem)) = (desc_mem, payload_mem) {
                     if let Some(tx) = engine_tx() {
                         // Best-effort; if the channel is closed/full, drop newest.
-                        let _ = tx.try_send(EngineMsg::RxBatch {
+                        let desc_len = desc_mem.len();
+                        let payload_len = payload_mem.len();
+
+                        let batch_id = {
+                            let hb = NIC_RX_HEARTBEAT.lock().expect("nicrx heartbeat poisoned");
+                            // Monotonic-ish within the process, useful for join across layers.
+                            hb.calls
+                        };
+
+                        let res = tx.try_send(EngineMsg::RxBatch {
                             desc: desc_mem,
                             payload: payload_mem,
                         });
-                        true
+                        if let Err(e) = &res {
+                            tracing::warn!(
+                                target: "ntx::scheduler::nicrx",
+                                error = %e,
+                                desc_len,
+                                payload_len,
+                                batch_id,
+                                "engine owner channel full/closed; dropping newest RxBatch"
+                            );
+                            false
+                        } else {
+                            tracing::debug!(
+                                target: "ntx::scheduler::nicrx",
+                                batch_id,
+                                desc_len,
+                                payload_len,
+                                "sent RxBatch to engine owner"
+                            );
+                            let mut hb = NIC_RX_HEARTBEAT.lock().expect("nicrx heartbeat poisoned");
+                            hb.enqueued_batches += 1;
+                            hb.sent_batches += 1;
+                            true
+                        }
                     } else {
                         // Engine not configured yet.
+                        let mut hb = NIC_RX_HEARTBEAT.lock().expect("nicrx heartbeat poisoned");
+                        hb.no_engine_tx += 1;
+                        tracing::warn!(
+                            target: "ntx::scheduler::nicrx",
+                            "engine_tx is None; dropping RxBatch"
+                        );
                         false
                     }
                 } else {
                     // Buffered but not flushed yet.
+                    let mut hb = NIC_RX_HEARTBEAT.lock().expect("nicrx heartbeat poisoned");
+                    hb.buffered_not_flushed += 1;
                     true
                 }
             }
@@ -660,45 +938,6 @@ impl Scheduler {
 
         // Promote due timers (polling manager will rely on explicit check).
         self.promote_due_timers_locked(&mut state, queues);
-    }
-
-    fn ingest_blocking(&self, queues: &mut PriorityQueues) {
-        let (lock, cv) = &*self.shared;
-        let mut state = lock.lock().expect("scheduler mutex poisoned");
-
-        loop {
-            if self.shutdown.load(Ordering::Relaxed) {
-                break;
-            }
-
-            // First, drain immediate ingress and due timers.
-            while let Some(task) = state.ingress.pop_front() {
-                queues.push(task);
-            }
-            self.promote_due_timers_locked(&mut state, queues);
-
-            if !queues.is_empty() {
-                break;
-            }
-
-            // No runnable work; wait either for submit() or until next timer.
-            let now = self.tm.now();
-            let next_deadline = self.next_timer_deadline_locked();
-            state = match next_deadline {
-                Some(at) if at > now => {
-                    let timeout = at.saturating_duration_since(now);
-                    let (guard, _) = cv
-                        .wait_timeout(state, timeout)
-                        .expect("scheduler mutex poisoned");
-                    guard
-                }
-                Some(_) => {
-                    // Deadline already due; loop will promote.
-                    state
-                }
-                None => cv.wait(state).expect("scheduler mutex poisoned"),
-            };
-        }
     }
 
     fn promote_due_timers_locked(&self, state: &mut SharedState, queues: &mut PriorityQueues) {
@@ -949,9 +1188,13 @@ mod tests {
                 shutdown,
                 tm,
                 bus,
+                resident_count: std::sync::atomic::AtomicUsize::new(0),
+                no_idle_wait: std::sync::atomic::AtomicBool::new(false),
             };
             let mut q = PriorityQueues::new();
-            sched2.ingest_blocking(&mut q);
+            // Use the bounded idle wait so this can't sleep forever if there's
+            // no timer deadline.
+            sched2.ingest_blocking_bounded(&mut q, Duration::from_millis(50));
             q.pop().expect("expected task");
         });
 

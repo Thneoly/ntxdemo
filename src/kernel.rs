@@ -241,6 +241,7 @@ pub fn hostnet_udp_bind_all(
     }
     // One-step API: commit bindings into the conn-table.
     hostnet_udp_finalize(sock)?;
+
     Ok(())
 }
 
@@ -525,248 +526,11 @@ pub fn init(_path: impl AsRef<Path>) -> Result<()> {
     Ok(())
 }
 
-/// Request/acquire resources from kernel control-plane.
-///
-/// This is intentionally minimal for now: it provides a single place where future
-/// resource acquisition can hook in, and ensures the ABR snapshot is refreshed exactly
-/// once after resources change.
-pub fn request_resources(req: ResourceRequest) -> Result<ResourceResponse> {
-    // Apply pins/acquisitions to the shared pools (control-plane).
-    // Note: Pinning is deterministic and establishes ownership; dataplane uses ABR snapshot.
-    let mut pools = KERNEL.pools.lock();
-
-    let owner = req.owner.unwrap_or_else(|| {
-        let name = req
-            .owner_name
-            .clone()
-            .unwrap_or_else(|| "socket".to_string());
-        pools.acquire_socket_owner(name)
-    });
-
-    // Step-2 audit / management registry: record owner name (best-effort).
-    audit_registry::with_audit_registry_mut(|reg: &mut audit_registry::AuditRegistry| {
-        reg.record_owner_name(owner, req.owner_name.clone());
-    });
-
-    let mut resp = ResourceResponse {
-        owner,
-        ..ResourceResponse::default()
-    };
-
-    let ipv4_pool = if req.ipv4_pool.is_empty() {
-        "default"
-    } else {
-        req.ipv4_pool.as_str()
-    };
-    let mac_pool = if req.mac_pool.is_empty() {
-        "default"
-    } else {
-        req.mac_pool.as_str()
-    };
-    let udp_pool = if req.udp_port_pool.is_empty() {
-        "default"
-    } else {
-        req.udp_port_pool.as_str()
-    };
-    let tcp_pool = if req.tcp_port_pool.is_empty() {
-        "default"
-    } else {
-        req.tcp_port_pool.as_str()
-    };
-
-    let wants_auto_acquire = req.pin_ipv4.is_none()
-        && req.pin_mac.is_none()
-        && req.pin_udp_ports.is_empty()
-        && req.pin_tcp_ports.is_empty();
-
-    // IPv4
-    if let Some(ip) = req.pin_ipv4 {
-        let rid = pools.pin_non_socket_with_id(
-            resources::ResourceKind::Ipv4,
-            ipv4_pool,
-            resp.owner,
-            NonSocketResourceValue::Ipv4(ip),
-        )?;
-        resp.ipv4 = Some((rid, ip));
-
-        audit_registry::with_audit_registry_mut(|reg| reg.record_ipv4(resp.owner, rid, ip));
-    } else if wants_auto_acquire {
-        let (rid, v) = pools.acquire_and_pin_non_socket(
-            resources::ResourceKind::Ipv4,
-            ipv4_pool,
-            resp.owner,
-        )?;
-        let NonSocketResourceValue::Ipv4(ip) = v else {
-            unreachable!("resource kind/value mismatch")
-        };
-        resp.ipv4 = Some((rid, ip));
-
-        audit_registry::with_audit_registry_mut(|reg| reg.record_ipv4(resp.owner, rid, ip));
-    }
-
-    // MAC
-    if let Some(mac) = req.pin_mac {
-        let rid = pools.pin_non_socket_with_id(
-            resources::ResourceKind::Mac,
-            mac_pool,
-            resp.owner,
-            NonSocketResourceValue::Mac(mac),
-        )?;
-        resp.mac = Some((rid, mac));
-
-        audit_registry::with_audit_registry_mut(|reg| reg.record_mac(resp.owner, rid, mac));
-    } else if wants_auto_acquire {
-        let (rid, v) =
-            pools.acquire_and_pin_non_socket(resources::ResourceKind::Mac, mac_pool, resp.owner)?;
-        let NonSocketResourceValue::Mac(mac) = v else {
-            unreachable!("resource kind/value mismatch")
-        };
-        resp.mac = Some((rid, mac));
-
-        audit_registry::with_audit_registry_mut(|reg| reg.record_mac(resp.owner, rid, mac));
-    }
-
-    // UDP ports
-    if !req.pin_udp_ports.is_empty() {
-        for p in &req.pin_udp_ports {
-            let rid = pools.pin_non_socket_with_id(
-                resources::ResourceKind::UdpPort,
-                udp_pool,
-                resp.owner,
-                NonSocketResourceValue::UdpPort(*p),
-            )?;
-            resp.udp_ports.push((rid, *p));
-
-            audit_registry::with_audit_registry_mut(|reg| reg.record_udp_port(resp.owner, rid, *p));
-        }
-    } else if wants_auto_acquire {
-        let (rid, v) = pools.acquire_and_pin_non_socket(
-            resources::ResourceKind::UdpPort,
-            udp_pool,
-            resp.owner,
-        )?;
-        let NonSocketResourceValue::UdpPort(port) = v else {
-            unreachable!("resource kind/value mismatch")
-        };
-        resp.udp_ports.push((rid, port));
-
-        audit_registry::with_audit_registry_mut(|reg| reg.record_udp_port(resp.owner, rid, port));
-    }
-
-    // TCP ports
-    if !req.pin_tcp_ports.is_empty() {
-        for p in &req.pin_tcp_ports {
-            let rid = pools.pin_non_socket_with_id(
-                resources::ResourceKind::TcpPort,
-                tcp_pool,
-                resp.owner,
-                NonSocketResourceValue::TcpPort(*p),
-            )?;
-            resp.tcp_ports.push((rid, *p));
-
-            audit_registry::with_audit_registry_mut(|reg| reg.record_tcp_port(resp.owner, rid, *p));
-        }
-    } else if wants_auto_acquire {
-        let (rid, v) = pools.acquire_and_pin_non_socket(
-            resources::ResourceKind::TcpPort,
-            tcp_pool,
-            resp.owner,
-        )?;
-        let NonSocketResourceValue::TcpPort(port) = v else {
-            unreachable!("resource kind/value mismatch")
-        };
-        resp.tcp_ports.push((rid, port));
-
-        audit_registry::with_audit_registry_mut(|reg| reg.record_tcp_port(resp.owner, rid, port));
-    }
-
-    // Publish ABR snapshot from pinned resources for this owner.
-    let mut store = KERNEL.store.lock();
-    pools.publish_abr_for_owner(&mut store, &resp.owner, abr::BindingOwner::KernelIface);
-
-    // Refresh cached ABR view once.
-    refresh_abr();
-    Ok(resp)
-}
-
-/// Kernel-facing convenience wrapper: create a UDP socket and fully bind it.
-///
-/// This wires together:
-/// - `udp::create_udp_socket` (owner + sock_id)
-/// - resource acquisition (IPv4/MAC/UDP port) owned by `owner`
-/// - `UdpSocketBinder` bind-by-ResourceId + finalize into the UDP conn-table
-pub fn create_udp_socket(req: UdpSocketCreateRequest) -> Result<UdpSocketCreateResponse> {
-    let ipv4_pool = if req.ipv4_pool.is_empty() {
-        "default"
-    } else {
-        req.ipv4_pool.as_str()
-    };
-    let mac_pool = if req.mac_pool.is_empty() {
-        "default"
-    } else {
-        req.mac_pool.as_str()
-    };
-    let udp_pool = if req.udp_port_pool.is_empty() {
-        "default"
-    } else {
-        req.udp_port_pool.as_str()
-    };
-
-    let ttl = req.ttl.unwrap_or(64);
-
-    // Step 1: create owner+sock_id, and acquire resources (control-plane).
-    let mut pools = KERNEL.pools.lock();
-    let mut table = KERNEL.udp_sockets.lock();
-    let (owner, sock_id) = udp::create_udp_socket(&mut pools, &table, req.name);
-
-    let (local_ipv4_rid, v) =
-        pools.acquire_and_pin_non_socket(resources::ResourceKind::Ipv4, ipv4_pool, owner)?;
-    let NonSocketResourceValue::Ipv4(local_ipv4) = v else {
-        unreachable!("resource kind/value mismatch")
-    };
-
-    let (local_mac_rid, v) =
-        pools.acquire_and_pin_non_socket(resources::ResourceKind::Mac, mac_pool, owner)?;
-    let NonSocketResourceValue::Mac(local_mac) = v else {
-        unreachable!("resource kind/value mismatch")
-    };
-
-    let (local_udp_port_rid, v) =
-        pools.acquire_and_pin_non_socket(resources::ResourceKind::UdpPort, udp_pool, owner)?;
-    let NonSocketResourceValue::UdpPort(local_udp_port) = v else {
-        unreachable!("resource kind/value mismatch")
-    };
-
-    // Step 2: bind by ResourceId and finalize into table.
-    let mut binder = UdpSocketBinder::new();
-    binder.bind_local_ipv4_rid(sock_id, local_ipv4_rid);
-    binder.bind_local_mac_rid(sock_id, local_mac_rid);
-    binder.bind_local_udp_port_rid(sock_id, local_udp_port_rid);
-    binder.bind_peer(sock_id, req.peer_ipv4, req.peer_udp_port, req.peer_mac);
-    binder.bind_ttl(sock_id, ttl);
-    binder.finalize_into_table(&pools, &mut table, sock_id)?;
-
-    Ok(UdpSocketCreateResponse {
-        owner,
-        sock_id,
-        local_ipv4_rid,
-        local_mac_rid,
-        local_udp_port_rid,
-        local_ipv4,
-        local_mac,
-        local_udp_port,
-    })
-}
-
 /// Refresh the cached ABR view from the global ABR snapshot.
 ///
 /// Call this after control-plane changes (e.g. resources acquired/released).
 pub fn refresh_abr() {
     KERNEL.refresh_abr_view();
-}
-
-pub fn non_blocking_recv() -> Option<Vec<u8>> {
-    non_blocking_recv_with_sock().map(|(_sock, payload)| payload)
 }
 
 /// UDP RX result with best-effort flow correlation.
@@ -778,25 +542,12 @@ pub struct UdpRx {
     pub payload: Vec<u8>,
 }
 
-/// Receive one packet payload (non-blocking) and try to correlate it to a UDP socket.
-///
-/// Step-1 数据面策略：
-/// - 从报文解析出 4-tuple
-/// - 构造 `socket::udp::Key { id: 0, ... }`（Scheme B：Eq/Hash 忽略 id）
-/// - 在 UDP conn table 里查找命中的 conn，并返回其 `key.id` 作为 sock_id
-///
-/// 返回：`Some((sock_id_opt, payload))` 或 `None`（无包）。
-pub fn non_blocking_recv_with_sock() -> Option<(Option<resources::SockId>, Vec<u8>)> {
-    non_blocking_recv_udp().map(|rx| (rx.sock_id, rx.payload))
-}
-
 /// Receive one UDP datagram (non-blocking) and return dst/src ports + best-effort sock_id.
 pub fn non_blocking_recv_udp() -> Option<UdpRx> {
     let mut nic = KERNEL.nic();
     let reg = KERNEL.reg();
     let abr_view = KERNEL.abr_view();
     let udp_sockets = KERNEL.udp_sockets();
-    info!(target: "ntx::kernel", "non_blocking_recv_udp: called");
     // Kernel doesn't distinguish client/server, and identities may use multiple dst MACs;
     // disable L2 filtering here and let ABR decide relevance.
     let ctx = PacketContext {
@@ -808,7 +559,6 @@ pub fn non_blocking_recv_udp() -> Option<UdpRx> {
     let n = match nic.recv_nonblocking(&mut buf) {
         Ok(Some(n)) => n,
         Ok(None) => {
-            warn!("nic.recv_nonblocking: no packet available");
             return None;
         }
         Err(e) => {
@@ -819,7 +569,7 @@ pub fn non_blocking_recv_udp() -> Option<UdpRx> {
     let (layers, payload) = match parse_packet_with_ctx(&buf[..n], LayerId::Ether, &reg, &ctx) {
         Ok(v) => v,
         Err(e) => {
-            error!("parse_packet_with_ctx failed: {}", e);
+            error!(target: "ntx::kernel::rx", error = %e, frame_len = n, "parse_packet_with_ctx failed");
             return None;
         }
     };
@@ -833,12 +583,12 @@ pub fn non_blocking_recv_udp() -> Option<UdpRx> {
         .and_then(|l| l.downcast_ref::<Udp>());
 
     let Some(ip) = ip else {
-        warn!("non-IPv4 packet received; dropping");
+        tracing::warn!(target: "ntx::kernel::rx", frame_len = n, "non-IPv4 packet received; dropping");
         return None;
     };
 
     let Some(udp) = udp else {
-        warn!("non-UDP packet received; dropping");
+        tracing::warn!(target: "ntx::kernel::rx", src_ip = ?ip.src, dst_ip = ?ip.dst, "non-UDP packet received; dropping");
         return None;
     };
 
@@ -851,6 +601,17 @@ pub fn non_blocking_recv_udp() -> Option<UdpRx> {
     };
 
     let sock_id = udp_sockets.peek(&flow_key).map(|c| c.key.id);
+
+    tracing::debug!(
+        target: "ntx::kernel::rx",
+        src_ip = ?ip.src,
+        dst_ip = ?ip.dst,
+        src_port = udp.src_port,
+        dst_port = udp.dst_port,
+        payload_len = payload.len(),
+        sock_id = ?sock_id,
+        "udp rx parsed"
+    );
 
     Some(UdpRx {
         sock_id,

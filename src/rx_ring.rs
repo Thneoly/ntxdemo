@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tokio::time;
 
+use std::sync::atomic::Ordering;
+
 /// Host-side provider for `ntx:host/rx-ring@0.1.0`.
 ///
 /// This is intentionally self-contained and `std`-only (no tokio), because Wasmtime
@@ -174,6 +176,20 @@ impl RxRing {
         st.slots[slot_id as usize].payload = Some(payload);
         st.ready.push_back(slot_id);
 
+        // Low-rate observability: only log occasionally to avoid per-packet spam.
+        // This is useful when diagnosing "host received but guest didn't pull".
+        if (st.seq % 128) == 0 {
+            tracing::debug!(
+                target: "ntx::rx-ring",
+                ready = st.ready.len(),
+                inflight = st.inflight.len(),
+                bytes_in_queue = st.bytes_in_queue,
+                enqueue_drop_total = self.inner.metrics.enqueue_drop_total.load(Ordering::Relaxed),
+                lease_expired_total = self.inner.metrics.lease_expired_total.load(Ordering::Relaxed),
+                "rx-ring summary"
+            );
+        }
+
         // Wake up any waiters.
         self.inner
             .metrics
@@ -206,7 +222,21 @@ impl RxRing {
             return None;
         }
         self.expire_leases_locked(&mut st);
-        self.dequeue_one_locked(&mut st, max_desc, max_payload)
+        let out = self.dequeue_one_locked(&mut st, max_desc, max_payload);
+        if let Some(b) = &out {
+            tracing::debug!(
+                target: "ntx::rx-ring",
+                handle = b.handle,
+                seq = b.seq,
+                desc_len = b.desc_len,
+                payload_len = b.payload_len,
+                ready = st.ready.len(),
+                inflight = st.inflight.len(),
+                bytes_in_queue = st.bytes_in_queue,
+                "rx-ring poll_rx dequeued"
+            );
+        }
+        out
     }
 
     pub fn wait_rx(&self, max_desc: u32, max_payload: u32, timeout_ms: u32) -> Option<RxBatch> {

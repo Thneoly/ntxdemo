@@ -5,6 +5,11 @@ kernel:
   config_path: "config/config.yaml"
 
 scheduler:
+  # Debug/diagnostic only: disable scheduler idle waiting entirely.
+  # Note: by default, the scheduler already avoids starving resident tasks (NicRx)
+  # via (A) resident-first polling and (B) a bounded/timed idle wait safety net.
+  # This flag forces a no-block idle path to help prove/disprove scheduling issues.
+  no_idle_wait: false
   wasm:
     # Optional: Wasmtime component path to auto-load.
     # If unset, wasm tasks (like `run`) won't execute.

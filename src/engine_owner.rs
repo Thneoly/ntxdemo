@@ -57,11 +57,36 @@ pub fn spawn_engine_owner(
             match msg {
                 EngineMsg::RxBatch { desc, payload } => {
                     if !shutting_down {
+                        let batch_id = {
+                            // Derive a stable-ish id from lengths (good enough for log correlation
+                            // when combined with timestamps). We avoid global atomics here.
+                            ((desc.len() as u64) << 32) ^ (payload.len() as u64)
+                        };
+                        tracing::debug!(
+                            target: "ntx::engine-owner",
+                            batch_id,
+                            desc_len = desc.len(),
+                            payload_len = payload.len(),
+                            "received RxBatch; enqueue into rx-ring"
+                        );
                         rx_ring.enqueue_batch(desc, payload);
+
+                        tracing::debug!(
+                            target: "ntx::engine-owner",
+                            batch_id,
+                            queue_depth = rx_ring.queue_depth(),
+                            inflight = rx_ring.inflight_handles(),
+                            bytes_in_queue = rx_ring.bytes_in_queue(),
+                            "rx-ring state after enqueue"
+                        );
                     }
                 }
                 EngineMsg::Shutdown => {
                     // Wake any guest waiters so `wait-rx` returns quickly.
+                    tracing::info!(
+                        target: "ntx::engine-owner",
+                        "received shutdown; rx-ring shutdown + stop accepting RX"
+                    );
                     rx_ring.shutdown();
                     // After shutdown, stop accepting new batches (end-state semantics).
                     shutting_down = true;

@@ -16,6 +16,10 @@ impl FormatTime for LocalTimer {
 }
 
 pub fn logger_init() {
+    // Make it obvious what logging config we ended up with, especially under sudo where
+    // environment variables may be dropped.
+    let rust_log_env = std::env::var("RUST_LOG").ok();
+
     let format = tracing_subscriber::fmt::format()
         .with_level(true)
         .with_target(true)
@@ -55,6 +59,12 @@ pub fn logger_init() {
     // If `RUST_LOG` is set, honor it so ad-hoc debugging stays easy.
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,ntx=debug,wasmtime=warn,cranelift=warn"));
+
+    // Emit a plain message before subscriber init (so it cannot be filtered out).
+    eprintln!(
+        "[ntx] logger_init: RUST_LOG={:?}; effective_filter={}",
+        rust_log_env, filter
+    );
 
     let registry = tracing_subscriber::registry()
         .with(stdout_layer)

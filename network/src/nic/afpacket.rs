@@ -1,8 +1,33 @@
 use anyhow::Context;
+use log::trace;
+use log::{debug, info};
 use std::ffi::CString;
 use std::mem;
 use std::os::fd::RawFd;
 use std::time::Duration;
+use std::time::Instant;
+
+fn current_netns_id() -> Option<String> {
+    // Best-effort: this symlink is different across netns, e.g. "net:[4026531993]".
+    std::fs::read_link("/proc/self/ns/net")
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+fn read_sysfs_u64(path: &str) -> Option<u64> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+}
+
+fn iface_rx_stats(ifname: &str) -> (Option<u64>, Option<u64>, Option<u64>) {
+    // Best-effort; these files may be absent or restricted.
+    let base = format!("/sys/class/net/{ifname}/statistics");
+    let rx_packets = read_sysfs_u64(&format!("{base}/rx_packets"));
+    let rx_dropped = read_sysfs_u64(&format!("{base}/rx_dropped"));
+    let rx_missed = read_sysfs_u64(&format!("{base}/rx_missed_errors"));
+    (rx_packets, rx_dropped, rx_missed)
+}
 
 use super::Nic;
 
@@ -17,6 +42,10 @@ pub struct AfPacketNic {
     ifname: String,
     ifmac: Option<[u8; 6]>,
     last_pkttype: Option<u8>,
+    // Runtime diagnostics
+    netns: Option<String>,
+    last_empty_log: Instant,
+    last_rx_packets: Option<u64>,
 }
 
 /// AF_PACKET cooked capture backend.
@@ -44,6 +73,7 @@ pub struct AfPacketDgramNic {
 impl AfPacketNic {
     #[allow(dead_code)]
     pub fn open(ifname: &str) -> anyhow::Result<Self> {
+        let netns = current_netns_id();
         let fd = unsafe {
             libc::socket(
                 libc::AF_PACKET,
@@ -68,7 +98,7 @@ impl AfPacketNic {
         sll.sll_protocol = (libc::ETH_P_ALL as u16).to_be();
         sll.sll_ifindex = ifindex;
         // Be permissive about packet direction/classification; veth can be surprising.
-        sll.sll_pkttype = libc::PACKET_OTHERHOST as u8;
+        // sll.sll_pkttype = libc::PACKET_OTHERHOST as u8;
 
         let rc = unsafe {
             libc::bind(
@@ -115,12 +145,25 @@ impl AfPacketNic {
 
         let ifmac = get_iface_mac(ifname).ok();
 
+        info!(
+            target: "ntx::nic::afpacket",
+            "afpacket nic opened and bound: ifname={} ifindex={} netns={} iface_mac={:?}",
+            ifname,
+            ifindex,
+            netns.as_deref().unwrap_or("<unknown>"),
+            ifmac
+        );
+
         Ok(Self {
             fd,
             ifindex,
             ifname: ifname.to_string(),
             ifmac,
             last_pkttype: None,
+            netns,
+            // ensure we log soon after startup if empty
+            last_empty_log: Instant::now() - Duration::from_secs(3600),
+            last_rx_packets: None,
         })
     }
 
@@ -192,6 +235,32 @@ impl AfPacketNic {
         if n < 0 {
             let e = std::io::Error::last_os_error();
             if e.kind() == std::io::ErrorKind::WouldBlock {
+                // Occasional diagnostics: if we keep seeing no data, log the binding
+                // context and iface RX stats so we can tell whether frames are arriving.
+                let now = Instant::now();
+                if now.duration_since(self.last_empty_log) >= Duration::from_secs(1) {
+                    self.last_empty_log = now;
+                    let (rx_packets, rx_dropped, rx_missed) = iface_rx_stats(&self.ifname);
+
+                    let rx_delta = match (self.last_rx_packets, rx_packets) {
+                        (Some(prev), Some(cur)) => Some(cur.saturating_sub(prev)),
+                        _ => None,
+                    };
+                    self.last_rx_packets = rx_packets;
+
+                    trace!(
+                        target: "ntx::nic::afpacket",
+                        "afpacket empty(1Hz): ifname={} ifindex={} netns={} last_pkttype={:?} rx_packets={:?} rx_delta={:?} rx_dropped={:?} rx_missed={:?}",
+                        self.ifname,
+                        self.ifindex,
+                        self.netns.as_deref().unwrap_or("<unknown>"),
+                        self.last_pkttype,
+                        rx_packets,
+                        rx_delta,
+                        rx_dropped,
+                        rx_missed
+                    );
+                }
                 return Ok(None);
             }
             return Err(e).context("recvmsg(AF_PACKET, MSG_DONTWAIT) failed");
@@ -199,6 +268,15 @@ impl AfPacketNic {
 
         // Record pkttype for debugging.
         self.last_pkttype = Some(addr.sll_pkttype);
+
+        debug!(
+            target: "ntx::nic::afpacket",
+            "afpacket recvmsg: frame_len={} pkttype={} protocol=0x{:04x} ifindex={}",
+            n as usize,
+            addr.sll_pkttype,
+            u16::from_be(addr.sll_protocol),
+            addr.sll_ifindex
+        );
         Ok(Some(n as usize))
     }
 

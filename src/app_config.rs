@@ -28,6 +28,15 @@ pub struct KernelConfig {
 pub struct SchedulerConfig {
     #[serde(default)]
     pub wasm: WasmConfig,
+
+    /// Debug/diagnostic mode: disable blocking idle waits in the host scheduler.
+    ///
+    /// When enabled, the scheduler loop will never park on its condvar when idle.
+    /// This is useful for validating whether idle waiting is masking RX activity.
+    ///
+    /// Default: false.
+    #[serde(default)]
+    pub no_idle_wait: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -54,6 +63,7 @@ impl Default for AppConfig {
                     component_path: None,
                     config_dir: None,
                 },
+                no_idle_wait: false,
             },
         }
     }

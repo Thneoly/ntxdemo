@@ -357,20 +357,6 @@ impl ComponentEngine {
         Ok(Self { cfg, store, run })
     }
 
-    /// Enqueue a RX batch into the host rx-ring for the guest to pull.
-    ///
-    /// Guardrail: in the end-state architecture, *only* the EngineOwner should
-    /// enqueue RX batches, and it should do so via the cloned `RxRing` obtained
-    /// from [`Self::rx_ring`]. Keep this method crate-private to reduce the
-    /// chance of re-introducing a host->guest “injection” call chain.
-    #[allow(dead_code)]
-    pub(crate) fn enqueue_rx_batch(&mut self, desc_mem: Vec<u8>, payload_mem: Vec<u8>) {
-        self.store
-            .data_mut()
-            .rx_ring
-            .enqueue_batch(desc_mem, payload_mem)
-    }
-
     /// Start the guest scheduler main loop.
     ///
     /// WIT contract:

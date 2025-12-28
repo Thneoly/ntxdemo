@@ -278,6 +278,65 @@ guest `run()` 主循环每次迭代：
 	- [ ] guardrail：host 侧任何锁（`std::sync` / `parking_lot` / `tokio`）都不允许跨 wasm call 持有（防止未来引入新的锁序/回调/导出注入变体）
 	- [ ] host 侧任何锁都不允许跨 wasm call 持有（run 以外也不允许引入新的导出注入）
 
+## Host Scheduler 最终设计：无饥饿的常驻 RX 轮询
+
+### 核心问题与修复
+
+**问题**：Host scheduler 的 idle wait 机制（用于避免忙等）在某些实现下会导致 NicRx 任务长期得不到轮询机会，表现为收包处理停滞。
+
+**根因**：Bounded idle wait 的内部循环实现会持续 `wait_timeout`，即使超时也不释放锁，导致 `poll_one_resident_task()` 无法获得执行机会。
+
+**修复方案（三层保障）**：
+
+1. **A. Resident-first 策略**：每个 scheduler loop iteration 的第一步就调用 `poll_one_resident_task()`，在任何 idle wait 之前。
+
+2. **B. Bounded idle wait（单次）**：`ingest_blocking_bounded()` 执行一次 `wait_timeout(max_wait=2ms)` 就立即返回（不内部循环），确保锁被及时释放。
+
+3. **C. NicRx 总是合格的**：`poll_one_resident_task()` 中，NicRx 的 backoff 在每次评估前被清空、在每次执行后也被保持清空，确保它永不被抑制。
+
+**效果**：NicRx 保证在每个 2ms 周期内至少被轮询一次，且立即返回（快速 poll 没有锁竞争），从而避免了即使有包也被错过的现象。
+
+### 实现关键点（src/scheduler.rs）
+
+```rust
+// 在 Scheduler::run() 主循环中：
+self.poll_one_resident_task();  // A: 先轮询 resident（包括 NicRx）
+
+if queues.is_empty() {
+    // ... idle 逻辑 ...
+    self.ingest_blocking_bounded(&mut queues, IDLE_WAIT_MAX);  // B: 单次等待
+    self.poll_one_resident_task();  // 等待后再轮询一次
+}
+
+// 在 poll_one_resident_task() 内：
+// C: 清空 NicRx 的 backoff，使其总是被选中
+for task in state.resident.tasks.iter_mut() {
+    if matches!(task.kind, TaskKind::NetworkIo(NetworkIoTask::NicRx)) {
+        task.backoff.until = None;
+    }
+}
+
+// 执行后，如果是 NicRx，也保持 backoff 清空
+if is_nicrx {
+    entry.backoff.until = None;
+    return;  // 不更新 backoff
+}
+```
+
+### 验收条件
+
+- [x] `no_idle_wait=false`（默认）与 `no_idle_wait=true`（诊断模式）表现等价：NicRx 持续被轮询，包可及时被处理
+- [x] 无额外 CPU 占用：Bounded wait 2ms + 其他 resident 使用指数退避保持低频
+- [x] 代码规整化 + 文档齐全
+
+### 后续优化空间
+
+如果将来有多个重要的 resident task（不仅 NicRx），可考虑：
+- 为不同 resident 类别设置不同的轮询频率保证（例如"网络关键，定时轮询；其他可以退避"）
+- 增加 scheduler 侧指标/trace 以观测"实际轮询间隔"是否满足要求
+
+---
+
 ### E. 测试与验收（最低配置）
 
 - [ ] 接口一致性
