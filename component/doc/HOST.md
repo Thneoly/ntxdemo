@@ -111,3 +111,104 @@ guest `run()` 主循环每次迭代：
 3) 压测下系统不因锁/重入卡死；只允许出现“背压/丢弃”的可观测行为。
 4) `lease timeout` 生效：即便 guest 故障不 release，host 也能回收并打点。
 
+## 整改计划 & TODO
+
+本节是从当前仓库状态推进到本文档“终局版契约”的落地 checklist（按依赖顺序）。
+
+### A. 接口契约（WIT/WAC）
+
+- [ ] 新增 WIT：`ntx:host/rx-ring@0.1.0`（handle/offset ABI）
+	- [ ] 定义 `batch-handle`, `rx-batch`
+	- [ ] 定义 `poll-rx / wait-rx / read-desc / read-payload / release`
+	- [ ] 错误字符串写死：`invalid handle` / `out of bounds`
+	- [ ] 写死语义：`wait-rx(timeout-ms)` 超时必须返回 `none`；host shutdown 必须唤醒 `wait-rx` 使其尽快返回 `none`
+	- [ ] 写死语义：句柄复用规则（release/过期后 backing store 复用）必须通过 generation 隔离（避免旧 handle 误读新数据）
+	- [ ] 边界语义写死：`wait-rx(timeout-ms)` 超时返回 `none`；host shutdown 时 `wait-rx` 必须尽快返回 `none`
+	- [ ] 句柄复用规则写死：旧 handle 释放/过期后，backing store 复用必须通过 generation 隔离（避免旧 handle 误读新数据）
+
+- [ ] 修改 scheduler `world.wit`
+	- [ ] `import ntx:host/rx-ring@0.1.0`
+	- [ ] 删除 `export ntx:scenario-scheduler/packet-ingest@0.1.0`（`notify-rx`）
+
+- [ ] 修改 `scheduler-composition.wac`
+	- [ ] composed scheduler **不再 export** `packet-ingest`
+	- [ ] 为 scheduler world 接入 host `rx-ring` 实现（import wiring）
+
+- [ ] 验收
+	- [ ] composed 产物对外仅 export：`scheduler-component.run`
+	- [ ] composed 产物对内 import：`rx-ring.*`（以及其他必要 imports）
+
+### B. Guest（scheduler component）
+
+- [ ] `run()` 主循环内 pull RX
+	- [ ] `wait-rx/poll-rx` 获取 `rx-batch(handle, ...)`
+	- [ ] `read-desc/read-payload` 按需读取 slice，并按 `shared_mem` 协议 decode
+	- [ ] decode 后发布 `packet.rx` 事件（component eventbus）
+	- [ ] `finally { release(handle) }`：成功/失败都必须释放
+
+- [ ] 删除 notify-rx 导出
+	- [ ] 移除 `packet-ingest.notify-rx` 的导出实现与所有调用点
+
+- [ ] 验收
+	- [ ] 无包时不 busy-loop（使用 `wait-rx` 或合理 timeout/poll 节律）
+	- [ ] 单批次异常不会泄漏 handle（lease 过期指标不应持续增长）
+	- [ ] decode 失败 / 越界 read / `invalid handle` 等异常路径不允许 panic：必须 `release(handle)` 并继续 loop
+	- [ ]异常路径覆盖：decode 失败/越界 read/invalid handle 时禁止 panic，必须释放并继续 loop
+
+### C. Host（rx-ring provider + NIC RX 入队）
+
+- [ ] 实现 `rx-ring` provider（host side）
+	- [ ] bounded 队列（batch 元数据队列）
+	- [ ] backing store pool（slot + generation；建议 `handle = (slot_id, generation)`）
+	- [ ] inflight 管理（handle -> slot + deadline）
+	- [ ] `poll-rx / wait-rx / read-* / release`
+	- [ ] `lease timeout` 默认 5000ms + 指标：`rx_ring.lease_expired_total`
+	- [ ] wait 相关指标（最小集）：`rx_ring.wait_wake_total / rx_ring.wait_timeout_total / rx_ring.wait_shutdown_wake_total`
+	- [ ] wait 相关指标（建议最小集）：`rx_ring.wait_wake_total` / `rx_ring.wait_timeout_total` / `rx_ring.wait_shutdown_wake_total`
+
+- [ ] 队列满策略（写死，默认）：drop newest
+	- [ ] 队列满丢当前 batch/包，并打点：`rx_ring.enqueue_drop_total`
+	- [ ] 指标补齐：`rx_ring.queue_depth / rx_ring.inflight_handles / rx_ring.bytes_in_queue`
+
+- [ ] 唤醒语义（对应 `wait-rx`）
+	- [ ] enqueue 新 batch 必须唤醒 `wait-rx`
+	- [ ] host shutdown 必须唤醒 `wait-rx`（尽快返回 `none`）
+
+- [ ] 验收
+	- [ ] lease 超时后旧 handle 稳定 `invalid handle`
+	- [ ] backing store 复用不会导致旧 handle 误读新数据（generation 生效）
+	- [ ] drop 策略可观测且可定位（可选：按 `sock_id` 分桶统计/采样）
+	- [ ] drop 策略可观测：`enqueue_drop_total` 在压测下可解释、可定位（可选：按 sock_id 分桶）
+
+### D. Host（删除 notify-rx 链路）
+
+- [ ] 删除 notify-rx 全链路
+	- [ ] 删除/废弃 `EngineManager::notify_rx`（及其调用点）
+	- [ ] 删除/废弃 `ComponentEngine::notify_rx`（及其调用点）
+	- [ ] 删除 NIC RX 路径中任何“导出注入 RX”调用
+
+- [ ] NIC RX 改为只入队
+	- [ ] 收包 → 编码 desc/payload → `rx_ring.enqueue_batch(...)`
+
+- [ ] 验收
+	- [ ] 运行期 host 只有 `scheduler-component.run()` 这一条导出调用
+	- [ ] `notify_rx/notify-rx` 不再出现在运行期调用路径（允许文档“现状提示”保留）
+	- [ ] guardrail：host 侧任何锁（`std::sync` / `parking_lot` / `tokio`）都不允许跨 wasm call 持有（防止未来引入新的锁序/回调/导出注入变体）
+	- [ ] host 侧任何锁都不允许跨 wasm call 持有（run 以外也不允许引入新的导出注入）
+
+### E. 测试与验收（最低配置）
+
+- [ ] 接口一致性
+	- [ ] WIT/WAC/composed 导出集合与本文档一致
+	- [ ] WIT 变更后代码生成/绑定更新能够编译通过（避免 host/guest binding 不一致）
+	- [ ] `wit` 代码生成/绑定更新后编译通过（避免 WIT 变更导致 host/guest binding 不一致）
+
+- [ ] 功能正确性
+	- [ ] echo 场景跑通：收包 → `packet.rx` 事件驱动状态机
+
+- [ ] 稳定性
+	- [ ] 压测下不出现卡死/死锁；允许 drop，但必须可观测
+	- [ ] lease timeout 能兜底回收，不会无限积压
+	- [ ] shutdown 验收：host 触发关机后 `wait-rx` 能被唤醒；guest run-loop 能可控停止（或进入可退出态）
+	- [ ] shutdown：host 触发关机后，`wait-rx` 能被唤醒；guest run-loop 能在可控时间内停止（或进入 idle 可退出态）
+
