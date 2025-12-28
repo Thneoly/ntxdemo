@@ -142,7 +142,7 @@ fn spawn_rx_pump() {
     // NOTE: `wit-bindgen` guest components are single-threaded by default, but WASI threads
     // may be available depending on runtime. We keep this as best-effort:
     // if thread spawn fails, we fall back to no RX pumping (the rest of scheduler still runs).
-    let _ = std::thread::Builder::new()
+    match std::thread::Builder::new()
         .name("rx-pump".to_string())
         .spawn(|| loop {
             // Stop flag
@@ -182,7 +182,128 @@ fn spawn_rx_pump() {
             let _ = crate::rx_decode::drain_rx_ring(desc_mem, payload_mem);
 
             let _ = ntx::host::rx_ring::release(handle);
+        }) {
+        Ok(_join) => {
+            println!("[scheduler] rx-pump thread started");
+        }
+        Err(e) => {
+            // In many WASI runtimes, threads are unavailable. Without this message, RX is silently disabled.
+            println!("[scheduler] rx-pump thread spawn failed; RX pumping disabled: {e}");
+        }
+    }
+}
+
+/// Best-effort RX pumping when threads are unavailable.
+///
+/// Contract:
+/// - Must never panic.
+/// - Must be non-blocking (0ms wait) so it doesn't stall the main event loop.
+/// - Always release the handle.
+fn pump_rx_once_nonblocking() {
+    use std::time::{Duration, Instant};
+
+    struct PumpStats {
+        polls: u64,
+        timeouts: u64,
+        batches: u64,
+        read_errors: u64,
+        decode_errors: u64,
+        last_desc_len: u32,
+        last_payload_len: u32,
+        last_seq: u64,
+        last_log: Instant,
+    }
+
+    static STATS: once_cell::sync::Lazy<std::sync::Mutex<PumpStats>> =
+        once_cell::sync::Lazy::new(|| {
+            std::sync::Mutex::new(PumpStats {
+                polls: 0,
+                timeouts: 0,
+                batches: 0,
+                read_errors: 0,
+                decode_errors: 0,
+                last_desc_len: 0,
+                last_payload_len: 0,
+                last_seq: 0,
+                last_log: Instant::now(),
+            })
         });
+
+    // Stop flag
+    if RUNTIME.lock().map(|rt| rt.stop).unwrap_or(false) {
+        return;
+    }
+
+    {
+        let mut s = STATS.lock().unwrap();
+        s.polls = s.polls.saturating_add(1);
+        if s.last_log.elapsed() >= Duration::from_secs(1) {
+            // println!(
+            //     "[scheduler] rx-pump hb: polls={} batches={} timeouts={} read_errs={} decode_errs={} last_seq={} last_desc_len={} last_payload_len={}",
+            //     s.polls,
+            //     s.batches,
+            //     s.timeouts,
+            //     s.read_errors,
+            //     s.decode_errors,
+            //     s.last_seq,
+            //     s.last_desc_len,
+            //     s.last_payload_len
+            // );
+            s.last_log = Instant::now();
+            // reset counters so we get per-second rates
+            s.polls = 0;
+            s.batches = 0;
+            s.timeouts = 0;
+            s.read_errors = 0;
+            s.decode_errors = 0;
+        }
+    }
+
+    // Non-blocking poll: timeout 0ms.
+    let batch = ntx::host::rx_ring::wait_rx(64 * 1024, 256 * 1024, 0);
+    let Some(batch) = batch else {
+        let mut s = STATS.lock().unwrap();
+        s.timeouts = s.timeouts.saturating_add(1);
+        return;
+    };
+
+    {
+        let mut s = STATS.lock().unwrap();
+        s.batches = s.batches.saturating_add(1);
+        s.last_desc_len = batch.desc_len;
+        s.last_payload_len = batch.payload_len;
+        s.last_seq = batch.seq;
+    }
+
+    let handle = batch.handle;
+
+    let desc_mem = match ntx::host::rx_ring::read_desc(handle, 0, batch.desc_len) {
+        Ok(v) => v,
+        Err(e) => {
+            println!("[scheduler] rx-ring read-desc failed: {e}");
+            let mut s = STATS.lock().unwrap();
+            s.read_errors = s.read_errors.saturating_add(1);
+            let _ = ntx::host::rx_ring::release(handle);
+            return;
+        }
+    };
+    let payload_mem = match ntx::host::rx_ring::read_payload(handle, 0, batch.payload_len) {
+        Ok(v) => v,
+        Err(e) => {
+            println!("[scheduler] rx-ring read-payload failed: {e}");
+            let mut s = STATS.lock().unwrap();
+            s.read_errors = s.read_errors.saturating_add(1);
+            let _ = ntx::host::rx_ring::release(handle);
+            return;
+        }
+    };
+
+    let drained = crate::rx_decode::drain_rx_ring(desc_mem, payload_mem);
+    if drained == 0 {
+        let mut s = STATS.lock().unwrap();
+        s.decode_errors = s.decode_errors.saturating_add(1);
+    }
+    let _ = ntx::host::rx_ring::release(handle);
 }
 
 /// 运行期上下文，占位后续扩展。
@@ -735,6 +856,10 @@ fn run_event_loop(
     let mut idle = 0u32;
     loop {
         let mut did_work = false;
+
+        // Fallback RX pumping for runtimes without WASI threads.
+        // Non-blocking (0ms wait), so it won't stall the event loop.
+        pump_rx_once_nonblocking();
 
         // 1) control events (blocking wait)
         if let Some(id) = sub_ctrl {

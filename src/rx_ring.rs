@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
@@ -32,6 +32,10 @@ pub struct RxRing {
 struct Inner {
     state: Mutex<State>,
     notify: Notify,
+
+    // Sync waiting primitive for `wait_rx` (WIT host import is sync in this repo).
+    // We keep it separate from the main `state` lock to avoid holding `state` while blocked.
+    sync_wait: (Mutex<()>, Condvar),
 
     cfg: RxRingConfig,
     metrics: RxRingMetrics,
@@ -116,6 +120,7 @@ impl RxRing {
                 bytes_in_queue: 0,
             }),
             notify: Notify::new(),
+            sync_wait: (Mutex::new(()), Condvar::new()),
             cfg,
             metrics: RxRingMetrics::default(),
         };
@@ -140,6 +145,8 @@ impl RxRing {
         }
         // Wake any `wait_rx`.
         self.inner.notify.notify_waiters();
+        // And wake any sync waiters.
+        self.inner.sync_wait.1.notify_all();
     }
 
     /// Enqueue a batch.
@@ -168,6 +175,11 @@ impl RxRing {
         let desc_len = desc.len() as u32;
         let payload_len = payload.len() as u32;
 
+        // Advance sequence on enqueue so low traffic still triggers rate-limited logs.
+        // (Previously `st.seq` only moved on dequeue, so `enqueue_batch` logging could
+        // be stuck at seq=0 forever when the guest never dequeued.)
+        st.seq = st.seq.wrapping_add(1);
+
         st.bytes_in_queue = st
             .bytes_in_queue
             .saturating_add(desc_len as u64 + payload_len as u64);
@@ -176,10 +188,27 @@ impl RxRing {
         st.slots[slot_id as usize].payload = Some(payload);
         st.ready.push_back(slot_id);
 
+        // Trace enqueue occasionally (low overhead).
+        // Helpful for answering: "did host actually enqueue anything?".
+        // Log the first few enqueues unconditionally, then rate-limit.
+        if st.seq <= 8 || (st.seq % 64) == 0 {
+            tracing::info!(
+                target: "ntx::rx-ring",
+                slot_id,
+                generation,
+                desc_len,
+                payload_len,
+                ready = st.ready.len(),
+                inflight = st.inflight.len(),
+                bytes_in_queue = st.bytes_in_queue,
+                "rx-ring enqueue_batch"
+            );
+        }
+
         // Low-rate observability: only log occasionally to avoid per-packet spam.
         // This is useful when diagnosing "host received but guest didn't pull".
         if (st.seq % 128) == 0 {
-            tracing::debug!(
+            tracing::info!(
                 target: "ntx::rx-ring",
                 ready = st.ready.len(),
                 inflight = st.inflight.len(),
@@ -196,6 +225,7 @@ impl RxRing {
             .wait_wake_total
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.inner.notify.notify_one();
+        self.inner.sync_wait.1.notify_one();
 
         // Note: handle is not created until a batch is dequeued into inflight.
         let _ = generation;
@@ -224,7 +254,7 @@ impl RxRing {
         self.expire_leases_locked(&mut st);
         let out = self.dequeue_one_locked(&mut st, max_desc, max_payload);
         if let Some(b) = &out {
-            tracing::debug!(
+            tracing::info!(
                 target: "ntx::rx-ring",
                 handle = b.handle,
                 seq = b.seq,
@@ -240,18 +270,110 @@ impl RxRing {
     }
 
     pub fn wait_rx(&self, max_desc: u32, max_payload: u32, timeout_ms: u32) -> Option<RxBatch> {
-        // Compatibility shim: sync callers still exist (WIT host import traits currently
-        // sync in this repo). Prefer `wait_rx_async` in Tokio contexts.
-        tokio::runtime::Handle::try_current()
-            .ok()
-            .map(|h| h.block_on(self.wait_rx_async(max_desc, max_payload, timeout_ms)))
-            .unwrap_or_else(|| {
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("failed to build tokio runtime")
-                    .block_on(self.wait_rx_async(max_desc, max_payload, timeout_ms))
-            })
+        // IMPORTANT: This is a *sync* API used by bindgen-generated WIT host import traits.
+        // It must never call `tokio::Handle::block_on` nor create a Tokio runtime because
+        // the call may run on a Tokio worker thread (which would panic with
+        // "Cannot start a runtime from within a runtime").
+        //
+        // Therefore we implement a pure blocking wait using a Condvar.
+        // This keeps the end-state semantics:
+        // - returns None on timeout
+        // - returns None on shutdown
+        // - wakes on enqueue/shutdown
+        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
+
+        let (lock, cv) = &self.inner.sync_wait;
+        let mut guard = lock.lock().expect("rx-ring wait mutex poisoned");
+
+        loop {
+            // Try to dequeue under the main state lock.
+            {
+                let mut st = self.inner.state.lock().expect("rx-ring mutex poisoned");
+                if st.shutdown {
+                    return None;
+                }
+                self.expire_leases_locked(&mut st);
+                if let Some(b) = self.dequeue_one_locked(&mut st, max_desc, max_payload) {
+                    tracing::debug!(
+                        target: "ntx::rx-ring",
+                        handle = b.handle,
+                        seq = b.seq,
+                        desc_len = b.desc_len,
+                        payload_len = b.payload_len,
+                        ready = st.ready.len(),
+                        inflight = st.inflight.len(),
+                        bytes_in_queue = st.bytes_in_queue,
+                        "rx-ring wait_rx dequeued"
+                    );
+                    return Some(b);
+                }
+            }
+
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                self.inner
+                    .metrics
+                    .wait_timeout_total
+                    .fetch_add(1, Ordering::Relaxed);
+
+                // Rate-limit timeout logging (log every 128 timeouts).
+                let n = self
+                    .inner
+                    .metrics
+                    .wait_timeout_total
+                    .load(Ordering::Relaxed);
+                if (n % 128) == 0 {
+                    let st = self.inner.state.lock().expect("rx-ring mutex poisoned");
+                    tracing::warn!(
+                        target: "ntx::rx-ring",
+                        timeout_ms,
+                        max_desc,
+                        max_payload,
+                        ready = st.ready.len(),
+                        inflight = st.inflight.len(),
+                        bytes_in_queue = st.bytes_in_queue,
+                        wait_timeout_total = n,
+                        "rx-ring wait_rx timeout"
+                    );
+                }
+                return None;
+            }
+
+            let to_wait = deadline.saturating_duration_since(now);
+            let (g, wait_res) = cv
+                .wait_timeout(guard, to_wait)
+                .expect("rx-ring wait mutex poisoned");
+            guard = g;
+
+            if wait_res.timed_out() {
+                self.inner
+                    .metrics
+                    .wait_timeout_total
+                    .fetch_add(1, Ordering::Relaxed);
+
+                let n = self
+                    .inner
+                    .metrics
+                    .wait_timeout_total
+                    .load(Ordering::Relaxed);
+                if (n % 128) == 0 {
+                    let st = self.inner.state.lock().expect("rx-ring mutex poisoned");
+                    tracing::warn!(
+                        target: "ntx::rx-ring",
+                        timeout_ms,
+                        max_desc,
+                        max_payload,
+                        ready = st.ready.len(),
+                        inflight = st.inflight.len(),
+                        bytes_in_queue = st.bytes_in_queue,
+                        wait_timeout_total = n,
+                        "rx-ring wait_rx timed_out"
+                    );
+                }
+                return None;
+            }
+            // Otherwise, loop and retry dequeue.
+        }
     }
 
     /// Async wait variant used by Tokio-native host paths.
@@ -332,6 +454,22 @@ impl RxRing {
         let slot = &mut st.slots[inf.slot_id as usize];
         slot.desc = None;
         slot.payload = None;
+
+        // Rate-limit release logging.
+        if (st.seq % 128) == 0 {
+            tracing::debug!(
+                target: "ntx::rx-ring",
+                handle,
+                slot_id = inf.slot_id,
+                generation = inf.generation,
+                desc_len = inf.desc_len,
+                payload_len = inf.payload_len,
+                ready = st.ready.len(),
+                inflight = st.inflight.len(),
+                bytes_in_queue = st.bytes_in_queue,
+                "rx-ring release"
+            );
+        }
 
         Ok(())
     }
@@ -477,6 +615,27 @@ impl RxRing {
                     .metrics
                     .lease_expired_total
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                let n = self
+                    .inner
+                    .metrics
+                    .lease_expired_total
+                    .load(Ordering::Relaxed);
+                if (n % 64) == 0 {
+                    tracing::warn!(
+                        target: "ntx::rx-ring",
+                        handle = h,
+                        slot_id = inf.slot_id,
+                        generation = inf.generation,
+                        desc_len = inf.desc_len,
+                        payload_len = inf.payload_len,
+                        ready = st.ready.len(),
+                        inflight = st.inflight.len(),
+                        bytes_in_queue = st.bytes_in_queue,
+                        lease_expired_total = n,
+                        "rx-ring lease expired; auto-released"
+                    );
+                }
             }
         }
     }

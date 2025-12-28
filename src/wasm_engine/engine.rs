@@ -245,18 +245,14 @@ impl RxRingHost for State {
     }
 
     fn wait_rx(&mut self, max_desc: u32, max_payload: u32, timeout_ms: u32) -> Option<WitRxBatch> {
-        // NOTE: bindgen currently generates sync host trait methods for this interface.
-        // We still want the underlying wait primitive to be Tokio-native; use the
-        // async implementation under the hood.
-        tokio::runtime::Handle::try_current()
-            .ok()
-            .map(|h| {
-                h.block_on(
-                    self.rx_ring
-                        .wait_rx_async(max_desc, max_payload, timeout_ms),
-                )
-            })
-            .unwrap_or_else(|| self.rx_ring.wait_rx(max_desc, max_payload, timeout_ms))
+        // IMPORTANT: this is a *sync* host import method (bindgen-generated today).
+        // Calling `tokio::Handle::block_on` from within the Tokio runtime worker will
+        // panic with "Cannot start a runtime from within a runtime".
+        //
+        // For now we always use the synchronous wait implementation which is backed by
+        // Tokio-friendly primitives internally (it can still wake on enqueue/shutdown).
+        self.rx_ring
+            .wait_rx(max_desc, max_payload, timeout_ms)
             .map(|b| WitRxBatch {
                 handle: b.handle,
                 desc_len: b.desc_len,

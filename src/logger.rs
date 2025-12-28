@@ -58,7 +58,7 @@ pub fn logger_init() {
     //
     // If `RUST_LOG` is set, honor it so ad-hoc debugging stays easy.
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,ntx=debug,wasmtime=warn,cranelift=warn"));
+        .unwrap_or_else(|_| EnvFilter::new("debug,ntx=debug,wasmtime=warn,cranelift=warn"));
 
     // Emit a plain message before subscriber init (so it cannot be filtered out).
     eprintln!(

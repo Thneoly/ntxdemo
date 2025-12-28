@@ -629,7 +629,7 @@ pub fn non_blocking_recv_udp() -> Option<UdpRx> {
 
     let sock_id = udp_sockets.peek(&flow_key).map(|c| c.key.id);
 
-    tracing::debug!(
+    tracing::info!(
         target: "ntx::kernel::rx",
         src_ip = ?ip.src,
         dst_ip = ?ip.dst,

@@ -1,3 +1,5 @@
+use tracing::info;
+
 use crate::wasm_engine::{ComponentEngine, EngineError};
 
 /// Messages sent to the engine owner.
@@ -53,7 +55,13 @@ pub fn spawn_engine_owner(
         // NOTE: currently the guest `run()` is expected to never return.
         // We treat `run_join` completion as fatal/error.
         let mut shutting_down = false;
+        info!(target: "ntx::engine-owner", "engine owner started; entering message loop");
         while let Some(msg) = rx.recv().await {
+            info!(
+                target: "ntx::engine-owner",
+                "received engine message: {:?}",
+                msg
+            );
             match msg {
                 EngineMsg::RxBatch { desc, payload } => {
                     if !shutting_down {
@@ -62,7 +70,7 @@ pub fn spawn_engine_owner(
                             // when combined with timestamps). We avoid global atomics here.
                             ((desc.len() as u64) << 32) ^ (payload.len() as u64)
                         };
-                        tracing::debug!(
+                        tracing::info!(
                             target: "ntx::engine-owner",
                             batch_id,
                             desc_len = desc.len(),

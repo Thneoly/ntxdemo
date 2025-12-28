@@ -61,6 +61,7 @@ struct NicRxHeartbeat {
     buffered_not_flushed: u64,
     rx_seen: u64,
     sent_batches: u64,
+    consecutive_buffered: u64,
 }
 
 impl Default for NicRxHeartbeat {
@@ -74,6 +75,7 @@ impl Default for NicRxHeartbeat {
             buffered_not_flushed: 0,
             rx_seen: 0,
             sent_batches: 0,
+            consecutive_buffered: 0,
         }
     }
 }
@@ -357,6 +359,12 @@ pub fn init_with_config(cfg: SchedulerConfig) {
 ///
 /// End-state: NIC RX pushes batches to the engine owner, not via EngineManager.
 pub fn set_engine_tx(tx: tokio::sync::mpsc::Sender<EngineMsg>) {
+    // This should be called once from `main` after `spawn_engine_owner`.
+    // If NicRx is running before this, we'll drop flushed batches.
+    tracing::info!(
+        target: "ntx::scheduler::nicrx",
+        "engine_tx configured (engine owner channel installed)"
+    );
     *ENGINE_TX.lock().expect("engine tx poisoned") = Some(tx);
 }
 
@@ -785,6 +793,7 @@ impl Scheduler {
                     let mut hb = NIC_RX_HEARTBEAT.lock().expect("nicrx heartbeat poisoned");
                     hb.calls += 1;
                     if now.duration_since(hb.last_log) >= Duration::from_secs(1) {
+                        // Promote to INFO so it's visible under typical default filters.
                         tracing::trace!(
                             target: "ntx::scheduler::nicrx",
                             calls = hb.calls,
@@ -794,8 +803,24 @@ impl Scheduler {
                             buffered_not_flushed = hb.buffered_not_flushed,
                             rx_seen = hb.rx_seen,
                             sent_batches = hb.sent_batches,
+                            consecutive_buffered = hb.consecutive_buffered,
                             "nicrx heartbeat"
                         );
+
+                        // Strong signal: we are receiving packets, but never flushing/sending.
+                        // This typically means:
+                        // - RxRingBatch never flushes (time/capacity conditions not met), OR
+                        // - flush happens but engine_tx is None / channel send fails.
+                        if hb.rx_seen > 0 && hb.sent_batches == 0 {
+                            tracing::trace!(
+                                target: "ntx::scheduler::nicrx",
+                                rx_seen = hb.rx_seen,
+                                buffered_not_flushed = hb.buffered_not_flushed,
+                                no_engine_tx = hb.no_engine_tx,
+                                "nicrx received packets but sent_batches=0; RX not reaching engine owner"
+                            );
+                        }
+
                         hb.last_log = now;
                         // rolling 1Hz bucket
                         hb.calls = 0;
@@ -805,6 +830,7 @@ impl Scheduler {
                         hb.buffered_not_flushed = 0;
                         hb.rx_seen = 0;
                         hb.sent_batches = 0;
+                        hb.consecutive_buffered = 0;
                     }
                 }
 
@@ -815,7 +841,6 @@ impl Scheduler {
                     hb.no_packet += 1;
                     return false;
                 };
-
                 {
                     let mut hb = NIC_RX_HEARTBEAT.lock().expect("nicrx heartbeat poisoned");
                     hb.rx_seen += 1;
@@ -842,8 +867,12 @@ impl Scheduler {
                 // - A descriptor ring starting at DESCS_OFF
                 // - payload_mem is a plain byte region, with offsets referenced by desc
                 let (desc_mem, payload_mem) = RX_RING.with_borrow_mut(|r| {
-                    r.push_and_maybe_flush_one(rx.sock_id.map(|s| s as u64), &rx.payload)
+                    r.push_and_flush_one(rx.sock_id.map(|s| s as u64), &rx.payload)
                 });
+
+                // NOTE: `RxRingBatch` currently flushes per packet, so we expect
+                // `(Some(desc), Some(payload))` here. If we ever change the batching
+                // policy again, `None` means "buffered but not flushed", not "dropped".
                 if let (Some(desc_mem), Some(payload_mem)) = (desc_mem, payload_mem) {
                     if let Some(tx) = engine_tx() {
                         // Best-effort; if the channel is closed/full, drop newest.
@@ -881,22 +910,33 @@ impl Scheduler {
                             let mut hb = NIC_RX_HEARTBEAT.lock().expect("nicrx heartbeat poisoned");
                             hb.enqueued_batches += 1;
                             hb.sent_batches += 1;
+                            hb.consecutive_buffered = 0;
                             true
                         }
                     } else {
                         // Engine not configured yet.
                         let mut hb = NIC_RX_HEARTBEAT.lock().expect("nicrx heartbeat poisoned");
                         hb.no_engine_tx += 1;
+                        // This is the critical symptom when engine owner is running
+                        // but scheduler hasn't been wired yet.
                         tracing::warn!(
                             target: "ntx::scheduler::nicrx",
+                            desc_len = desc_mem.len(),
+                            payload_len = payload_mem.len(),
                             "engine_tx is None; dropping RxBatch"
                         );
                         false
                     }
                 } else {
-                    // Buffered but not flushed yet.
+                    // With flush-per-packet this should be unreachable, but keep it
+                    // safe and observable in case the policy changes.
                     let mut hb = NIC_RX_HEARTBEAT.lock().expect("nicrx heartbeat poisoned");
                     hb.buffered_not_flushed += 1;
+                    hb.consecutive_buffered = hb.consecutive_buffered.saturating_add(1);
+                    tracing::debug!(
+                        target: "ntx::scheduler::nicrx",
+                        "rx_ring packet buffered (not flushed yet)"
+                    );
                     true
                 }
             }
@@ -1001,6 +1041,7 @@ struct RxRingBatch {
     payload_mem: Vec<u8>,
     tail: u32,
     seq: u64,
+    last_flush: Instant,
 }
 
 impl RxRingBatch {
@@ -1012,6 +1053,7 @@ impl RxRingBatch {
             payload_mem: Vec::new(),
             tail: 0,
             seq: 0,
+            last_flush: Instant::now(),
         };
         r.reset_buffers();
         r
@@ -1021,6 +1063,7 @@ impl RxRingBatch {
         self.payload_mem.clear();
         self.payload_mem.reserve(self.payload_cap as usize);
         self.tail = 0;
+        self.last_flush = Instant::now();
 
         // desc_mem needs to hold control + full desc ring region.
         let desc_bytes = self.desc_cap as usize * shared_mem::DESC_LEN;
@@ -1035,14 +1078,6 @@ impl RxRingBatch {
             [shared_mem::CONTROL_OFF as usize..shared_mem::CONTROL_OFF as usize + cb_enc.len()]
             .copy_from_slice(&cb_enc);
     }
-
-    fn can_fit(&self, payload_len: usize) -> bool {
-        if self.tail >= self.desc_cap {
-            return false;
-        }
-        (self.payload_mem.len() + payload_len) <= self.payload_cap as usize
-    }
-
     fn push_one(&mut self, sock_id: Option<u64>, payload: &[u8]) {
         let payload_off = shared_mem::PAYLOAD_OFF + self.payload_mem.len() as u32;
         self.payload_mem.extend_from_slice(payload);
@@ -1081,30 +1116,24 @@ impl RxRingBatch {
 
     /// Push one packet and flush if we hit capacity.
     /// Returns:
-    /// - (None,None): buffered, not flushed yet.
     /// - (Some(desc),Some(payload)): ready to notify.
-    fn push_and_maybe_flush_one(
+    ///
+    /// Current policy: **no buffering**. Every packet is flushed immediately so the
+    /// guest can observe RX without relying on batch timing/capacity thresholds.
+    fn push_and_flush_one(
         &mut self,
         sock_id: Option<u64>,
         payload: &[u8],
     ) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
-        if !self.can_fit(payload.len()) {
-            // Notifying the currently-buffered batch is better than dropping.
-            // We'll flush it now and buffer the current packet into a fresh batch.
-            let flushed = self.flush();
-            self.push_one(sock_id, payload);
-            if let Some((d, p)) = flushed {
-                return (Some(d), Some(p));
-            }
-        }
-
+        // No buffering: ensure the current packet is the only one in the batch.
+        // This keeps the ABI/layout identical but removes batching behavior.
         self.push_one(sock_id, payload);
-        if self.tail >= self.desc_cap {
-            if let Some((d, p)) = self.flush() {
-                return (Some(d), Some(p));
-            }
+
+        if let Some((d, p)) = self.flush() {
+            return (Some(d), Some(p));
         }
 
+        // `flush()` only returns None when `tail==0`, which can't happen after `push_one`.
         (None, None)
     }
 }
