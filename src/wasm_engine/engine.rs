@@ -87,7 +87,7 @@ impl ResourceHost for State {
         pool: String,
         owner: String,
     ) -> wasmtime::Result<(), ResourceError> {
-        kernel::hostnet_acquire_udp_port(&pool, &owner)
+        kernel::hostnet_acquire_udp_resource(&pool, &owner)
             .map_err(|e| ResourceError::Other(e.to_string()))?;
         Ok(())
     }

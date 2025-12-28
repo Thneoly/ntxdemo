@@ -1,6 +1,7 @@
 use super::graph::{EdgeKind, PacketGraph};
 use super::layer::{AcceptResult, LayerId, LayerInstance, PacketContext};
 use super::registry::LayerRegistry;
+use log::warn;
 
 /// Structured parse error to make `accept()` drops diagnosable.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,12 +86,14 @@ pub fn parse_packet_with_ctx<'a>(
         match registry.accept(&layer, ctx).map_err(ParseError::Message)? {
             AcceptResult::Accept => {}
             AcceptResult::Drop => {
+                warn!(target: "ntx::stack::accept", "accept() returned Drop: layer={:?}", id);
                 return Err(ParseError::Accept {
                     layer: id,
                     result: AcceptResult::Drop,
                 });
             }
             AcceptResult::Poison => {
+                warn!(target: "ntx::stack::accept", "accept() returned Poison: layer={:?}", id);
                 // Keep the accepted layers so far + this layer, but stop parsing further.
                 offset = offset
                     .checked_add(used)
@@ -179,12 +182,14 @@ pub fn parse_packet_with_spans_ctx<'a>(
         match registry.accept(&layer, ctx).map_err(ParseError::Message)? {
             AcceptResult::Accept => {}
             AcceptResult::Drop => {
+                warn!(target: "ntx::stack::accept", "accept() returned Drop: layer={:?}", id);
                 return Err(ParseError::Accept {
                     layer: id,
                     result: AcceptResult::Drop,
                 });
             }
             AcceptResult::Poison => {
+                warn!(target: "ntx::stack::accept", "accept() returned Poison: layer={:?}", id);
                 offset = offset
                     .checked_add(used)
                     .ok_or_else(|| ParseError::Message("offset overflow".to_string()))?;

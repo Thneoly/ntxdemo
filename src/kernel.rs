@@ -17,13 +17,10 @@ use ntx_network::{
 
 use ntx_network::resources::NonSocketResourceValue;
 use once_cell::sync::Lazy;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use serde::Deserialize;
 use std::path::Path;
-use std::sync::Arc;
-use tracing::{error, info, warn};
-
-use crate::audit_registry;
+use tracing::{error, info};
 
 /// Minimal error type for hostnet/WIT adapters.
 ///
@@ -72,8 +69,8 @@ pub fn hostnet_create_socket_owner(name: &str) -> Result<String, HostnetError> {
     Ok(fmt_uuid(&owner))
 }
 
-/// Allocate+pin a UDP port for this owner from pool (hostnet WIT adapter).
-pub fn hostnet_acquire_udp_port(pool: &str, owner: &str) -> Result<(), HostnetError> {
+/// Allocate+pin a UDP resources for this owner from pool (hostnet WIT adapter).
+pub fn hostnet_acquire_udp_resource(pool: &str, owner: &str) -> Result<(), HostnetError> {
     let owner = parse_uuid_str(owner)?;
     let mut pools = KERNEL.pools.lock();
     let (_, v) = pools.acquire_and_pin_non_socket(resources::ResourceKind::Ipv4, pool, owner)?;
@@ -94,10 +91,15 @@ pub fn hostnet_acquire_udp_port(pool: &str, owner: &str) -> Result<(), HostnetEr
         "acquired mac resource: {:?}",
         v
     );
+
     let (_, v) = pools.acquire_and_pin_non_socket(resources::ResourceKind::UdpPort, pool, owner)?;
     let NonSocketResourceValue::UdpPort(_port) = v else {
         unreachable!("resource kind/value mismatch")
     };
+
+    // Publish updated ABR snapshot so dataplane accept() sees bound ports.
+    let mut store = KERNEL.store.lock();
+    pools.publish_abr_for_owner(&mut store, &owner, abr::BindingOwner::KernelIface);
     Ok(())
 }
 
@@ -109,6 +111,8 @@ pub fn hostnet_acquire_udp_identity(
     let owner = parse_uuid_str(owner)?;
     let mut pools = KERNEL.pools.lock();
 
+    // Pool arg here is treated as the canonical pool name for this identity.
+    // Use it for IPv4/MAC/UDP port for simplicity.
     let (_, v) = pools.acquire_and_pin_non_socket(resources::ResourceKind::Ipv4, pool, owner)?;
     let NonSocketResourceValue::Ipv4(ip) = v else {
         unreachable!("resource kind/value mismatch")
@@ -123,6 +127,11 @@ pub fn hostnet_acquire_udp_identity(
     let NonSocketResourceValue::UdpPort(port) = v else {
         unreachable!("resource kind/value mismatch")
     };
+
+    // Publish updated ABR snapshot so dataplane accept() sees our IPv4 and UDP port.
+    // This is critical because `Ipv4::accept()` will Poison packets whose dst_ip isn't in ABR.
+    let mut store = KERNEL.store.lock();
+    pools.publish_abr_for_owner(&mut store, &owner, abr::BindingOwner::KernelIface);
 
     Ok((ip, mac, port))
 }
@@ -399,9 +408,11 @@ pub struct UdpSocketCreateResponse {
     pub local_udp_port: u16,
 }
 struct Kernel {
+    #[allow(dead_code)]
     config: Config,
     reg: LayerRegistry,
     pools: Mutex<ResourcePools>,
+    #[allow(dead_code)]
     store: Mutex<abr::BindingStore>,
     arp_cache: Mutex<ArpCache>,
     udp_sockets: Mutex<Table>,
@@ -414,8 +425,6 @@ struct Kernel {
     hostnet_tx_arena: Mutex<Vec<u8>>,
     /// Current write head into `hostnet_tx_arena`.
     hostnet_tx_head: Mutex<usize>,
-
-    abr_view: RwLock<Arc<abr::ResourceView>>,
 }
 
 static KERNEL: Lazy<Kernel> = Lazy::new(|| Kernel::new().expect("Kernel::new failed"));
@@ -457,9 +466,6 @@ impl Kernel {
         let hostnet_tx_arena = Mutex::new(vec![0u8; 1024 * 1024]);
         let hostnet_tx_head = Mutex::new(0usize);
 
-        // Load an initial ABR snapshot.
-        let abr_view = abr::load_view();
-
         Ok(Self {
             config: cfg,
             reg,
@@ -472,7 +478,6 @@ impl Kernel {
             hostnet_udp_binder,
             hostnet_tx_arena,
             hostnet_tx_head,
-            abr_view: RwLock::new(abr_view),
         })
     }
     fn nic(&self) -> parking_lot::MutexGuard<'_, Box<dyn Nic + Send + Sync>> {
@@ -480,16 +485,6 @@ impl Kernel {
     }
     fn reg(&self) -> &LayerRegistry {
         &self.reg
-    }
-
-    fn abr_view(&self) -> Arc<abr::ResourceView> {
-        self.abr_view.read().clone()
-    }
-
-    fn refresh_abr_view(&self) {
-        // Control-plane refresh: swap in the latest global ABR snapshot.
-        let view = abr::load_view();
-        *self.abr_view.write() = view;
     }
     fn udp_sockets(&self) -> parking_lot::MutexGuard<'_, Table> {
         self.udp_sockets.lock()
@@ -528,10 +523,8 @@ pub fn init(_path: impl AsRef<Path>) -> Result<()> {
 
 /// Refresh the cached ABR view from the global ABR snapshot.
 ///
-/// Call this after control-plane changes (e.g. resources acquired/released).
-pub fn refresh_abr() {
-    KERNEL.refresh_abr_view();
-}
+/// NOTE: Scheme-B: kernel dataplane reads ABR directly via `abr::load_view()`.
+/// This function is intentionally removed to avoid stale caching semantics.
 
 /// UDP RX result with best-effort flow correlation.
 #[derive(Debug, Clone)]
@@ -546,7 +539,9 @@ pub struct UdpRx {
 pub fn non_blocking_recv_udp() -> Option<UdpRx> {
     let mut nic = KERNEL.nic();
     let reg = KERNEL.reg();
-    let abr_view = KERNEL.abr_view();
+    // Scheme-B: load ABR snapshot directly (RCU/ArcSwap atomic load).
+    // Recommended pattern: load once per RX loop tick and reuse for parsing this packet.
+    let abr_view = abr::load_view();
     let udp_sockets = KERNEL.udp_sockets();
     // Kernel doesn't distinguish client/server, and identities may use multiple dst MACs;
     // disable L2 filtering here and let ABR decide relevance.
