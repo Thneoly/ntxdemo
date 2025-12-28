@@ -22,8 +22,9 @@
 
 - `ntx:host/rx-ring@0.1.0`：在 guest `run()` 内拉取 RX 批次（handle/offset ABI）。
 
-> ✅ 现状提示：仓库当前仍 export 了 `packet-ingest.notify-rx`（WIT/WAC 均可见）。
-> 终局版落地时必须删除对应 export + host 调用链，避免误用回退。
+> ✅ 现状提示（已对齐）：仓库代码路径已不再依赖 `packet-ingest.notify-rx` 注入 RX；
+> WAC 产物也已不再 export `packet-ingest`。
+> 但文档/旧设计稿中可能仍残留 `packet-ingest.notify-rx` 的叙事，需要持续清理，避免误读。
 
 ## `ntx:host/rx-ring@0.1.0`（handle/offset ABI）
 
@@ -71,7 +72,8 @@
 	- 约束（写死）：超时回收后
 		- 后续 `read-*` 必须稳定返回 `err("invalid handle")`
 		- host 可以复用底层 backing store，但**不得让旧 handle 误读新数据**：建议实现 `handle = (slot_id, generation)`（或等价机制），并在复用时递增 generation；旧 handle 必须被识别为 `invalid handle`。
-5) `desc/payload` 的内存布局复用 `src/wasm_engine/shared_mem.rs`（control block + desc ring + payload ring；desc 32 bytes）。
+5) `desc/payload` 的内存布局复用 host 的 `src/rx_layout.rs`（control block + desc ring + payload ring；desc 32 bytes），
+	guest 侧 decode 参考 `component/scheduler/src/rx_decode.rs`。
 
 ## Host 侧最终运行模型（只保留两条链路）
 
@@ -81,10 +83,14 @@
 - engine owner 仅负责：实例化 composed scheduler，并调用一次 `scheduler-component.run(config-dir)` 进入长期运行。
 - 关键约束：运行期 engine owner 不再对同一实例执行任何“额外导出调用”。
 
+> ✅ 当前实现对齐（仓库 `src/`）：
+> - `src/main.rs` 会启动一个专用线程 `ntx-guest-scheduler` 调用 `EngineManager::run(config_dir)`，该调用预期长期阻塞。
+> - host 的 NIC RX 路径不会再调用任何 guest 导出函数；它只会构造 `(desc_mem, payload_mem)` 并 enqueue 到 host `rx-ring`。
+
 ### 2) NIC RX → 入队 batch（bounded + backpressure）
 
 - NIC RX 任务持续收包。
-- 将包写入 shared-mem 格式的 desc/payload buffer（复用 `shared_mem` 约定）。
+- 将包写入共享布局格式的 desc/payload buffer（复用 `rx_layout` 约定）。
 - 将该 batch 放入 **bounded 队列**（供 `rx-ring.poll-rx/wait-rx` 取走）。
 
 - 队列满时策略（写死，默认）：**drop newest（丢当前入队的 batch/包）**，并记录可观测指标。
@@ -126,7 +132,7 @@ guest `run()` 主循环每次迭代：
 
 - [x] 修改 scheduler `world.wit`
 	- [x] `import ntx:host/rx-ring@0.1.0`
-	- [ ] 删除 `export ntx:scenario-scheduler/packet-ingest@0.1.0`（`notify-rx`）
+	- [x] 删除 `export ntx:scenario-scheduler/packet-ingest@0.1.0`（`notify-rx`）
 
 - [x] 修改 `scheduler-composition.wac`
 	- [x] composed scheduler **不再 export** `packet-ingest`
@@ -140,12 +146,12 @@ guest `run()` 主循环每次迭代：
 
 - [x] `run()` 主循环内 pull RX
 	- [x] `wait-rx/poll-rx` 获取 `rx-batch(handle, ...)`
-	- [x] `read-desc/read-payload` 按需读取 slice，并按 `shared_mem` 协议 decode
+	- [x] `read-desc/read-payload` 按需读取 slice，并按 `rx_layout`（shared layout）协议 decode
 	- [x] decode 后发布 `packet.rx` 事件（component eventbus）
 	- [x] `finally { release(handle) }`：成功/失败都必须释放
 
-- [ ] 删除 notify-rx 导出
-	- [ ] 移除 `packet-ingest.notify-rx` 的导出实现与所有调用点
+- [x] 删除 notify-rx 导出
+	- [x] 移除 `packet-ingest.notify-rx` 的导出实现与所有调用点
 
 - [ ] 验收
 	- [ ] 无包时不 busy-loop（使用 `wait-rx` 或合理 timeout/poll 节律）
@@ -209,4 +215,49 @@ guest `run()` 主循环每次迭代：
 	- [ ] lease timeout 能兜底回收，不会无限积压
 	- [ ] shutdown 验收：host 触发关机后 `wait-rx` 能被唤醒；guest run-loop 能可控停止（或进入可退出态）
 	- [ ] shutdown：host 触发关机后，`wait-rx` 能被唤醒；guest run-loop 能在可控时间内停止（或进入 idle 可退出态）
+
+---
+
+## （补回）Host `src/` 的 Tokio async 改造建议（vNext / 可选但推荐）
+
+本节把我们之前讨论过的“host 侧 Tokio/async 化”补回文档，作为 **增强版运行时架构**。
+它不改变本文档的终局数据流（仍是 guest pull `rx-ring`），但会显著改善：
+
+- 可取消/可超时（对 wasm 驱动与 shutdown 更友好）
+- 更清晰的线程/所有权隔离（避免未来又走回“跨锁 + wasm call”）
+- 便于扩展更细粒度的 async ABI（`pollable/stream/async func`）
+
+### 目标形态
+
+1) host 使用 Tokio runtime 作为顶层调度器（控制面/网络 IO/退出信号/metrics）。
+2) 引入一个 **Wasm Engine Actor**（单任务/单 owner）：
+	 - 独占持有 `Store/Instance/Linker`（避免并发调用同一个实例）
+	 - 对外暴露 `async` 请求队列（mpsc + oneshot）
+	 - 在 actor 内部串行执行所有 wasm 相关动作（load/run/shutdown/metrics）
+3) NIC RX 走独立的 async 任务链路：收包 → 构造 `(desc_mem,payload_mem)` → `rx_ring.enqueue_batch(...)`。
+4) guest `run()` 仍然是“长期运行”的导出调用：
+	 - 过渡期可继续放在 `spawn_blocking` 的专属线程里跑（与当前实现一致）
+	 - 如果未来启用 wasmtime `async_support(true)` + WIT async ABI（pollable/tick），则可在 Tokio 内
+		 直接 `await` 驱动，不再依赖“额外线程跑 run()”。
+
+### 关键约束（必须写死）
+
+- **任何 host 锁都不允许跨 wasm call 持有**：
+	- actor 内部调用 wasm 前必须释放外部锁；
+	- actor 管理自身状态（队列/metrics）使用无锁或细粒度锁，禁止把全局大锁包住一次 wasm 调用。
+- **wasm instance 调用必须串行化**：同一实例/Store 不允许并发 `call_*`。
+
+### shutdown / 健壮性建议
+
+- `rx-ring.wait-rx(...)` 本身要求可被 shutdown 唤醒；host 进入 shutdown 时应：
+	1) 先触发 `rx_ring.shutdown()`（或等价 flag + notify_all）
+	2) 再通知 guest（通过 control event 或未来的 `shutdown()` 导出）进入可退出态
+	3) 最后 join/await engine owner 退出
+
+### 迁移路线（不破坏当前同步 ABI）
+
+- Step 1（现在即可）：host 引入 Tokio runtime，但 `run()` 仍放在 `spawn_blocking`/专用线程。
+- Step 2：把 host 的控制面（signals/http/metrics）统一迁入 Tokio，NIC RX 也迁入 async。
+- Step 3（可选，较大改动）：启用 WIT async ABI vNext（tick/ready pollable/stream）并打开 wasmtime async support，
+	由 Tokio 直接驱动 guest，不再依赖“线程隔离 run()”。
 

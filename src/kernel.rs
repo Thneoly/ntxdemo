@@ -796,7 +796,7 @@ pub fn non_blocking_recv_udp() -> Option<UdpRx> {
     let reg = KERNEL.reg();
     let abr_view = KERNEL.abr_view();
     let udp_sockets = KERNEL.udp_sockets();
-
+    info!(target: "ntx::kernel", "non_blocking_recv_udp: called");
     // Kernel doesn't distinguish client/server, and identities may use multiple dst MACs;
     // disable L2 filtering here and let ABR decide relevance.
     let ctx = PacketContext {
