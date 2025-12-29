@@ -8,9 +8,9 @@
 wit_bindgen::generate!({
     world: "ntx:scenario-actions-executor/action-executor-component@0.1.0",
     path: [
-        "../../wit/eventbus",
-        "../../wit/types",
-        "../../wit/actions-executor",
+        "../wit/eventbus",
+        "../wit/types",
+        "../wit/actions-executor",
     ],
     generate_all,
     generate_unused_types: true,
@@ -24,8 +24,8 @@ struct ActionExecutorImpl;
 // Adapter from WIT event bus to framework (macro-generated).
 ntx_action_sdk::define_wit_event_bus!(
     WITEventBus,
-    crate::ntx::scenario_eventbus::event_bus::Event,
-    crate::ntx::scenario_eventbus::event_bus::publish
+    ntx::scenario_eventbus::event_bus::Event,
+    ntx::scenario_eventbus::event_bus::publish
 );
 
 impl Default for WITEventBus {
@@ -120,4 +120,4 @@ ntx_action_sdk::define_wit_component_entry_minimal!(
     after_dispatch_tuple = log_after_dispatch,
 );
 
-crate::export!(ActionExecutorImpl);
+export!(ActionExecutorImpl);

@@ -1,0 +1,15 @@
+[template]
+# Use the folder name by default.
+name = "{{project-name}}"
+
+# Only include these files when generating.
+include = [
+  "Cargo.toml",
+  "README.md",
+  "src/**",
+]
+
+[placeholders]
+# The `package.metadata.component.package` value. Keep it simple and let teams standardize externally.
+component-namespace = { type = "string", prompt = "Component package namespace (e.g. scenario-actions-executor)", default = "scenario-actions-executor" }
+component-version   = { type = "string", prompt = "Component package version", default = "0.1.0" }
