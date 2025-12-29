@@ -19,7 +19,7 @@ workbook:
 actions:
   actions:
     - id: "udp-send-reply"
-      call: "udp.send-reply"
+      call: "udp-send-reply"
       with:
         payload: "hello-ntx"
         # 可选：超时与重试（毫秒）
@@ -41,7 +41,7 @@ workflows:
     - id: "wait-echo"
       type: "wait"
       on:
-        event: "packet.rx"
+        event: "packet-rx"
         match:
           action_id: "udp-send-reply"
       edges:
@@ -54,11 +54,12 @@ workflows:
 load:
   ramp_up:
     phases:
-      - at_second: 0
+      - at_second: 1
+        spawn_users: 1
+      - at_second: 5
         spawn_users: 1
   user_lifetime:
     mode: "once"
-    # P4：每 user 并发上限（Running task 数）
     max_concurrency: 1
 
 user_resources:

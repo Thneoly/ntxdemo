@@ -203,7 +203,7 @@ pub fn on_topology_changed_event(
             #[serde(default)]
             label: Option<String>,
             #[serde(default)]
-            trigger: Option<serde_json::Value>,
+            trigger: Option<crate::TriggerSpec>,
         },
         RemoveNode {
             node_id: String,
@@ -547,7 +547,7 @@ pub fn on_user_exit_event(
         )
     };
 
-    if mode != "loop" {
+    if mode != crate::UserLifetimeMode::Loop {
         return crate::finish_user(_ctx, user_id);
     }
 

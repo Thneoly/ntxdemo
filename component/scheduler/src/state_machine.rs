@@ -1,6 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 
-use crate::{PacketRxPayload, Scenario, TaskState, WorkflowIndex, WorkflowNodeDef};
+use crate::{
+    NodeKind, PacketRxPayload, Scenario, TaskState, WaitEvent, WorkflowIndex, WorkflowNodeDef,
+};
 
 /// StateMachine（方案B）：权威的 workflow 引擎（per-user task 状态 + 边推进）。
 ///
@@ -348,10 +350,10 @@ impl StateMachine {
                     .iter()
                     .find(|n| &n.id == nid)
                     .map(|n| {
-                        n.kind == "wait"
+                        n.kind == NodeKind::Wait
                             && n.on
                                 .as_ref()
-                                .map(|o| o.event.as_str() == "packet.rx")
+                                .map(|o| o.event == WaitEvent::PacketRx)
                                 .unwrap_or(false)
                             && crate::wait_match(n.on.as_ref(), action_id, task_id, p)
                     })
@@ -440,7 +442,7 @@ impl StateMachine {
             .workflows
             .nodes
             .iter()
-            .filter(|n| n.kind == "end")
+            .filter(|n| n.kind == NodeKind::End)
             .collect();
         if end_nodes.is_empty() {
             return false;
@@ -471,8 +473,8 @@ impl StateMachine {
             let Some(to) = sc.workflows.nodes.iter().find(|n| n.id == e.to) else {
                 continue;
             };
-            match to.kind.as_str() {
-                "wait" => {
+            match to.kind {
+                NodeKind::Wait => {
                     self.set_state(user_id, &to.id, TaskState::Waiting, now_ms);
                     eff.push(SmEffect::SetState {
                         user_id: user_id.to_string(),
@@ -480,7 +482,7 @@ impl StateMachine {
                         state: TaskState::Waiting,
                     });
                 }
-                "action" => {
+                NodeKind::Action => {
                     self.set_state(user_id, &to.id, TaskState::Ready, now_ms);
                     eff.push(SmEffect::SetState {
                         user_id: user_id.to_string(),
@@ -493,7 +495,7 @@ impl StateMachine {
                         priority: crate::node_priority(sc, &to.id),
                     });
                 }
-                "end" => {
+                NodeKind::End => {
                     self.set_state(user_id, &to.id, TaskState::Completed, now_ms);
                     eff.push(SmEffect::SetState {
                         user_id: user_id.to_string(),
@@ -501,7 +503,6 @@ impl StateMachine {
                         state: TaskState::Completed,
                     });
                 }
-                _ => {}
             }
         }
         eff

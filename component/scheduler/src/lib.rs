@@ -200,7 +200,7 @@ fn spawn_rx_pump() {
 /// - Must be non-blocking (0ms wait) so it doesn't stall the main event loop.
 /// - Always release the handle.
 fn pump_rx_once_nonblocking() {
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     struct PumpStats {
         polls: u64,
@@ -343,9 +343,18 @@ struct Workbook {
 struct Resource {
     id: String,
     #[serde(rename = "type")]
-    r#type: String,
+    r#type: ResourceType,
     #[serde(default)]
     properties: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ResourceType {
+    UdpEndpoint,
+    /// Forward-compat: allow new resource types without breaking deserialization.
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -357,9 +366,31 @@ struct Actions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Action {
     id: String,
-    call: String,
+    call: ActionCall,
     #[serde(default)]
     with: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ActionCall {
+    UdpSendReply,
+    /// Forward-compat: allow new actions without breaking deserialization.
+    #[serde(other)]
+    Other,
+}
+
+impl ActionCall {
+    fn as_call_str(&self) -> &'static str {
+        match self {
+            ActionCall::UdpSendReply => "udp.send-reply",
+            ActionCall::Other => "other",
+        }
+    }
+
+    fn is_udp(&self) -> bool {
+        matches!(self, ActionCall::UdpSendReply)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -368,11 +399,22 @@ struct Workflow {
     nodes: Vec<WorkflowNodeDef>,
 }
 
+/// Workflow node kind (parsed from scenario YAML field `type`).
+///
+/// We keep it strongly typed to avoid stringly-typed comparisons across the scheduler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum NodeKind {
+    Action,
+    Wait,
+    End,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WorkflowNodeDef {
     id: String,
     #[serde(rename = "type")]
-    kind: String,
+    kind: NodeKind,
     #[serde(default)]
     action: Option<String>,
     /// 多 step action：同一 node 内按顺序执行 actions，全部成功后才沿边推进。
@@ -416,9 +458,47 @@ struct RetryDef {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WaitOnSpec {
-    event: String,
+    event: WaitEvent,
     #[serde(default)]
-    r#match: serde_json::Value,
+    r#match: WaitMatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum WaitEvent {
+    PacketRx,
+    /// Forward-compat: allow new events without breaking deserialization.
+    #[serde(other)]
+    Other,
+}
+
+/// Strongly typed match spec for `wait` nodes.
+///
+/// YAML example:
+///
+/// ```yaml
+/// on:
+///   event: packet.rx
+///   match:
+///     action_id: udp-send-reply
+///     task_id: some-task
+///     sock_id: 123
+///     len: 42
+///     payload_hex: 0x0102
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WaitMatch {
+    #[serde(default)]
+    action_id: Option<String>,
+    #[serde(default)]
+    task_id: Option<String>,
+    #[serde(default)]
+    sock_id: Option<u64>,
+    #[serde(default)]
+    len: Option<u64>,
+    #[serde(default)]
+    payload_hex: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -427,7 +507,51 @@ struct WorkflowEdge {
     #[serde(default)]
     label: Option<String>,
     #[serde(default)]
-    trigger: Option<serde_json::Value>,
+    trigger: Option<TriggerSpec>,
+}
+
+/// Strongly typed workflow edge trigger.
+///
+/// YAML examples:
+///
+/// ```yaml
+/// trigger:
+///   on: success
+///   condition: "vars.a == 1"
+/// ```
+///
+/// ```yaml
+/// trigger:
+///   status: timeout
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TriggerSpec {
+    /// Alias keys: `on` / `event` / `status` in YAML.
+    #[serde(default, flatten)]
+    when: Option<TriggerWhen>,
+    #[serde(default)]
+    condition: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, untagged)]
+enum TriggerWhen {
+    On { on: TriggerReason },
+    Event { event: TriggerReason },
+    Status { status: TriggerReason },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TriggerReason {
+    Success,
+    Failed,
+    Timeout,
+    PacketRx,
+    /// Fallback for future extensions (keeps forward-compat).
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -453,7 +577,7 @@ struct RampPhase {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct UserLifetime {
     #[serde(default = "default_mode")]
-    mode: String,
+    mode: UserLifetimeMode,
     #[serde(default)]
     iterations: Option<u64>,
     #[serde(default)]
@@ -463,8 +587,24 @@ struct UserLifetime {
     max_concurrency: Option<u32>,
 }
 
-fn default_mode() -> String {
-    "once".to_string()
+fn default_mode() -> UserLifetimeMode {
+    UserLifetimeMode::Once
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum UserLifetimeMode {
+    Once,
+    Loop,
+    /// Forward-compat.
+    #[serde(other)]
+    Other,
+}
+
+impl Default for UserLifetimeMode {
+    fn default() -> Self {
+        UserLifetimeMode::Once
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -694,7 +834,7 @@ fn validate_scenario(sc: &Scenario) -> Result<(), String> {
         if node_ids.insert(&n.id, ()).is_some() {
             return Err(format!("duplicate workflow node id: {}", n.id));
         }
-        if n.kind == "action" {
+        if n.kind == NodeKind::Action {
             let has_steps = n.steps.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
             if has_steps {
                 for st in n.steps.as_ref().unwrap() {
@@ -1077,7 +1217,7 @@ fn restart_user_iteration_with_scenario(sc: &Scenario, user_id: &str) -> Result<
 }
 
 fn user_meta_from_config(ul: &UserLifetime) -> UserMeta {
-    let mode = ul.mode.trim().to_ascii_lowercase();
+    let mode = ul.mode;
     let think_ms = ul.think_time.as_deref().and_then(parse_duration_ms);
     let max_running = ul
         .max_concurrency
@@ -1235,11 +1375,11 @@ fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, Stri
 
         eprintln!(
             "[scheduler] dispatch: action_call user_id={user_id} node_id={node_id} call={}",
-            action.call
+            action.call.as_call_str()
         );
 
         // B) 真实资源绑定：为 udp action 确保 user 已绑定 socket，并注入 socket_id
-        if action.call.starts_with("udp.") {
+        if action.call.is_udp() {
             ensure_udp_socket_for_user(ctx, sc, &user_id)?;
         }
 
@@ -1362,7 +1502,7 @@ fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, Stri
 
         let (mut def, act_ctx) =
             build_action_def_with_ctx(action, &tctx, Some(&user_id), Some(&node_id))?;
-        if action.call.starts_with("udp.") {
+        if action.call.is_udp() {
             inject_udp_socket_id(&user_id, &mut def)?;
         }
 
@@ -1481,12 +1621,12 @@ fn ensure_udp_socket_for_user(
         .workbook
         .resources
         .iter()
-        .find(|r| r.r#type == "udp-endpoint")
+        .find(|r| r.r#type == ResourceType::UdpEndpoint)
         .or_else(|| {
             sc.workbook
                 .resources
                 .iter()
-                .find(|r| r.r#type == "udp-target")
+                .find(|r| r.r#type == ResourceType::UdpEndpoint)
         })
         .ok_or_else(|| "no udp-endpoint resource in workbook.resources".to_string())?;
 
@@ -1749,7 +1889,7 @@ fn build_action_def_with_ctx(
 
     let def = ActionDef {
         id: action.id.clone(),
-        call: action.call.clone(),
+        call: action.call.as_call_str().to_string(),
         params,
         exports: vec![], // 预留 exports，后续从配置补充
     };

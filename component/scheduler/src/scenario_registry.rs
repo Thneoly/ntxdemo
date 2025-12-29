@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::runtime_state::RUNTIME;
-use crate::{Scenario, WorkflowIndex};
+use crate::WaitEvent;
+use crate::{NodeKind, Scenario, WorkflowIndex};
 
 #[derive(Default)]
 pub(crate) struct ScenarioRegistry {
@@ -59,22 +60,18 @@ pub(crate) static SCENARIOS: Lazy<Mutex<ScenarioRegistry>> =
 pub(crate) fn build_workflow_index(sc: &Scenario) -> WorkflowIndex {
     let mut idx = WorkflowIndex::default();
     for n in &sc.workflows.nodes {
-        if n.kind != "wait" {
+        if n.kind != NodeKind::Wait {
             continue;
         }
         let Some(on) = n.on.as_ref() else {
             idx.wait_any.push(n.id.clone());
             continue;
         };
-        if on.event.as_str() != "packet.rx" {
+        if on.event != WaitEvent::PacketRx {
             idx.wait_any.push(n.id.clone());
             continue;
         }
-        let m = &on.r#match;
-        let action_id = m
-            .get("action_id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let action_id = on.r#match.action_id.clone();
         if let Some(aid) = action_id {
             idx.wait_by_action_id
                 .entry(aid)

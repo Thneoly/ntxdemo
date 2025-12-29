@@ -78,20 +78,20 @@ pub(crate) struct UserInstance {
 
 #[derive(Debug, Clone)]
 pub(crate) struct UserMeta {
-    pub(crate) mode: String,            // once / loop
-    pub(crate) iterations: Option<u64>, // max iterations in loop mode
-    pub(crate) think_ms: Option<u64>,   // optional think-time between iterations
-    pub(crate) iteration: u64,          // completed iterations
-    pub(crate) end_event_sent: bool,    // prevent duplicate exit events per iteration
-    pub(crate) running: usize,          // current running tasks
-    pub(crate) max_running: usize,      // per-user concurrency cap
+    pub(crate) mode: crate::UserLifetimeMode, // once / loop
+    pub(crate) iterations: Option<u64>,       // max iterations in loop mode
+    pub(crate) think_ms: Option<u64>,         // optional think-time between iterations
+    pub(crate) iteration: u64,                // completed iterations
+    pub(crate) end_event_sent: bool,          // prevent duplicate exit events per iteration
+    pub(crate) running: usize,                // current running tasks
+    pub(crate) max_running: usize,            // per-user concurrency cap
     pub(crate) scenario_version: u64, // topology version bound to this user (old users do not migrate)
 }
 
 impl Default for UserMeta {
     fn default() -> Self {
         Self {
-            mode: "once".to_string(),
+            mode: crate::UserLifetimeMode::Once,
             iterations: None,
             think_ms: None,
             iteration: 0,
@@ -105,7 +105,7 @@ impl Default for UserMeta {
 
 impl UserMeta {
     pub(crate) fn apply_lifetime(&mut self, ul: &UserLifetime) {
-        self.mode = ul.mode.clone();
+        self.mode = ul.mode;
         self.iterations = ul.iterations;
         self.think_ms = ul.think_time.as_deref().and_then(crate::parse_duration_ms);
         self.max_running = ul.max_concurrency.map(|v| v as usize).unwrap_or(1);
