@@ -268,12 +268,60 @@ Dify 支持导入 YAML DSL，并通过后端接口转换成 draft graph：
 	 - 无环（借鉴 `getCycleEdges`）
 	 - 必须存在 start/end（或你们的等价节点）
 	 - action_ref 引用的 action 必须存在
-	 - wait 节点必须有 `on.event` 与最小 match
+	 - wait 节点必须有 `on.event`
+	 - wait 的 `on.match` **允许为空**，但在常见的 packet-rx 场景需要 `action_id` 做关联（见下文“推断规则”）
 3. 生成：
 	 - `workflows.nodes[]`：按节点 id 输出，并从 edges 构造 `edges: [{to,label}]`
 	 - `actions.actions[]`：从画布上所有 action 节点聚合（按 action_ref 去重或按节点实例输出，按你们语义决定）
+	 - `actions.actions[*].with`：以 **catalog defaults 优先**（defaults → 用户覆盖）确保导出稳定
 
 > 注意：你们的 `scenario.yaml` 里 `workflows.nodes[*].id` 与 `actions.actions[*].id` 是否允许一对多/多对一，需要在编排器里明确建模。
+
+#### 8.4.1 关键推断规则（通用 Builder 语义）
+
+为了保持通用 workflow builder 的可用性，同时不违背 `DESIGN_PROMPT` 中“事件驱动/单线程/不在组件内等待”的约束，我们把导出逻辑明确分为：
+
+- **编辑态（graph）**：允许不完整（临时节点/未连线/空 match/未填参数）
+- **运行态（scenario.yaml）**：导出时执行 `normalize + validate + compile`
+
+其中 compile 存在少量“推断”，其目标是：
+
+1) **只导出 Start 可达子图**
+
+- 导出以 Start 节点为根做可达遍历，仅输出可达 nodes/edges。
+- 目的：画布上允许保留草稿/临时分支，不污染运行态 DSL。
+
+2) **wait.on.match.action_id 的推断（从入边 action）**
+
+- 如果 wait 节点的 `on.match.action_id` 未显式填写：
+	- 尝试从 **wait 的入边（incoming edge）** 找到上游 action 节点
+	- 取上游 action 节点的 `action_ref` 作为 `action_id`
+- 目的：让“action → wait(packet-rx)”这种常见模式开箱可用，并且比“从 start 推断”更通用。
+- 注意：若图结构复杂（wait 有多个上游 action / 多入边），建议用户显式填写 match，避免歧义。
+
+3) Start 导出为两种语义（兼容 demo + 保持通用）
+
+- 编辑态里 start 始终是 `ntx_node_type='start'`。
+- 导出时：
+	- 若 start 的第一条出边连接到了一个 action 节点，则可将 start 导出为 `type: action`（udp-echo-minimal 风格，便于跑通最小 demo）。
+	- 否则按 `type: start` 导出，保持 DSL 的通用性，不强行假设“start 必为 action”。
+
+4) action.with 的默认值来源：**catalog 合并**（不维护 manifest）
+
+- 前端不维护 action manifest。
+- `actions-catalog.json`（由 host 侧通过 actions-executor 自描述 API 生成）是 action schema 与 defaults 的唯一真相源。
+- 导出动作参数采用：
+
+	$$with_{export} = merge(defaults_{catalog}, with_{user})$$
+
+	其中用户在 Inspector 里编辑的 `with` 覆盖 defaults。
+
+#### 8.4.2 场景外壳（Scenario scaffold）
+
+`scenario.yaml` 的顶层块（`workbook/resources/load/user_resources`）本质上是“场景外壳”，不属于 workflow 图本身。
+
+- Demo/联调用途：可以提供一个最小 scaffold（例如 udp-echo-minimal 的 udp-target + load + ip_binding）。
+- 通用 builder：应支持关闭默认 scaffold 或由上层模板注入（例如“先导入已有 scenario_demo.yaml 作为模板，再只覆盖 actions/workflows”）。
 
 ---
 
@@ -348,6 +396,114 @@ actions-executor 组件必须导出：
 - `actions.actions[*].id`：取 `action_ref`（或按你们语义决定是否一对多共享）
 - `actions.actions[*].call`：取 catalog 的 `call`
 - `actions.actions[*].with`：取节点当前参数（最终 YAML map）
+
+> 兼容性提示：当前仓库 generator（`actions-catalog-gen`）输出为 kebab-case 字段名（如 `schema-version`、`default-params-json`）。
+> 前端解析时应兼容 snake_case 与 kebab-case，避免目录间不同版本 catalog 造成 defaults 丢失。
+
+---
+
+## 12. 校验策略（Validation）——对齐 DESIGN_PROMPT 的运行限制
+
+校验分两层：
+
+1) **编辑态提示（non-blocking warnings）**：允许用户暂存不完整图
+2) **导出前校验（blocking errors）**：确保运行态 DSL 满足 scheduler 的事件驱动执行模型
+
+建议的最小规则集（并已在 demo 中落地一部分）：
+
+- Start：
+	- 无 start：warning
+	- 多 start：warning（导出只取其中一个做可达根）
+	- start 无出边：warning
+	- start 多出边：warning（导出可能把第一条当主路径，建议显式分支语义）
+- Action：
+	- 缺 action_ref/call：error
+	- call 不在 catalog：warning（可能运行时 unknown action）
+- Wait：
+	- 缺 on.event：error
+	- 缺 on.match.action_id：warning（导出会尝试从入边推断，建议显式填写）
+- End：
+	- end 有出边：warning
+- Export：
+	- 不可达节点：warning（导出只包含 start 可达子图）
+
+---
+
+## 13. 场景外壳（Scenario Scaffold）模板注入（通用 Builder 必备）
+
+> 背景：`scenario.yaml` 顶层的 `workbook/resources/load/user_resources` 等属于“场景外壳”，它们不是 workflow 图本身。
+> 在 demo 里我们可以写死一个 udp-target 作为便捷 scaffold，但通用 workflow builder 必须支持“模板注入”，否则导出会长期处于“缺很多字段/不可运行”。
+
+### 13.1 导出契约（推荐不变）
+
+将导出明确拆成两部分输入：
+
+- **Graph（编辑器产物）**：`nodes/edges` 与 actions catalog
+- **ScaffoldTemplate（外壳模板）**：一个已有的 scenario 对象（来自粘贴/导入/平台预设）
+
+输出：
+
+- **Scenario（运行态 DSL）**：最终写入 `scenario.yaml`
+
+契约形式：
+
+$$Scenario = merge(ScaffoldTemplate, Compile(Graph, Catalog))$$
+
+其中：
+
+- `Compile(Graph, Catalog)` 只负责生成/覆盖：
+	- `actions.actions[]`
+	- `workflows.nodes[]`
+	- （可选）`name` / `version`（按产品策略决定是否允许用户覆盖）
+- `ScaffoldTemplate` 提供：
+	- `workbook`（resources/ip_pools 等）
+	- `load`（ramp_up/user_lifetime 等）
+	- `user_resources`（ip_binding 等）
+	- 以及未来扩展字段
+
+> 这样做的好处：
+> - workflow builder 不需要知道所有资源/负载字段的细节（保持通用与轻量）
+> - 用户可以复用已有 demo、或从平台选择标准模板
+> - 完全符合 `DESIGN_PROMPT`：纯声明式合成，不引入运行时等待/重入/动态入口
+
+### 13.2 两种模式（便于落地与演进）
+
+- **模式 A：Demo 便捷模式（内置 scaffold）**
+	- 仅用于 demo-workflow/快速联调。
+	- exporter 提供一个最小 udp-echo scaffold（例如 udp-target + load + ip_binding）。
+
+- **模式 B：通用模板注入模式（推荐默认）**
+	- 用户导入一个现有 scenario（YAML 或 JSON）作为 `ScaffoldTemplate`。
+	- exporter 合并后只替换 actions/workflows。
+	- 典型输入：`component/conf/udp-echo-minimal/scenario_demo.yaml`。
+
+### 13.3 模板注入的最小校验点（建议）
+
+模板注入后，builder 可以做一些“软校验”，避免导出后运行时报错：
+
+1) **资源引用检查（warning）**
+	 - 若 `action.with` 中出现 `target: "udp-target"` 这类值，建议检查该 id 是否存在于 `workbook.resources[*].id`。
+	 - 注意：这属于启发式检查（action 参数是开放 JSON），不应强行阻塞导出。
+
+2) **load / user_resources 存在性提示（warning）**
+	 - 若模板缺少 `load` 或关键字段，提示“可能不会 spawn user / 不会触发执行”（具体取决于 scheduler 默认行为）。
+
+3) **catalog 一致性提示（warning）**
+	 - 模板与 catalog 可能来自不同版本的 executor。
+	 - 若 `actions.actions[*].call` 不在 catalog，提示 unknown action 风险。
+
+### 13.4 demo-workflow 的参考实现（建议）
+
+在 demo-workflow 中提供一个简单 UI：
+
+- 一个 textarea：允许粘贴 YAML 或 JSON 作为 ScaffoldTemplate
+- 一个开关：是否启用模板注入（启用时关闭内置 demo scaffold）
+- 导出时：
+	- parse（YAML/JSON）→ object
+	- merge + compile
+	- 将最终 scenario 以 YAML 文本展示/复制
+
+> 注意：为减少依赖，demo 可以只支持 JSON（或 YAML→JSON 的极简解析）；正式产品建议用成熟 YAML parser。
 
 
 ---

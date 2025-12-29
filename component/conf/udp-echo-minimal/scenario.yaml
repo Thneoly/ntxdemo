@@ -1,62 +1,25 @@
 version: "v1"
-name: "udp-echo-minimal"
+name: "workflow-demo"
 
 workbook:
   resources:
-    - id: "udp-target"
+    -
+      id: "udp-target"
       type: "udp-endpoint"
       properties:
-        # 对端地址
         peer_ip: "10.0.0.2"
-        peer_port: 7
-        # peer_mac 可选：
-        # - 如果 host 侧 ARP cache 已有条目，scheduler 会调用 resources.resolve-peer-mac(peer_ip) 自动解析
-        # - 如果没有条目，会返回 not-found；此时请显式填写 peer_mac
         peer_mac: "02:00:00:00:00:a2"
-        # 可选：从哪个资源池分配 local ip/mac/udp-port（默认 "default"）
+        peer_port: 7
         pool: "default"
-
-actions:
-  actions:
-    - id: "udp-send-reply"
-      call: "udp-send-reply"
-      with:
-        payload: "hello-ntx"
-        # 可选：超时与重试（毫秒）
-        timeout-ms: 3000
-        retry:
-          max: 0
-          backoff_ms: 500
-
-workflows:
-  nodes:
-    - id: "start"
-      type: "action"
-      priority: 10
-      action: "udp-send-reply"
-      edges:
-        - to: "wait-echo"
-          label: "sent"
-
-    - id: "wait-echo"
-      type: "wait"
-      on:
-        event: "packet-rx"
-        match:
-          action_id: "udp-send-reply"
-      edges:
-        - to: "end"
-          label: "echo-ok"
-
-    - id: "end"
-      type: "end"
 
 load:
   ramp_up:
     phases:
-      - at_second: 1
+      -
+        at_second: 1
         spawn_users: 1
-      - at_second: 5
+      -
+        at_second: 5
         spawn_users: 1
   user_lifetime:
     mode: "once"
@@ -65,7 +28,49 @@ load:
 user_resources:
   ip_binding:
     enabled: true
-    # host resources 的 pool 名称（一般就是 "default"）
     pool_id: "default"
 
+actions:
+  actions:
+    -
+      id: "udp-send-reply"
+      call: "udp-send-reply"
+      with:
+        payload: "hello"
+        timeout_ms: 1000
+        retry:
+          max: 0
+          backoff_ms: 500
 
+workflows:
+  nodes:
+    -
+      id: "start"
+      type: "action"
+      priority: 10
+      action: "udp-send-reply"
+      edges:
+        -
+          to: "action-udp-send-reply"
+          label: "sent"
+    -
+      id: "action-udp-send-reply"
+      type: "action"
+      priority: 10
+      action: "udp-send-reply"
+      edges:
+        -
+          to: "wait-packet-rx"
+    -
+      id: "wait-packet-rx"
+      type: "wait"
+      on:
+        event: "packet-rx"
+        match:
+          action_id: "udp-send-reply"
+      edges:
+        -
+          to: "end"
+    -
+      id: "end"
+      type: "end"

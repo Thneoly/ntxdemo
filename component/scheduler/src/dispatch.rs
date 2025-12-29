@@ -221,8 +221,8 @@ pub(crate) fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result
         let timeout_ms = step_timeout_ms.or_else(|| {
             action
                 .with
-                .get("timeout-ms")
-                .or_else(|| action.with.get("timeout_ms"))
+                .get("timeout_ms")
+                .or_else(|| action.with.get("timeout-ms"))
                 .and_then(|v| v.as_u64())
         });
         if let Some(tmo) = timeout_ms {
