@@ -1,0 +1,52 @@
+{
+  "schema-version": 1,
+  "executor": {
+    "component-path": "target/wasm32-wasip2/debug/actions_executor.wasm"
+  },
+  "actions": [
+    {
+      "summary": {
+        "id": "udp-schedule-send",
+        "title": "UDP Schedule Send",
+        "description": "Publish packet.send-schedule-request; scheduler executes schedule (periodic/timetable/rate-limited)."
+      },
+      "spec": {
+        "id": "udp-schedule-send",
+        "title": "UDP Schedule Send",
+        "description": "Publish packet.send-schedule-request; scheduler executes schedule (periodic/timetable/rate-limited).",
+        "params-schema-json": "{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"additionalProperties\":true,\"properties\":{\"burst\":{\"minimum\":0,\"type\":\"integer\"},\"interval_ms\":{\"minimum\":1,\"type\":\"integer\"},\"max_count\":{\"minimum\":0,\"type\":\"integer\"},\"mode\":{\"enum\":[\"periodic\",\"timetable\",\"rate-limited\"],\"type\":\"string\"},\"payload_base64\":{\"type\":\"string\"},\"payload_bytes\":{\"items\":{\"maximum\":255,\"minimum\":0,\"type\":\"integer\"},\"type\":\"array\"},\"payload_hex\":{\"type\":\"string\"},\"payload_utf8\":{\"type\":\"string\"},\"rate_per_sec\":{\"minimum\":0,\"type\":\"number\"},\"request_id\":{\"type\":\"string\"},\"socket_id\":{\"minimum\":0,\"type\":\"integer\"},\"start_delay_ms\":{\"minimum\":0,\"type\":\"integer\"},\"timeout_ms\":{\"minimum\":0,\"type\":\"integer\"},\"timestamps_ms\":{\"items\":{\"minimum\":0,\"type\":\"integer\"},\"type\":\"array\"}},\"required\":[\"socket_id\",\"mode\"],\"type\":\"object\"}",
+        "default-params-json": "{\"interval_ms\":1000,\"mode\":\"periodic\",\"payload_utf8\":\"hello\",\"start_delay_ms\":0,\"timeout_ms\":30000}",
+        "capabilities": [
+          {
+            "debug": "ActionCapability::EmitsPacketTxRequest"
+          },
+          {
+            "debug": "ActionCapability::NeedsUserResources"
+          }
+        ]
+      }
+    },
+    {
+      "summary": {
+        "id": "udp-send-reply",
+        "title": "UDP Send (no-wait)",
+        "description": "Publish packet.tx-request and return immediately; scheduler handles wait/timeout/retry."
+      },
+      "spec": {
+        "id": "udp-send-reply",
+        "title": "UDP Send (no-wait)",
+        "description": "Publish packet.tx-request and return immediately; scheduler handles wait/timeout/retry.",
+        "params-schema-json": "{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"additionalProperties\":true,\"properties\":{\"payload_base64\":{\"description\":\"base64 payload (alternative)\",\"type\":\"string\"},\"payload_hex\":{\"description\":\"hex string payload\",\"type\":\"string\"},\"payload_utf8\":{\"description\":\"utf8 payload (alternative to payload_hex)\",\"type\":\"string\"},\"socket_id\":{\"minimum\":0,\"type\":\"integer\"},\"timeout_ms\":{\"minimum\":0,\"type\":\"integer\"}},\"required\":[\"socket_id\"],\"type\":\"object\"}",
+        "default-params-json": "{\"payload_utf8\":\"hello\",\"timeout_ms\":1000}",
+        "capabilities": [
+          {
+            "debug": "ActionCapability::EmitsPacketTxRequest"
+          },
+          {
+            "debug": "ActionCapability::NeedsUserResources"
+          }
+        ]
+      }
+    }
+  ]
+}
