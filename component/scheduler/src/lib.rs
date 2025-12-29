@@ -98,7 +98,12 @@ use crate::ntx::core_types::types::{
     // SendStatus,
 };
 use crate::ntx::host::resources;
-pub(crate) use payloads::{EvalCtx, EvalReason, PacketRxEventPayload};
+pub(crate) use payloads::{
+    ActionResultPayload, EvalCtx, EvalReason, PacketRxEventPayload, ResourceBoundPayload,
+    ResourceReleasedPayload, SchedulerStateChangedPayload, SchedulerTimerPayload,
+    SendScheduledPayload, TaskStateChangedPayload, TopologyRejectedPayload, UserExitPayload,
+    UserStartPayload,
+};
 pub(crate) use topics::{EventKind, TopicFilter};
 
 impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerExports {
@@ -223,17 +228,19 @@ fn apply_sm_effects(effects: Vec<SmEffect>) -> Result<(), String> {
                         let prev = t.state;
                         t.state = state;
                         if prev != state {
+                            let payload = serde_json::to_value(&crate::TaskStateChangedPayload {
+                                from: format!("{:?}", prev),
+                                to: format!("{:?}", state),
+                                scenario_version: u.meta.scenario_version,
+                                ts_ms: now_ms(),
+                            })
+                            .unwrap_or(serde_json::json!({}));
                             publish_event(
                                 crate::EventKind::SchedulerTaskStateChanged.as_str(),
                                 Some(&user_id),
                                 Some(&node_id),
                                 None,
-                                serde_json::json!({
-                                    "from": format!("{:?}", prev),
-                                    "to": format!("{:?}", state),
-                                    "scenario_version": u.meta.scenario_version,
-                                    "ts_ms": now_ms(),
-                                }),
+                                payload,
                             );
                         }
                     }

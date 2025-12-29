@@ -123,11 +123,13 @@ pub fn on_timeout_timer(
         }
 
         // publish an action-result(timeout)
-        let payload = serde_json::json!({
-            "status": "Timeout",
-            "detail": "timeout fired",
+        let payload = serde_json::to_string(&crate::ActionResultPayload {
+            status: "Timeout".to_string(),
+            detail: serde_json::Value::String("timeout fired".to_string()),
+            metrics: None,
+            exports: None,
         })
-        .to_string();
+        .unwrap_or_else(|_| "{}".to_string());
         let id = format!("ar-{}", EVENT_COUNTER.fetch_add(1, Ordering::Relaxed));
         let _ =
             ntx::scenario_eventbus::event_bus::publish(&ntx::scenario_eventbus::event_bus::Event {
@@ -249,9 +251,11 @@ pub fn on_topology_changed_event(
                 None,
                 None,
                 corr,
-                serde_json::json!({
-                    "error": format!("invalid payload json: {e}"),
-                }),
+                serde_json::to_value(crate::TopologyRejectedPayload {
+                    change_id: None,
+                    error: format!("invalid payload json: {e}"),
+                })
+                .unwrap_or(serde_json::json!({})),
             );
             return Err("invalid topology.changed payload".to_string());
         }
@@ -264,10 +268,11 @@ pub fn on_topology_changed_event(
             None,
             None,
             corr,
-            serde_json::json!({
-                "change_id": env.change_id,
-                "error": format!("unsupported schema_version={}", env.schema_version),
-            }),
+            serde_json::to_value(crate::TopologyRejectedPayload {
+                change_id: Some(env.change_id.clone()),
+                error: format!("unsupported schema_version={}", env.schema_version),
+            })
+            .unwrap_or(serde_json::json!({})),
         );
         return Err("unsupported topology schema_version".to_string());
     }
@@ -471,6 +476,8 @@ pub fn on_user_start_event(
     for n in &sc.workflows.nodes {
         let tr = crate::TaskRuntime {
             state: TaskState::Created,
+            // NOTE: vars/exports live in runtime and are intentionally JSON for template expansion.
+            // This is internal state (not an event payload schema), so we keep `json!({})`.
             vars: serde_json::json!({}),
             exports: serde_json::json!({}),
         };
@@ -572,7 +579,14 @@ pub fn on_user_exit_event(
             user_id,
             "user",
             None,
-            serde_json::json!({"user_id": user_id, "iteration": next_iter}),
+            serde_json::to_value(crate::SchedulerTimerPayload {
+                user_id: Some(user_id.to_string()),
+                task_id: None,
+                action_id: None,
+                left: None,
+                iteration: Some(next_iter),
+            })
+            .unwrap_or(serde_json::json!({})),
         );
         Ok(())
     } else {

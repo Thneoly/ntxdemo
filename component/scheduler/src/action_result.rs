@@ -181,7 +181,14 @@ pub fn on_action_result_event(
             user_id,
             task_id,
             ev.action_id.as_deref(),
-            serde_json::json!({"user_id": user_id, "task_id": task_id, "left": retries_left}),
+            serde_json::to_value(crate::SchedulerTimerPayload {
+                user_id: Some(user_id.to_string()),
+                task_id: Some(task_id.to_string()),
+                action_id: ev.action_id.clone(),
+                left: retries_left,
+                iteration: None,
+            })
+            .unwrap_or(serde_json::json!({})),
         );
     }
 

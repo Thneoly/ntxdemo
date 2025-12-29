@@ -20,11 +20,11 @@ pub(crate) fn publish_scheduler_state(state: SchedulerState, err: Option<&String
         *st = state;
     }
 
-    let payload = serde_json::json!({
-        "state": format!("{:?}", state),
-        "error": err.cloned(),
+    let payload = serde_json::to_string(&crate::SchedulerStateChangedPayload {
+        state: format!("{:?}", state),
+        error: err.cloned(),
     })
-    .to_string();
+    .unwrap_or_else(|_| "{}".to_string());
 
     let id = format!("ss-{}", EVENT_COUNTER.fetch_add(1, Ordering::Relaxed));
     let _ = crate::ntx::scenario_eventbus::event_bus::publish(

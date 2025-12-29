@@ -39,7 +39,11 @@ pub(crate) fn publish_user_exit_event(user_id: &str, reason: &str) {
         "ux-{}",
         crate::EVENT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
-    let payload = serde_json::json!({ "user_id": user_id, "reason": reason }).to_string();
+    let payload = serde_json::to_string(&crate::UserExitPayload {
+        user_id: user_id.to_string(),
+        reason: reason.to_string(),
+    })
+    .unwrap_or_else(|_| "{}".to_string());
     let _ = crate::ntx::scenario_eventbus::event_bus::publish(
         &crate::ntx::scenario_eventbus::event_bus::Event {
             id,

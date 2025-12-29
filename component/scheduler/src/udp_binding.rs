@@ -47,11 +47,14 @@ pub fn get_bound_udp_owner_id(resources: &serde_json::Value) -> Option<String> {
 
 pub fn set_bound_udp_socket_id(resources: &mut serde_json::Value, sock_id: u64) {
     if !resources.is_object() {
+        // NOTE: runtime resources are stored as JSON for flexible templating/interop.
+        // This is internal state (not an event payload schema), so we keep `json!({})`.
         *resources = serde_json::json!({});
     }
     let obj = resources.as_object_mut().unwrap();
     let bound = obj
         .entry("_bound".to_string())
+        // NOTE: internal runtime key-space; not an event payload.
         .or_insert(serde_json::json!({}));
     if let Some(bobj) = bound.as_object_mut() {
         bobj.insert(
@@ -63,11 +66,14 @@ pub fn set_bound_udp_socket_id(resources: &mut serde_json::Value, sock_id: u64) 
 
 pub fn set_bound_udp_owner_id(resources: &mut serde_json::Value, owner_id: &str) {
     if !resources.is_object() {
+        // NOTE: runtime resources are stored as JSON for flexible templating/interop.
+        // This is internal state (not an event payload schema), so we keep `json!({})`.
         *resources = serde_json::json!({});
     }
     let obj = resources.as_object_mut().unwrap();
     let bound = obj
         .entry("_bound".to_string())
+        // NOTE: internal runtime key-space; not an event payload.
         .or_insert(serde_json::json!({}));
     if let Some(bobj) = bound.as_object_mut() {
         bobj.insert(
@@ -188,7 +194,11 @@ pub fn ensure_udp_socket_for_user(
             user_id: Some(user_id.to_string()),
             task_id: None,
             action_id: None,
-            payload: serde_json::json!({"resource": res.id, "sock_id": sock.sock}).to_string(),
+            payload: serde_json::to_string(&crate::ResourceBoundPayload {
+                resource: res.id.clone(),
+                sock_id: sock.sock,
+            })
+            .unwrap_or_else(|_| "{}".to_string()),
             correlation_id: None,
             timestamp_ms: crate::now_ms(),
         },

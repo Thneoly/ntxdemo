@@ -288,13 +288,22 @@ pub(crate) fn publish_action_result_event(
             "response_code": m.response_code,
         })
     });
-    let payload = serde_json::json!({
-        "status": format!("{:?}", outcome.status),
-        "detail": outcome.detail,
-        "metrics": metrics,
-        "exports": outcome.exports,
+    let detail_json: serde_json::Value = match &outcome.detail {
+        Some(s) => serde_json::Value::String(s.clone()),
+        None => serde_json::Value::Null,
+    };
+    let exports_json: Option<serde_json::Value> = outcome
+        .exports
+        .as_ref()
+        .map(|s| serde_json::Value::String(s.clone()));
+
+    let payload = serde_json::to_string(&crate::ActionResultPayload {
+        status: format!("{:?}", outcome.status),
+        detail: detail_json,
+        metrics,
+        exports: exports_json,
     })
-    .to_string();
+    .unwrap_or_else(|_| "{}".to_string());
 
     let id = format!(
         "ar-{}",

@@ -54,7 +54,10 @@ pub(crate) fn finish_user(_ctx: &SchedulerContext, user_id: &str) -> Result<(), 
                         user_id: Some(user_id.to_string()),
                         task_id: None,
                         action_id: None,
-                        payload: serde_json::json!({"owner_id": owner}).to_string(),
+                        payload: serde_json::to_string(&crate::ResourceReleasedPayload {
+                            owner_id: owner.to_string(),
+                        })
+                        .unwrap_or_else(|_| "{}".to_string()),
                         correlation_id: None,
                         timestamp_ms: now_ms(),
                     },

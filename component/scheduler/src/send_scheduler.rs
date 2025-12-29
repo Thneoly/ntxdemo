@@ -140,12 +140,13 @@ pub fn on_send_schedule_request(
         Some(core_req.task_id.as_str()),
         ev.action_id.as_deref(),
         ev.correlation_id.as_deref(),
-        serde_json::json!({
-            "request_id": core_req.request_id,
-            "socket_id": core_req.socket_id,
-            "state": "pending",
-            "next_send_ms": next_ms,
-        }),
+        serde_json::to_value(crate::SendScheduledPayload {
+            request_id: core_req.request_id.clone(),
+            socket_id: core_req.socket_id,
+            state: "pending".to_string(),
+            next_send_ms: next_ms,
+        })
+        .unwrap_or(serde_json::json!({})),
     );
 
     Ok(())

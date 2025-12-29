@@ -59,7 +59,10 @@ pub(crate) fn publish_user_start_event(now_ms: u64, spawn_users: u64, start_seq:
     let base = start_seq.unwrap_or(1);
     for i in 0..spawn_users {
         let user_id = format!("user-{}", base + i);
-        let payload = serde_json::json!({ "user_id": user_id }).to_string();
+        let payload = serde_json::to_string(&crate::UserStartPayload {
+            user_id: user_id.clone(),
+        })
+        .unwrap_or_else(|_| "{}".to_string());
         let id = format!(
             "us-{}",
             EVENT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
