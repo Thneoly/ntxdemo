@@ -7,6 +7,12 @@ A minimal **component template** showing how to build an actions-executor quickl
 - `src/lib.rs`: structured `execute_action` wrapper + a tiny action module
 - `Cargo.toml`: already wired to `ntx-action-sdk`
 
+This template also includes a **self-describing action catalog** exported via WIT:
+
+- `schema-version()`
+- `list-actions()`
+- `describe-action(action-id)`
+
 ## How to use
 
 ### Option A: generate with cargo-generate (recommended)
@@ -16,7 +22,7 @@ This folder is a `cargo-generate` template.
 From the repo root, generate a new component folder under `component/`:
 
 ```bash
-cargo generate --path component/templates/actions-executor-template --destination component
+cargo generate --path component/actions-executor-template --destination component
 ```
 
 You'll be prompted for:
@@ -43,8 +49,13 @@ This template keeps a strong, repeatable structure:
 - standardize event publishing via an `EventBusAdapter`
 - standardize outcome exports as JSON string via `exports_json!`
 
+To add your own actions, update both:
+
+- routing + handlers in `MyActions`
+- metadata in `ActionExecutorImpl::{list_actions, describe_action}`
+
 ```shell
-cargo generate --path component/templates/actions-executor-template --destination component
+cargo generate --path component/actions-executor-template --destination component
 # or
-cargo generate --path component/templates/actions-executor-template --destination component --name my-actions-executor --force --define component-namespace=scenario-actions-executor --define component-version=0.1.0
+cargo generate --path component/actions-executor-template --destination component --name my-actions-executor --force --define component-namespace=scenario-actions-executor --define component-version=0.1.0
 ```
