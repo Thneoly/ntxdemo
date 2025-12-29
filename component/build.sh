@@ -1,5 +1,5 @@
 #!/bin/bash
-
+set -e
 pushd actions-executor
     cargo build --target wasm32-wasip2
 popd

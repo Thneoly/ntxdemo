@@ -12,6 +12,8 @@ members = [
 	"component/actions-executor",
 	"component/eventbus",
 	"component/core-types",
+	"component/core-libs/ntx-action-sdk",
+	"component/templates/actions-executor-template",
 ]
 
 [lib]

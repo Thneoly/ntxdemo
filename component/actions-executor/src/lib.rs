@@ -12,498 +12,211 @@ wit_bindgen::generate!({
     generate_unused_types:true,
     debug: true,
 });
-use crate::ntx::core_types::types::{
-    ActionContext, ActionDef, ActionOutcome, OutcomeStatus, PeriodicSchedule, RateLimitedSchedule,
-    SendRequest, SendSchedule, TimetableSchedule,
-};
+use crate::ntx::core_types::types::{self, SendRequest};
 struct ActionExecutorImpl;
-use once_cell::sync::Lazy;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use ntx_action_sdk::{ActionModule, ActionRequest, ActionRuntime};
+// Macro-generate the remaining WIT glue (schedule parse + schedule publish)
+// so this component can focus on business handlers.
+ntx_action_sdk::define_wit_scheduler_send_glue!(
+    types_mod = types,
+    event_ty = crate::ntx::scenario_eventbus::event_bus::Event,
+    publish_fn = crate::ntx::scenario_eventbus::event_bus::publish,
+);
 
-static EVENT_SEQ: Lazy<AtomicU64> = Lazy::new(|| AtomicU64::new(1));
+ntx_action_sdk::define_wit_event_bus!(
+    WITEventBus,
+    ntx::scenario_eventbus::event_bus::Event,
+    ntx::scenario_eventbus::event_bus::publish
+);
 
-fn next_event_id() -> String {
-    let n = EVENT_SEQ.fetch_add(1, Ordering::Relaxed);
-    format!("ae-{}", n)
-}
+#[derive(Default)]
+struct ActionsExecutorModule;
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-#[derive(Debug, Clone)]
-enum PayloadSpec {
-    Text(String),
-    Hex(String),
-    Bytes(Vec<u8>),
-}
-
-fn parse_payload_spec(params: &serde_json::Value) -> Result<PayloadSpec, String> {
-    if let Some(arr) = params.get("payload_bytes").and_then(|v| v.as_array()) {
-        let mut out = Vec::with_capacity(arr.len());
-        for x in arr {
-            let n = x
-                .as_u64()
-                .ok_or_else(|| "payload_bytes must be an array of u8 numbers".to_string())?;
-            let b = u8::try_from(n)
-                .map_err(|_| "payload_bytes element out of range (0..255)".to_string())?;
-            out.push(b);
-        }
-        return Ok(PayloadSpec::Bytes(out));
+impl Default for WITEventBus {
+    fn default() -> Self {
+        WITEventBus
     }
-    if let Some(s) = params
-        .get("payload_hex")
-        .or_else(|| params.get("payload-hex"))
-        .and_then(|v| v.as_str())
-    {
-        return Ok(PayloadSpec::Hex(s.to_string()));
-    }
-    if let Some(s) = params.get("payload").and_then(|v| v.as_str()) {
-        return Ok(PayloadSpec::Text(s.to_string()));
-    }
-    Err("missing payload: provide one of payload (string) / payload_hex (hex string) / payload_bytes ([u8])".to_string())
 }
 
-fn publish_tx_request(
-    sock_id: u64,
-    payload: PayloadSpec,
-    action_id: &str,
-    user_id: &Option<String>,
-    task_id: &Option<String>,
-    correlation_id: &Option<String>,
-) -> Result<(), String> {
-    let event_id = next_event_id();
-    let mut obj = serde_json::Map::new();
-    obj.insert(
-        "sock_id".to_string(),
-        serde_json::Value::Number(sock_id.into()),
+#[derive(serde::Deserialize)]
+struct UdpScheduleSendParams {
+    socket_id: u64,
+    #[serde(default)]
+    max_count: Option<u32>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    request_id: Option<String>,
+}
+
+// Macro-generate a schedule-send handler without UDP-specific SDK bindings.
+// Here we configure it for the current action call: `udp.schedule-send`.
+ntx_action_sdk::define_schedule_send_handler!(
+    fn handle_udp_schedule_send,
+    bus = WITEventBus,
+    parse_params = |req: &ntx_action_sdk::ActionRequest| {
+        ntx_action_sdk::parse_params::<UdpScheduleSendParams>(req)
+    },
+    build_request = |parsed: UdpScheduleSendParams,
+                     user_id: &String,
+                     task_id: &String,
+                     schedule,
+                     payload_bytes: Vec<u8>| {
+        let request_id = parsed
+            .request_id
+            .unwrap_or_else(|| ntx_action_sdk::next_request_id("send"));
+
+        Ok::<SendRequest, String>(SendRequest {
+            request_id,
+            user_id: user_id.clone(),
+            task_id: task_id.clone(),
+            socket_id: parsed.socket_id,
+            schedule,
+            payload: Some(payload_bytes),
+            payload_generator: None,
+            max_count: parsed.max_count,
+            timeout_ms: parsed.timeout_ms,
+        })
+    },
+    build_exports = |send_req: &SendRequest| {
+        ntx_action_sdk::exports_json!({
+            "request_id": send_req.request_id,
+            "socket_id": send_req.socket_id,
+            "scheduled": true,
+        })
+    },
+    success_detail = |exports: &String| format!("udp.schedule-send ok request_id={}", exports),
+);
+
+fn log_after_dispatch(
+    (action, ctx, _req, out): (
+        &types::ActionDef,
+        &Option<types::ActionContext>,
+        &ntx_action_sdk::ActionRequest,
+        &ntx_action_sdk::FrameworkOutcome,
+    ),
+) {
+    let user_id: Option<String> = ctx.as_ref().and_then(|c| c.user_id.clone());
+    let task_id = ctx.as_ref().and_then(|c| c.task_id.clone());
+    println!(
+        "[actions-executor] outcome id={} call={} status={:?} user={:?} task={:?}",
+        action.id, action.call, out.status, user_id, task_id
     );
-    obj.insert(
-        "action_id".to_string(),
-        serde_json::Value::String(action_id.to_string()),
+}
+
+impl ActionsExecutorModule {
+    fn handle_udp_send(
+        rt: &ActionRuntime<'_, WITEventBus>,
+        req: &ActionRequest,
+    ) -> Result<ntx_action_sdk::FrameworkOutcome, String> {
+        let sock_id = req
+            .params_json
+            .get("socket_id")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "missing socket_id (u64)".to_string())?;
+
+        let payload_spec = ntx_action_sdk::parse_payload_spec(&req.params_json)?;
+        rt.publish_tx_request(sock_id, payload_spec.clone(), &req.id)?;
+
+        let exports = ntx_action_sdk::exports_json!({
+            "socket_id": sock_id,
+            "action_call": req.call,
+            "note": "tx delegated; rx (if any) is handled via scheduler packet.rx + workflow wait node",
+        });
+
+        Ok(ntx_action_sdk::FrameworkOutcome::success(format!(
+            "{} delegated socket_id={}",
+            req.call, sock_id
+        ))
+        .with_exports_json(exports))
+    }
+
+    fn handle_udp_send_recv(
+        rt: &ActionRuntime<'_, WITEventBus>,
+        req: &ActionRequest,
+    ) -> Result<ntx_action_sdk::FrameworkOutcome, String> {
+        let sock_id = req
+            .params_json
+            .get("socket_id")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "missing socket_id (u64)".to_string())?;
+
+        let payload_spec = ntx_action_sdk::parse_payload_spec(&req.params_json)?;
+        rt.publish_tx_request(sock_id, payload_spec, &req.id)?;
+
+        let exports = ntx_action_sdk::exports_json!({
+            "socket_id": sock_id,
+            "action_call": req.call,
+            "note": "tx delegated; rx/timeout/retry must be handled by scheduler state-machine (wait node + timer events)",
+        });
+
+        Ok(ntx_action_sdk::FrameworkOutcome::success(format!(
+            "udp.send-recv delegated (no-wait) socket_id={}",
+            sock_id
+        ))
+        .with_exports_json(exports))
+    }
+
+    fn handle_not_implemented(
+        _rt: &ActionRuntime<'_, WITEventBus>,
+        req: &ActionRequest,
+    ) -> Result<ntx_action_sdk::FrameworkOutcome, String> {
+        Ok(ntx_action_sdk::FrameworkOutcome::failed(format!(
+            "action not implemented yet: {}",
+            req.call
+        )))
+    }
+
+    fn handle_fallback(
+        rt: &ActionRuntime<'_, WITEventBus>,
+        req: &ActionRequest,
+    ) -> Result<ntx_action_sdk::FrameworkOutcome, String> {
+        Ok(rt.unknown_action(&req.call))
+    }
+}
+
+impl ActionModule<WITEventBus> for ActionsExecutorModule {
+    fn handle(
+        &self,
+        rt: &ActionRuntime<'_, WITEventBus>,
+        req: &ActionRequest,
+    ) -> Result<ntx_action_sdk::FrameworkOutcome, String> {
+        ntx_action_sdk::routes!(rt, req, {
+            alias ["udp.send", "udp.send-reply"] => Self::handle_udp_send,
+            "udp.send-recv" => Self::handle_udp_send_recv,
+            "udp.schedule-send" => handle_udp_schedule_send,
+            prefix "http." => Self::handle_not_implemented,
+            prefix "tcp." => Self::handle_not_implemented,
+            _ => Self::handle_fallback,
+        })
+    }
+}
+
+fn log_before_dispatch(
+    (action, ctx, _req): (
+        &types::ActionDef,
+        &Option<types::ActionContext>,
+        &ntx_action_sdk::ActionRequest,
+    ),
+) {
+    let user_id: Option<String> = ctx.as_ref().and_then(|c| c.user_id.clone());
+    let task_id = ctx.as_ref().and_then(|c| c.task_id.clone());
+    println!(
+        "[actions-executor] execute action id={} call={} user={:?} task={:?}",
+        action.id, action.call, user_id, task_id
     );
-    obj.insert(
-        "task_id".to_string(),
-        task_id
-            .as_ref()
-            .map(|s| serde_json::Value::String(s.clone()))
-            .unwrap_or(serde_json::Value::Null),
-    );
-    obj.insert(
-        "user_id".to_string(),
-        user_id
-            .as_ref()
-            .map(|s| serde_json::Value::String(s.clone()))
-            .unwrap_or(serde_json::Value::Null),
-    );
-    match payload {
-        PayloadSpec::Text(s) => {
-            obj.insert("payload".to_string(), serde_json::Value::String(s));
-        }
-        PayloadSpec::Hex(s) => {
-            obj.insert("payload_hex".to_string(), serde_json::Value::String(s));
-        }
-        PayloadSpec::Bytes(b) => {
-            obj.insert(
-                "payload_bytes".to_string(),
-                serde_json::Value::Array(
-                    b.into_iter().map(|x| serde_json::Value::from(x)).collect(),
-                ),
-            );
-        }
-    }
-    let payload_json = serde_json::Value::Object(obj).to_string();
-    ntx::scenario_eventbus::event_bus::publish(&ntx::scenario_eventbus::event_bus::Event {
-        id: event_id,
-        kind: "packet.tx-request".to_string(),
-        user_id: user_id.clone(),
-        task_id: task_id.clone(),
-        action_id: Some(action_id.to_string()),
-        payload: payload_json,
-        correlation_id: correlation_id.clone(),
-        timestamp_ms: now_ms(),
-    })
-    .map_err(|e| format!("publish tx-request failed: {e}"))?;
-    Ok(())
 }
 
-fn publish_send_schedule_request(
-    req: &SendRequest,
-    action_id: &str,
-    correlation_id: &Option<String>,
-) -> Result<(), String> {
-    // Use JSON payload for forward compatibility; scheduler parses payload and enqueues send job.
-    // Keep field names aligned with scheduler-side struct conventions where possible.
-    let mut obj = serde_json::Map::new();
-    obj.insert("request_id".to_string(), serde_json::json!(req.request_id));
-    obj.insert("user_id".to_string(), serde_json::json!(req.user_id));
-    obj.insert("task_id".to_string(), serde_json::json!(req.task_id));
-    obj.insert("socket_id".to_string(), serde_json::json!(req.socket_id));
-    obj.insert(
-        "max_count".to_string(),
-        req.max_count
-            .map(|v| serde_json::json!(v))
-            .unwrap_or(serde_json::Value::Null),
-    );
-    obj.insert(
-        "timeout_ms".to_string(),
-        req.timeout_ms
-            .map(|v| serde_json::json!(v))
-            .unwrap_or(serde_json::Value::Null),
-    );
-
-    // schedule
-    let schedule_json = match &req.schedule {
-        SendSchedule::Once => serde_json::json!({"mode":"once"}),
-        SendSchedule::Periodic(p) => serde_json::json!({
-            "mode":"periodic",
-            "interval_ms": p.interval_ms,
-            "start_delay_ms": p.start_delay_ms,
-        }),
-        SendSchedule::Timetable(t) => serde_json::json!({
-            "mode":"timetable",
-            "timestamps_ms": t.timestamps_ms,
-        }),
-        SendSchedule::RateLimited(r) => serde_json::json!({
-            "mode":"rate-limited",
-            "pps": r.pps,
-            "burst_size": r.burst_size,
-        }),
-    };
-    obj.insert("schedule".to_string(), schedule_json);
-
-    // payload (generator not implemented yet in executor)
-    if let Some(payload) = req.payload.as_ref() {
-        obj.insert("payload_bytes".to_string(), serde_json::json!(payload));
-    }
-    if req.payload_generator.is_some() {
-        obj.insert(
-            "payload_generator".to_string(),
-            serde_json::json!({"note":"payload_generator not implemented in actions-executor"}),
-        );
-    }
-
-    let payload_json = serde_json::Value::Object(obj).to_string();
-
-    ntx::scenario_eventbus::event_bus::publish(&ntx::scenario_eventbus::event_bus::Event {
-        id: format!("send-req-{}", req.request_id),
-        kind: "send.schedule-request".to_string(),
-        user_id: Some(req.user_id.clone()),
-        task_id: Some(req.task_id.clone()),
-        action_id: Some(action_id.to_string()),
-        payload: payload_json,
-        correlation_id: correlation_id.clone(),
-        timestamp_ms: now_ms(),
-    })
-    .map_err(|e| format!("publish send.schedule-request failed: {e}"))?;
-
-    Ok(())
-}
-
-fn next_request_id(prefix: &str) -> String {
-    let n = EVENT_SEQ.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}-{n}")
-}
-
-fn parse_u32(params: &serde_json::Value, key: &str) -> Option<u32> {
-    params
-        .get(key)
-        .and_then(|v| v.as_u64())
-        .and_then(|n| u32::try_from(n).ok())
-}
-
-fn parse_u64(params: &serde_json::Value, key: &str) -> Option<u64> {
-    params.get(key).and_then(|v| v.as_u64())
-}
-
-fn parse_string(params: &serde_json::Value, key: &str) -> Option<String> {
-    params
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
-fn parse_schedule(params: &serde_json::Value) -> Result<SendSchedule, String> {
-    let mode = params
-        .get("schedule")
-        .or_else(|| params.get("send_schedule"))
-        .or_else(|| params.get("mode"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("once")
-        .trim()
-        .to_ascii_lowercase();
-
-    match mode.as_str() {
-        "once" => Ok(SendSchedule::Once),
-        "periodic" => {
-            let interval_ms = parse_u64(params, "interval_ms")
-                .or_else(|| parse_u64(params, "interval-ms"))
-                .ok_or_else(|| "missing interval_ms for periodic schedule".to_string())?;
-            let start_delay_ms =
-                parse_u64(params, "start_delay_ms").or_else(|| parse_u64(params, "start-delay-ms"));
-            Ok(SendSchedule::Periodic(PeriodicSchedule {
-                interval_ms,
-                start_delay_ms,
-            }))
-        }
-        "timetable" => {
-            let ts = params
-                .get("timestamps_ms")
-                .or_else(|| params.get("timestamps-ms"))
-                .and_then(|v| v.as_array())
-                .ok_or_else(|| "missing timestamps_ms for timetable schedule".to_string())?;
-            let mut out: Vec<u64> = Vec::with_capacity(ts.len());
-            for x in ts {
-                out.push(
-                    x.as_u64()
-                        .ok_or_else(|| "timestamps_ms must be u64 array".to_string())?,
-                );
-            }
-            Ok(SendSchedule::Timetable(TimetableSchedule {
-                timestamps_ms: out,
-            }))
-        }
-        "rate-limited" | "rate_limited" | "ratelimited" => {
-            let pps = parse_u32(params, "pps")
-                .ok_or_else(|| "missing pps for rate-limited schedule".to_string())?;
-            let burst_size =
-                parse_u32(params, "burst_size").or_else(|| parse_u32(params, "burst-size"));
-            Ok(SendSchedule::RateLimited(RateLimitedSchedule {
-                pps,
-                burst_size,
-            }))
-        }
-        other => Err(format!("unsupported send schedule mode: {other}")),
-    }
-}
-
-impl exports::ntx::scenario_actions_executor::action_component::Guest for ActionExecutorImpl {
-    fn init_component() -> Result<(), String> {
-        println!("[actions-executor] init-component");
-        Ok(())
-    }
-
-    fn execute_action(
-        action: ActionDef,
-        ctx: Option<ActionContext>,
-    ) -> Result<ActionOutcome, String> {
-        let user_id: Option<String> = ctx.as_ref().and_then(|c| c.user_id.clone());
-        let task_id = ctx.as_ref().and_then(|c| c.task_id.clone());
-        let correlation_id = ctx.as_ref().and_then(|c| c.correlation_id.clone());
-
-        println!(
-            "[actions-executor] execute action id={} call={} user={:?} task={:?}",
-            action.id, action.call, user_id, task_id
-        );
-
-        match action.call.as_str() {
-            // 对齐 packet-engine，但不直接调用 host：发布事件让 scheduler/host 侧处理。
-            "udp.send-reply" | "udp.send" => {
-                let params: serde_json::Value = serde_json::from_str(&action.params)
-                    .map_err(|e| format!("parse params as json: {e}"))?;
-                let sock_id = params
-                    .get("socket_id")
-                    .and_then(serde_json::Value::as_u64)
-                    .ok_or_else(|| "missing socket_id (u64)".to_string())?;
-                let payload_spec = parse_payload_spec(&params)?;
-
-                // 通过 eventbus 通知 scheduler/host 进行真正发包
-                publish_tx_request(
-                    sock_id,
-                    payload_spec.clone(),
-                    &action.id,
-                    &user_id,
-                    &task_id,
-                    &correlation_id,
-                )?;
-
-                let exports = serde_json::json!({
-                    "socket_id": sock_id,
-                    "action_call": action.call,
-                    "note": "tx delegated; rx (if any) is handled via scheduler packet.rx + workflow wait node",
-                })
-                .to_string();
-
-                Ok(ActionOutcome {
-                    status: OutcomeStatus::Success,
-                    detail: Some(format!("{} delegated socket_id={}", action.call, sock_id)),
-                    metrics: None,
-                    exports: Some(exports),
-                })
-            }
-            "udp.send-recv" => {
-                let params: serde_json::Value = serde_json::from_str(&action.params)
-                    .map_err(|e| format!("parse params as json: {e}"))?;
-                let sock_id = params
-                    .get("socket_id")
-                    .and_then(serde_json::Value::as_u64)
-                    .ok_or_else(|| "missing socket_id (u64)".to_string())?;
-
-                let payload_spec = parse_payload_spec(&params)?;
-
-                publish_tx_request(
-                    sock_id,
-                    payload_spec,
-                    &action.id,
-                    &user_id,
-                    &task_id,
-                    &correlation_id,
-                )?;
-
-                let exports = serde_json::json!({
-                    "socket_id": sock_id,
-                    "action_call": action.call,
-                    "note": "tx delegated; rx/timeout/retry must be handled by scheduler state-machine (wait node + timer events)",
-                })
-                .to_string();
-
-                Ok(ActionOutcome {
-                    status: OutcomeStatus::Success,
-                    detail: Some(format!(
-                        "udp.send-recv delegated (no-wait) socket_id={}",
-                        sock_id
-                    )),
-                    metrics: None,
-                    exports: Some(exports),
-                })
-            }
-            "udp.schedule-send" => {
-                let params: serde_json::Value = serde_json::from_str(&action.params)
-                    .map_err(|e| format!("parse params as json: {e}"))?;
-                let sock_id = params
-                    .get("socket_id")
-                    .and_then(serde_json::Value::as_u64)
-                    .ok_or_else(|| "missing socket_id (u64)".to_string())?;
-
-                let user_id = user_id
-                    .clone()
-                    .ok_or_else(|| "udp.schedule-send requires ctx.user_id".to_string())?;
-                let task_id = task_id
-                    .clone()
-                    .ok_or_else(|| "udp.schedule-send requires ctx.task_id".to_string())?;
-
-                // payload: allow fixed bytes via the same payload spec helper; generator is not implemented yet.
-                let payload_spec = parse_payload_spec(&params)?;
-                let schedule = parse_schedule(&params)?;
-
-                let max_count =
-                    parse_u32(&params, "max_count").or_else(|| parse_u32(&params, "max-count"));
-                let timeout_ms =
-                    parse_u64(&params, "timeout_ms").or_else(|| parse_u64(&params, "timeout-ms"));
-
-                let request_id = parse_string(&params, "request_id")
-                    .or_else(|| parse_string(&params, "request-id"))
-                    .unwrap_or_else(|| next_request_id("send"));
-
-                let payload_bytes: Vec<u8> = match payload_spec {
-                    PayloadSpec::Text(s) => s.into_bytes(),
-                    PayloadSpec::Hex(h) => {
-                        // Reuse scheduler-side convention: accept 0x prefix and ignore whitespace.
-                        let mut t = h.trim().to_ascii_lowercase();
-                        if let Some(rest) = t.strip_prefix("0x") {
-                            t = rest.to_string();
-                        }
-                        let t: String = t.chars().filter(|c| !c.is_whitespace()).collect();
-                        if t.len() % 2 != 0 {
-                            return Err("payload_hex length must be even".to_string());
-                        }
-                        let mut out = Vec::with_capacity(t.len() / 2);
-                        for i in (0..t.len()).step_by(2) {
-                            let byte = u8::from_str_radix(&t[i..i + 2], 16)
-                                .map_err(|_| format!("invalid hex byte: {}", &t[i..i + 2]))?;
-                            out.push(byte);
-                        }
-                        out
-                    }
-                    PayloadSpec::Bytes(b) => b,
-                };
-
-                let req = SendRequest {
-                    request_id: request_id.clone(),
-                    user_id: user_id.clone(),
-                    task_id: task_id.clone(),
-                    socket_id: sock_id,
-                    schedule,
-                    payload: Some(payload_bytes),
-                    payload_generator: None,
-                    max_count,
-                    timeout_ms,
-                };
-
-                // Publish event to scheduler; scheduler owns the send-queue and host tx.
-                publish_send_schedule_request(&req, &action.id, &correlation_id)?;
-
-                let rid = req.request_id.clone();
-                let exports = serde_json::json!({
-                    "request_id": rid,
-                    "socket_id": sock_id,
-                    "scheduled": true,
-                })
-                .to_string();
-
-                Ok(ActionOutcome {
-                    status: OutcomeStatus::Success,
-                    detail: Some(format!("udp.schedule-send ok request_id={}", exports)),
-                    metrics: None,
-                    exports: Some(exports),
-                })
-            }
-            c if c.starts_with("http.") || c.starts_with("tcp.") => Ok(ActionOutcome {
-                status: OutcomeStatus::Failed,
-                detail: Some(format!("action not implemented yet: {}", c)),
-                metrics: None,
-                exports: None,
-            }),
-            _ => Ok(ActionOutcome {
-                // IMPORTANT: unknown actions must not default to Success (would mislead the state machine).
-                status: OutcomeStatus::Failed,
-                detail: Some(format!("unknown action.call: {}", action.call)),
-                metrics: None,
-                exports: None,
-            }),
-        }
-    }
-
-    fn release_component() -> Result<(), String> {
-        println!("[actions-executor] release-component");
-        Ok(())
-    }
-}
+// Replace the boilerplate `execute_action` glue with SDK macro.
+// We keep module selection and outcome mapping customizable via closures.
+ntx_action_sdk::define_wit_component_entry_minimal!(
+    impl_ty = ActionExecutorImpl,
+    guest_trait = exports::ntx::scenario_actions_executor::action_component::Guest,
+    types_mod = (types),
+    bus_ty = WITEventBus,
+    module_ty = ActionsExecutorModule,
+    before_dispatch_tuple = log_before_dispatch,
+    after_dispatch_tuple = log_after_dispatch,
+);
 
 export!(ActionExecutorImpl);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_payload_text() {
-        let v = serde_json::json!({"payload":"hello"});
-        match parse_payload_spec(&v).unwrap() {
-            PayloadSpec::Text(s) => assert_eq!(s, "hello"),
-            _ => panic!("expected text"),
-        }
-    }
-
-    #[test]
-    fn parse_payload_hex() {
-        let v = serde_json::json!({"payload_hex":"0a0b"});
-        match parse_payload_spec(&v).unwrap() {
-            PayloadSpec::Hex(s) => assert_eq!(s, "0a0b"),
-            _ => panic!("expected hex"),
-        }
-    }
-
-    #[test]
-    fn parse_payload_bytes() {
-        let v = serde_json::json!({"payload_bytes":[1,2,255]});
-        match parse_payload_spec(&v).unwrap() {
-            PayloadSpec::Bytes(b) => assert_eq!(b, vec![1, 2, 255]),
-            _ => panic!("expected bytes"),
-        }
-    }
-}
