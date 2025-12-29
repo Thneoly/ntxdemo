@@ -1,4 +1,5 @@
 version: "v1"
+
 name: "workflow-demo"
 
 workbook:
@@ -38,21 +39,9 @@ actions:
       with:
         payload: "hello"
         timeout_ms: 1000
-        retry:
-          max: 0
-          backoff_ms: 500
 
 workflows:
   nodes:
-    -
-      id: "start"
-      type: "action"
-      priority: 10
-      action: "udp-send-reply"
-      edges:
-        -
-          to: "action-udp-send-reply"
-          label: "sent"
     -
       id: "action-udp-send-reply"
       type: "action"
