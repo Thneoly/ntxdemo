@@ -33,16 +33,23 @@ pub fn on_action_result_event(
     let status_lc = status.to_ascii_lowercase();
     let success = status_lc.contains("success");
     let timeout = status_lc.contains("timeout");
-    let eval_ctx = serde_json::json!({
-        "event": "scheduler.action-result",
-        "reason": if success { "success" } else if timeout { "timeout" } else { "failed" },
-        "user_id": user_id,
-        "task_id": task_id,
-        "action_id": ev.action_id.as_deref().unwrap_or(""),
-        "status": status,
-        "detail": detail,
-        "exports": exports.clone().unwrap_or(serde_json::Value::Null),
-    });
+    let reason = if success {
+        crate::EvalReason::Success
+    } else if timeout {
+        crate::EvalReason::Timeout
+    } else {
+        crate::EvalReason::Failed
+    };
+    let eval_ctx = serde_json::to_value(crate::EvalCtx::action_result(
+        user_id,
+        task_id,
+        ev.action_id.as_deref().unwrap_or(""),
+        reason,
+        status,
+        detail.clone(),
+        exports.clone().unwrap_or(serde_json::Value::Null),
+    ))
+    .unwrap_or(serde_json::json!({}));
 
     // update runtime state + exports + step branching decision
     let mut need_retry = false;
@@ -169,7 +176,7 @@ pub fn on_action_result_event(
     if need_retry {
         let after = retry_after_ms.unwrap_or(1000);
         schedule_timer(
-            "scheduler.timer.retry",
+            crate::EventKind::SchedulerTimerRetry.as_str(),
             crate::now_ms().saturating_add(after),
             user_id,
             task_id,
@@ -179,13 +186,7 @@ pub fn on_action_result_event(
     }
 
     // workflow推进：成功/失败/超时都可以有不同分支；但若还有retry，则延后失败/超时分支推进
-    let reason = if success {
-        "success"
-    } else if timeout {
-        "timeout"
-    } else {
-        "failed"
-    };
+    let reason = reason.as_str();
 
     // should advance workflow edges only when:
     // - success and no jump_step

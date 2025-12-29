@@ -135,7 +135,7 @@ pub fn on_send_schedule_request(
 
     // optional: publish a status/ack event
     publish_event_with_corr(
-        "send.scheduled",
+        crate::EventKind::SendScheduled.as_str(),
         Some(core_req.user_id.as_str()),
         Some(core_req.task_id.as_str()),
         ev.action_id.as_deref(),

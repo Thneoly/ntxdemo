@@ -163,7 +163,7 @@ impl StateMachine {
             },
             SmEvent::PacketRx { .. } => SmEventDigest {
                 ts_ms: now_ms,
-                kind: "packet.rx".to_string(),
+                kind: crate::EventKind::PacketRx.as_str().to_string(),
                 node_id: None,
                 reason: None,
             },
@@ -177,13 +177,13 @@ impl StateMachine {
             },
             SmEvent::RetryTimer { node_id, .. } => SmEventDigest {
                 ts_ms: now_ms,
-                kind: "timer.retry".to_string(),
+                kind: crate::EventKind::SchedulerTimerRetry.as_str().to_string(),
                 node_id: Some(node_id.clone()),
                 reason: None,
             },
             SmEvent::TimeoutTimer { node_id, .. } => SmEventDigest {
                 ts_ms: now_ms,
-                kind: "timer.timeout".to_string(),
+                kind: crate::EventKind::SchedulerTimerTimeout.as_str().to_string(),
                 node_id: Some(node_id.clone()),
                 reason: None,
             },
@@ -380,7 +380,7 @@ impl StateMachine {
                 sc,
                 user_id,
                 &wait_id,
-                "packet.rx",
+                crate::EventKind::PacketRx.as_str(),
                 Some(eval_ctx),
                 now_ms,
             ));

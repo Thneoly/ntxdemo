@@ -66,7 +66,9 @@ pub(crate) fn edge_trigger_allows(
             crate::TriggerReason::Success => crate::match_reason("success", reason),
             crate::TriggerReason::Failed => crate::match_reason("failed", reason),
             crate::TriggerReason::Timeout => crate::match_reason("timeout", reason),
-            crate::TriggerReason::PacketRx => crate::match_reason("packet.rx", reason),
+            crate::TriggerReason::PacketRx => {
+                crate::match_reason(crate::EventKind::PacketRx.as_str(), reason)
+            }
             crate::TriggerReason::Other => true,
         };
         if !allow {

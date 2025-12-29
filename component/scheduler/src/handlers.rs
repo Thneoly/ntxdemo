@@ -26,26 +26,26 @@ pub fn on_timer_event(
     ev: &ntx::scenario_eventbus::event_bus::Event,
 ) -> Result<(), String> {
     match ev.kind.as_str() {
-        "scheduler.timer.timeout" => on_timeout_timer(ctx, ev),
-        "scheduler.timer.retry" => on_retry_timer(ctx, ev),
-        "scheduler.timer.think" => on_think_timer(ctx, ev),
+        k if k == crate::EventKind::SchedulerTimerTimeout.as_str() => on_timeout_timer(ctx, ev),
+        k if k == crate::EventKind::SchedulerTimerRetry.as_str() => on_retry_timer(ctx, ev),
+        k if k == crate::EventKind::SchedulerTimerThink.as_str() => on_think_timer(ctx, ev),
         _ => Ok(()),
     }
 }
 
 pub fn on_control_event(ev: &ntx::scenario_eventbus::event_bus::Event) {
     match ev.kind.as_str() {
-        "scheduler.control.stop" => {
+        k if k == crate::EventKind::SchedulerControlStop.as_str() => {
             if let Ok(mut rt) = RUNTIME.lock() {
                 rt.stop = true;
             }
         }
-        "scheduler.control.pause" => {
+        k if k == crate::EventKind::SchedulerControlPause.as_str() => {
             if let Ok(mut rt) = RUNTIME.lock() {
                 rt.paused = true;
             }
         }
-        "scheduler.control.resume" => {
+        k if k == crate::EventKind::SchedulerControlResume.as_str() => {
             if let Ok(mut rt) = RUNTIME.lock() {
                 rt.paused = false;
             }
@@ -132,7 +132,7 @@ pub fn on_timeout_timer(
         let _ =
             ntx::scenario_eventbus::event_bus::publish(&ntx::scenario_eventbus::event_bus::Event {
                 id,
-                kind: "scheduler.action-result".to_string(),
+                kind: crate::EventKind::SchedulerActionResult.as_str().to_string(),
                 user_id: Some(user_id.to_string()),
                 task_id: Some(task_id.to_string()),
                 action_id: if action_id.is_empty() {
@@ -244,7 +244,7 @@ pub fn on_topology_changed_event(
         Ok(v) => v,
         Err(e) => {
             publish_event_with_corr(
-                "scheduler.topology.rejected",
+                crate::EventKind::SchedulerTopologyRejected.as_str(),
                 None,
                 None,
                 None,
@@ -259,7 +259,7 @@ pub fn on_topology_changed_event(
 
     if env.schema_version != 1 {
         publish_event_with_corr(
-            "scheduler.topology.rejected",
+            crate::EventKind::SchedulerTopologyRejected.as_str(),
             None,
             None,
             None,
@@ -345,7 +345,7 @@ pub fn on_topology_changed_event(
         let want = env.base_version.unwrap_or(active_ver);
         if want != active_ver {
             publish_event_with_corr(
-                "scheduler.topology.rejected",
+                crate::EventKind::SchedulerTopologyRejected.as_str(),
                 None,
                 None,
                 None,
@@ -387,7 +387,7 @@ pub fn on_topology_changed_event(
 
     if let Err(e) = validate_scenario(&new_sc) {
         publish_event_with_corr(
-            "scheduler.topology.rejected",
+            crate::EventKind::SchedulerTopologyRejected.as_str(),
             None,
             None,
             None,
@@ -419,7 +419,7 @@ pub fn on_topology_changed_event(
     }
 
     publish_event_with_corr(
-        "scheduler.topology.applied",
+        crate::EventKind::SchedulerTopologyApplied.as_str(),
         None,
         None,
         None,
@@ -567,7 +567,7 @@ pub fn on_user_exit_event(
 
     if let Some(ms) = think_ms {
         schedule_timer(
-            "scheduler.timer.think",
+            crate::EventKind::SchedulerTimerThink.as_str(),
             crate::now_ms().saturating_add(ms),
             user_id,
             "user",
@@ -594,16 +594,15 @@ fn handle_packet_rx_trigger(
     let sc = sc_arc.as_ref();
 
     let p: crate::PacketRxPayload = serde_json::from_str(&ev.payload).unwrap_or_default();
-    let eval_ctx = serde_json::json!({
-        "event": "packet.rx",
-        "reason": "packet.rx",
-        "user_id": ctx_user,
-        "task_id": task_id,
-        "action_id": action_id,
-        "sock_id": p.sock_id,
-        "len": p.len,
-        "payload_hex": p.payload_hex,
-    });
+    let eval_ctx = serde_json::to_value(crate::EvalCtx::packet_rx(
+        ctx_user,
+        task_id,
+        action_id,
+        p.sock_id,
+        p.len as u64,
+        &p.payload_hex,
+    ))
+    .unwrap_or(serde_json::json!({}));
 
     let effects = {
         let mut sm = STATE_MACHINE

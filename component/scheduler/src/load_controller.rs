@@ -67,7 +67,7 @@ pub(crate) fn publish_user_start_event(now_ms: u64, spawn_users: u64, start_seq:
         let _ = crate::ntx::scenario_eventbus::event_bus::publish(
             &crate::ntx::scenario_eventbus::event_bus::Event {
                 id,
-                kind: "scheduler.user.start".to_string(),
+                kind: crate::EventKind::SchedulerUserStart.as_str().to_string(),
                 // IMPORTANT: downstream scheduler logic often keys off `ev.user_id`.
                 // Keep `payload.user_id` for compatibility, but always set the structured field.
                 user_id: Some(user_id),

@@ -177,7 +177,6 @@ pub fn drain_rx_ring(desc_mem: Vec<u8>, payload_mem: Vec<u8>) -> u32 {
     consumed
 }
 
-#[allow(dead_code)]
 fn publish_packet_event(sock_id: u64, payload: &[u8], ctx: Option<&crate::SockCtx>, now_ms: u64) {
     let id = format!(
         "rx-{}",
@@ -185,14 +184,10 @@ fn publish_packet_event(sock_id: u64, payload: &[u8], ctx: Option<&crate::SockCt
     );
     let seq = PACKET_RX_SEQ.fetch_add(1, Ordering::Relaxed);
 
-    let json_payload = serde_json::json!({
-        "sock_id": sock_id,
-        "seq": seq,
-        "len": payload.len(),
-        "payload_hex": codec::to_hex(payload),
-        "ts_ms": now_ms,
-    })
-    .to_string();
+    let json_payload = serde_json::to_string(&crate::PacketRxEventPayload::from_bytes(
+        sock_id, seq, payload, now_ms,
+    ))
+    .unwrap_or_else(|_| "{}".to_string());
     println!(
         "[scheduler] publish_packet_event: sock_id={}, seq={}, len={}",
         sock_id,
@@ -202,7 +197,7 @@ fn publish_packet_event(sock_id: u64, payload: &[u8], ctx: Option<&crate::SockCt
     let res = crate::ntx::scenario_eventbus::event_bus::publish(
         &crate::ntx::scenario_eventbus::event_bus::Event {
             id,
-            kind: "packet.rx".to_string(),
+            kind: crate::EventKind::PacketRx.as_str().to_string(),
             user_id: ctx.and_then(|c| c.user_id.clone()),
             task_id: ctx.and_then(|c| c.task_id.clone()),
             action_id: ctx.and_then(|c| c.action_id.clone()),

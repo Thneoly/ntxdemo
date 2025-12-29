@@ -17,7 +17,6 @@ use crate::ntx::core_types::types::{
     SendRequest, SendSchedule, TimetableSchedule,
 };
 struct ActionExecutorImpl;
-
 use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
