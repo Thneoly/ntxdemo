@@ -357,3 +357,38 @@ pub(crate) fn build_action_def_with_ctx(
 
     Ok((def, act_ctx))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_with_is_encoded_as_json_params_string() {
+        let action = crate::scenario_types::Action {
+            id: "a1".to_string(),
+            call: crate::scenario_types::ActionCall::UdpSendReply,
+            with: serde_json::json!({
+                "payload_hex": "010203",
+                "timeout_ms": 1500,
+                "retry": {"max": 2, "backoff_ms": 10}
+            }),
+        };
+
+        let ctx = TemplateContext {
+            vars: serde_json::json!({}),
+            resources: serde_json::json!({}),
+            exports: serde_json::json!({}),
+        };
+
+        let (def, _act_ctx) = build_action_def_with_ctx(&action, &ctx, Some("u1"), Some("t1"))
+            .expect("build action def");
+
+        // Contract: params is a JSON string (with_json), not a structured map.
+        let v: serde_json::Value =
+            serde_json::from_str(&def.params).expect("params should be valid JSON");
+        assert_eq!(v["payload_hex"], "010203");
+        assert_eq!(v["timeout_ms"], 1500);
+        assert_eq!(v["retry"]["max"], 2);
+        assert_eq!(v["retry"]["backoff_ms"], 10);
+    }
+}

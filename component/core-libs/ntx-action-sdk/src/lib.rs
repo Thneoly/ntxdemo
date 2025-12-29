@@ -983,6 +983,57 @@ macro_rules! define_wit_scheduler_send_glue {
 #[macro_export]
 macro_rules! define_schedule_send_handler {
     (
+        $vis:vis fn $fn_name:ident,
+        bus = $bus_ty:ty,
+        // Parse request-specific params from ActionRequest.
+        parse_params = $parse_params:expr,
+        // Build the WIT request to be published.
+        build_request = $build_request:expr,
+        // Build exports JSON (string) for the outcome.
+        build_exports = $build_exports:expr,
+        // Format the FrameworkOutcome detail string.
+        success_detail = $success_detail:expr
+        $(,)?
+    ) => {
+        $vis fn $fn_name(
+            rt: &$crate::ActionRuntime<'_, $bus_ty>,
+            req: &$crate::ActionRequest,
+        ) -> Result<$crate::FrameworkOutcome, String> {
+            // 1) Parse typed params (component decides the schema)
+            let parsed = ($parse_params)(req)?;
+
+            // 2) Required ctx values (scheduler publish needs a user_id/task_id conventionally)
+            let user_id = rt
+                .ctx
+                .user_id
+                .clone()
+                .ok_or_else(|| format!("{} requires ctx.user_id", req.call))?;
+            let task_id = rt
+                .ctx
+                .task_id
+                .clone()
+                .ok_or_else(|| format!("{} requires ctx.task_id", req.call))?;
+
+            // 3) Parse payload + schedule (shared)
+            let payload_spec = $crate::parse_payload_spec(&req.params_json)?;
+            let schedule = parse_schedule(&req.params_json)?;
+            let payload_bytes: Vec<u8> = $crate::payload_to_bytes(payload_spec)?;
+
+            // 4) Build request + publish (component decides the concrete WIT type)
+            let send_req = ($build_request)(parsed, &user_id, &task_id, schedule, payload_bytes)?;
+
+            publish_send_schedule_request(&send_req, &req.id, &rt.ctx.correlation_id)?;
+
+            // 5) Exports + outcome
+            let exports = ($build_exports)(&send_req);
+            Ok(
+                $crate::FrameworkOutcome::success(($success_detail)(&exports))
+                    .with_exports_json(exports),
+            )
+        }
+    };
+
+    (
         fn $fn_name:ident,
         bus = $bus_ty:ty,
         // Parse request-specific params from ActionRequest.
@@ -1132,6 +1183,28 @@ macro_rules! define_wit_component_entry {
         $(,)?
     ) => {
         impl $guest_trait for $impl_ty {
+            fn schema_version() -> u32 {
+                // By convention, components expose metadata as inherent fns.
+                // This keeps the SDK macro in control of the `Guest` impl while
+                // letting each executor decide its catalog contents.
+                <$impl_ty>::schema_version()
+            }
+
+            fn list_actions() -> _rt::Vec<
+                crate::exports::ntx::scenario_actions_executor::action_component::ActionSummary,
+            > {
+                <$impl_ty>::list_actions()
+            }
+
+            fn describe_action(
+                action_id: _rt::String,
+            ) -> Result<
+                crate::exports::ntx::scenario_actions_executor::action_component::ActionSpec,
+                _rt::String,
+            > {
+                <$impl_ty>::describe_action(action_id)
+            }
+
             fn init_component() -> Result<(), String> {
                 println!("[component] init-component");
                 Ok(())
@@ -1244,6 +1317,25 @@ macro_rules! define_wit_component_entry_with_after_dispatch {
         $(,)?
     ) => {
         impl $guest_trait for $impl_ty {
+            fn schema_version() -> u32 {
+                <$impl_ty>::schema_version()
+            }
+
+            fn list_actions() -> _rt::Vec<
+                crate::exports::ntx::scenario_actions_executor::action_component::ActionSummary,
+            > {
+                <$impl_ty>::list_actions()
+            }
+
+            fn describe_action(
+                action_id: _rt::String,
+            ) -> Result<
+                crate::exports::ntx::scenario_actions_executor::action_component::ActionSpec,
+                _rt::String,
+            > {
+                <$impl_ty>::describe_action(action_id)
+            }
+
             fn init_component() -> Result<(), String> {
                 println!("[component] init-component");
                 Ok(())

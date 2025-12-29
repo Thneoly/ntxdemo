@@ -289,4 +289,5 @@ $RECYCLE.BIN/
 *.lnk
 
 *.wasm
+examples/dify
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,macos,linux,windows,rust,python,powershell

@@ -1,0 +1,77 @@
+{
+    "schema_version": 1,
+    "executor": {
+        "name": "udp-echo-actions-executor",
+        "executor_version": "dev",
+        "component_hash": "<sha256-of-component>",
+        "generated_at": "2025-12-29T00:00:00Z"
+    },
+    "actions": [
+        {
+            "id": "udp-send-reply",
+            "call": "udp-send-reply",
+            "title": "UDP Send Reply",
+            "description": "Send a UDP payload to peer and wait for echo via scheduler wait-node.",
+            "tags": [
+                "udp",
+                "echo",
+                "network"
+            ],
+            "input_schema_json": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "payload": {
+                        "type": "string",
+                        "description": "UDP payload as utf-8 string"
+                    },
+                    "timeout-ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Scheduler timeout for the wait stage (ms)"
+                    },
+                    "retry": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "max": {
+                                "type": "integer",
+                                "minimum": 0
+                            },
+                            "backoff_ms": {
+                                "type": "integer",
+                                "minimum": 0
+                            }
+                        }
+                    }
+                },
+                "required": [
+                    "payload"
+                ]
+            },
+            "defaults_json": {
+                "payload": "hello-ntx",
+                "timeout-ms": 3000,
+                "retry": {
+                    "max": 0,
+                    "backoff_ms": 500
+                }
+            },
+            "capabilities": [
+                "emits-packet-tx-request",
+                "needs-user-resources"
+            ],
+            "examples_json": [
+                {
+                    "payload": "hello-ntx",
+                    "timeout-ms": 3000,
+                    "retry": {
+                        "max": 0,
+                        "backoff_ms": 500
+                    }
+                }
+            ]
+        }
+    ]
+}
