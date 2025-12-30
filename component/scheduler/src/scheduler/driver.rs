@@ -12,7 +12,7 @@ use crate::{publish_scheduler_state, SchedulerContext, SchedulerState};
 
 pub(crate) fn subscribe_or_log(filter: TopicFilter) -> Option<String> {
     let filter_str = filter.as_filter_str();
-    match crate::ntx::scenario_eventbus::event_bus::subscribe(filter_str) {
+    match crate::bindmod::ntx::scenario_eventbus::event_bus::subscribe(filter_str) {
         Ok(id) => {
             println!("[scheduler] subscribed {} -> {}", filter_str, id);
             Some(id)
@@ -87,7 +87,7 @@ pub(crate) fn run_event_loop(
 
         // 1) control events (blocking wait)
         if let Some(id) = sub_ctrl {
-            let events = crate::ntx::scenario_eventbus::event_bus::wait_events(id, 64, 50)
+            let events = crate::bindmod::ntx::scenario_eventbus::event_bus::wait_events(id, 64, 50)
                 .map_err(|e| format!("poll_events(control): {e}"))?;
             if !events.is_empty() {
                 did_work = true;
@@ -103,7 +103,7 @@ pub(crate) fn run_event_loop(
         }
 
         if let Some(id) = sub_tx {
-            let events = crate::ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
+            let events = crate::bindmod::ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
                 .map_err(|e| format!("poll_events(packet.tx-request): {e}"))?;
             if !events.is_empty() {
                 did_work = true;
@@ -120,7 +120,7 @@ pub(crate) fn run_event_loop(
 
         // 1.5) send schedule requests (executor -> scheduler)
         if let Some(id) = sub_send {
-            let events = crate::ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
+            let events = crate::bindmod::ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
                 .map_err(|e| format!("poll_events(send.schedule-request): {e}"))?;
             if !events.is_empty() {
                 did_work = true;
@@ -136,7 +136,7 @@ pub(crate) fn run_event_loop(
 
         // 2) action-result events
         if let Some(id) = sub_ar {
-            let events = crate::ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
+            let events = crate::bindmod::ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
                 .map_err(|e| format!("poll_events(action-result): {e}"))?;
             if !events.is_empty() {
                 did_work = true;
@@ -149,7 +149,7 @@ pub(crate) fn run_event_loop(
         }
 
         if let Some(id) = sub_rx {
-            let events = crate::ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
+            let events = crate::bindmod::ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
                 .map_err(|e| format!("poll_events(packet.rx): {e}"))?;
             if !events.is_empty() {
                 did_work = true;
@@ -163,7 +163,7 @@ pub(crate) fn run_event_loop(
 
         // 3) timer events
         if let Some(id) = sub_timer {
-            let events = crate::ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
+            let events = crate::bindmod::ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
                 .map_err(|e| format!("poll_events(timer): {e}"))?;
             if !events.is_empty() {
                 did_work = true;
@@ -181,7 +181,7 @@ pub(crate) fn run_event_loop(
 
         // 4) user lifecycle events
         if let Some(id) = sub_user {
-            let events = crate::ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
+            let events = crate::bindmod::ntx::scenario_eventbus::event_bus::wait_events(id, 64, 0)
                 .map_err(|e| format!("poll_events(user): {e}"))?;
             if !events.is_empty() {
                 did_work = true;
@@ -201,7 +201,7 @@ pub(crate) fn run_event_loop(
 
         // 4.1) topology change events (affect only NEW users)
         if let Some(id) = sub_topo {
-            let events = crate::ntx::scenario_eventbus::event_bus::wait_events(id, 16, 0)
+            let events = crate::bindmod::ntx::scenario_eventbus::event_bus::wait_events(id, 16, 0)
                 .map_err(|e| format!("poll_events(topology): {e}"))?;
             if !events.is_empty() {
                 did_work = true;

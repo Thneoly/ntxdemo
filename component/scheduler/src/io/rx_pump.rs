@@ -46,7 +46,7 @@ pub(crate) fn pump_rx_once_nonblocking() {
     }
 
     // Non-blocking poll: timeout 0ms.
-    let batch = crate::ntx::host::rx_ring::wait_rx(64 * 1024, 256 * 1024, 0);
+    let batch = crate::bindmod::ntx::host::rx_ring::wait_rx(64 * 1024, 256 * 1024, 0);
     let Some(batch) = batch else {
         let mut s = STATS.lock().unwrap();
         s.timeouts = s.timeouts.saturating_add(1);
@@ -67,27 +67,28 @@ pub(crate) fn pump_rx_once_nonblocking() {
 
     let handle = batch.handle;
 
-    let desc_mem = match crate::ntx::host::rx_ring::read_desc(handle, 0, batch.desc_len) {
+    let desc_mem = match crate::bindmod::ntx::host::rx_ring::read_desc(handle, 0, batch.desc_len) {
         Ok(v) => v,
         Err(e) => {
             println!("[scheduler] rx-ring read-desc failed: {e}");
             let mut s = STATS.lock().unwrap();
             s.read_errors = s.read_errors.saturating_add(1);
-            let _ = crate::ntx::host::rx_ring::release(handle);
+            let _ = crate::bindmod::ntx::host::rx_ring::release(handle);
             return;
         }
     };
 
-    let payload_mem = match crate::ntx::host::rx_ring::read_payload(handle, 0, batch.payload_len) {
-        Ok(v) => v,
-        Err(e) => {
-            println!("[scheduler] rx-ring read-payload failed: {e}");
-            let mut s = STATS.lock().unwrap();
-            s.read_errors = s.read_errors.saturating_add(1);
-            let _ = crate::ntx::host::rx_ring::release(handle);
-            return;
-        }
-    };
+    let payload_mem =
+        match crate::bindmod::ntx::host::rx_ring::read_payload(handle, 0, batch.payload_len) {
+            Ok(v) => v,
+            Err(e) => {
+                println!("[scheduler] rx-ring read-payload failed: {e}");
+                let mut s = STATS.lock().unwrap();
+                s.read_errors = s.read_errors.saturating_add(1);
+                let _ = crate::bindmod::ntx::host::rx_ring::release(handle);
+                return;
+            }
+        };
 
     let drained = rx_decode::drain_rx_ring(desc_mem, payload_mem);
     if drained == 0 {
@@ -95,5 +96,5 @@ pub(crate) fn pump_rx_once_nonblocking() {
         s.decode_errors = s.decode_errors.saturating_add(1);
     }
 
-    let _ = crate::ntx::host::rx_ring::release(handle);
+    let _ = crate::bindmod::ntx::host::rx_ring::release(handle);
 }

@@ -10,7 +10,7 @@ use crate::runtime::runtime_state::RUNTIME;
 use crate::scenario::scenario_types::Action;
 use crate::scheduler::state_machine::SmEvent;
 use crate::scheduler::timers::schedule_timer;
-use crate::{ntx, SchedulerContext, TaskState, STATE_MACHINE};
+use crate::{bindmod::ntx, SchedulerContext, TaskState, STATE_MACHINE};
 
 use std::sync::atomic::Ordering;
 
@@ -31,7 +31,8 @@ pub fn on_action_result_event(
         return Ok(());
     };
 
-    let (_ver, sc_arc, wf_idx) = crate::scenario::scenario_registry::get_user_scenario_ctx(user_id)?;
+    let (_ver, sc_arc, wf_idx) =
+        crate::scenario::scenario_registry::get_user_scenario_ctx(user_id)?;
     let sc = sc_arc.as_ref();
 
     let status_lc = status.to_ascii_lowercase();

@@ -4,20 +4,21 @@
 // This crate is currently an MVP / skeleton. Many items are intentionally not wired yet.
 // Keep warnings actionable by silencing dead_code until the integration is completed.
 #![allow(dead_code)]
-
-wit_bindgen::generate!({
-    world: "ntx:scenario-scheduler/scheduler-main@0.1.0",
-    path: [
-        "../wit/host",
-        "../wit/types",
-        "../wit/eventbus",
-        "../wit/actions-executor",
-        "../wit/scheduler",
-    ],
-    generate_all,
-    generate_unused_types:true,
-    debug: true,
-});
+mod bindmod {
+    wit_bindgen::generate!({
+        world: "ntx:scenario-scheduler/scheduler-main@0.1.0",
+        path: [
+            "../wit/host",
+            "../wit/types",
+            "../wit/eventbus",
+            "../wit/actions-executor",
+            "../wit/scheduler",
+        ],
+        generate_all,
+        generate_unused_types:true,
+        debug: true,
+    });
+}
 
 // -----------------------------------------------------------------------------
 // Component exports (WIT)
@@ -30,9 +31,11 @@ wit_bindgen::generate!({
 ///
 /// Without calling `export!(...)`, the linker won't see the required exports and
 /// `wasm-component-ld` will fail with "failed to find export ... run".
+use crate::bindmod::export;
+
 struct SchedulerExports;
 
-export!(SchedulerExports);
+export!(SchedulerExports with_types_in crate::bindmod);
 
 mod eventing;
 mod io;
@@ -62,7 +65,7 @@ use crate::eventing::payloads::{
 use crate::eventing::topics::{EventKind, TopicFilter};
 use crate::scheduler::state_machine::{SmEffect, StateMachine};
 
-use crate::ntx::core_types::types::{
+use crate::bindmod::ntx::core_types::types::{
     ActionContext,
     ActionDef,
     ActionOutcome,
@@ -71,7 +74,7 @@ use crate::ntx::core_types::types::{
     SendSchedule,
     // SendStatus,
 };
-impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerExports {
+impl bindmod::exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerExports {
     fn run(config_dir: String) -> Result<(), String> {
         println!("[scheduler] run with config dir: {config_dir}");
 

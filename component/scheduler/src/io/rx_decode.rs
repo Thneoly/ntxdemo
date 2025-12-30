@@ -194,8 +194,8 @@ fn publish_packet_event(sock_id: u64, payload: &[u8], ctx: Option<&crate::SockCt
         seq,
         payload.len()
     );
-    let res = crate::ntx::scenario_eventbus::event_bus::publish(
-        &crate::ntx::scenario_eventbus::event_bus::Event {
+    let res = crate::bindmod::ntx::scenario_eventbus::event_bus::publish(
+        &crate::bindmod::ntx::scenario_eventbus::event_bus::Event {
             id,
             kind: crate::EventKind::PacketRx.as_str().to_string(),
             user_id: ctx.and_then(|c| c.user_id.clone()),

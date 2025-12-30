@@ -51,8 +51,8 @@ pub(crate) fn publish_user_exit_event(user_id: &str, reason: &str) {
         reason: reason.to_string(),
     })
     .unwrap_or_else(|_| "{}".to_string());
-    let _ = crate::ntx::scenario_eventbus::event_bus::publish(
-        &crate::ntx::scenario_eventbus::event_bus::Event {
+    let _ = crate::bindmod::ntx::scenario_eventbus::event_bus::publish(
+        &crate::bindmod::ntx::scenario_eventbus::event_bus::Event {
             id,
             kind: EventKind::SchedulerUserExit.as_str().to_string(),
             user_id: Some(user_id.to_string()),

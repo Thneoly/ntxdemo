@@ -35,8 +35,8 @@ pub(crate) fn tick_timers(now_ms: u64) {
             "tm-{}",
             EVENT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
-        let _ = crate::ntx::scenario_eventbus::event_bus::publish(
-            &crate::ntx::scenario_eventbus::event_bus::Event {
+        let _ = crate::bindmod::ntx::scenario_eventbus::event_bus::publish(
+            &crate::bindmod::ntx::scenario_eventbus::event_bus::Event {
                 id,
                 kind: t.kind,
                 user_id: t.user_id,

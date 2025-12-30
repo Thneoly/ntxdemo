@@ -4,12 +4,12 @@
 
 use std::sync::atomic::Ordering;
 
+use crate::bindmod::ntx::host::resources;
 use crate::eventing::events::EVENT_COUNTER;
 use crate::eventing::payloads::ResourceReleasedPayload;
 use crate::eventing::topics::EventKind;
 use crate::io::{send_scheduler, tx};
 use crate::net::net_hooks;
-use crate::ntx::host::resources;
 use crate::runtime::runtime_state::RUNTIME;
 use crate::scheduler::timers::TIMERS;
 use crate::{SchedulerContext, STATE_MACHINE};
@@ -50,8 +50,8 @@ pub(crate) fn finish_user(_ctx: &SchedulerContext, user_id: &str) -> Result<(), 
     if let Some(owner) = owner_id {
         match resources::release_resource(&owner) {
             Ok(_) => {
-                let _ = crate::ntx::scenario_eventbus::event_bus::publish(
-                    &crate::ntx::scenario_eventbus::event_bus::Event {
+                let _ = crate::bindmod::ntx::scenario_eventbus::event_bus::publish(
+                    &crate::bindmod::ntx::scenario_eventbus::event_bus::Event {
                         id: format!("rr-{}", EVENT_COUNTER.fetch_add(1, Ordering::Relaxed)),
                         kind: EventKind::SchedulerResourceReleased.as_str().to_string(),
                         user_id: Some(user_id.to_string()),

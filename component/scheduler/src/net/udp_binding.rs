@@ -1,8 +1,8 @@
 //! UDP socket binding helpers used by scheduler.
 
+use crate::bindmod::ntx::core_types::types::ActionDef;
+use crate::bindmod::ntx::host::{resources, types, udp_socket_control};
 use crate::net::net_resources::ResourceType;
-use crate::ntx::core_types::types::ActionDef;
-use crate::ntx::host::{resources, types, udp_socket_control};
 
 /// Inject `socket_id` into an action's JSON params if missing.
 ///
@@ -183,8 +183,8 @@ pub fn ensure_udp_socket_for_user(
     }
 
     // best-effort: also publish a small event for observability
-    let _ = crate::ntx::scenario_eventbus::event_bus::publish(
-        &crate::ntx::scenario_eventbus::event_bus::Event {
+    let _ = crate::bindmod::ntx::scenario_eventbus::event_bus::publish(
+        &crate::bindmod::ntx::scenario_eventbus::event_bus::Event {
             id: format!(
                 "sock-{}",
                 crate::EVENT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)

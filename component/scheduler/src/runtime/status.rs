@@ -27,8 +27,8 @@ pub(crate) fn publish_scheduler_state(state: SchedulerState, err: Option<&String
     .unwrap_or_else(|_| "{}".to_string());
 
     let id = format!("ss-{}", EVENT_COUNTER.fetch_add(1, Ordering::Relaxed));
-    let _ = crate::ntx::scenario_eventbus::event_bus::publish(
-        &crate::ntx::scenario_eventbus::event_bus::Event {
+    let _ = crate::bindmod::ntx::scenario_eventbus::event_bus::publish(
+        &crate::bindmod::ntx::scenario_eventbus::event_bus::Event {
             id,
             kind: crate::EventKind::SchedulerStateChanged.as_str().to_string(),
             user_id: None,

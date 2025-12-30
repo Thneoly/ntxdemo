@@ -67,8 +67,8 @@ pub(crate) fn publish_user_start_event(now_ms: u64, spawn_users: u64, start_seq:
             "us-{}",
             EVENT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
-        let _ = crate::ntx::scenario_eventbus::event_bus::publish(
-            &crate::ntx::scenario_eventbus::event_bus::Event {
+        let _ = crate::bindmod::ntx::scenario_eventbus::event_bus::publish(
+            &crate::bindmod::ntx::scenario_eventbus::event_bus::Event {
                 id,
                 kind: crate::EventKind::SchedulerUserStart.as_str().to_string(),
                 // IMPORTANT: downstream scheduler logic often keys off `ev.user_id`.

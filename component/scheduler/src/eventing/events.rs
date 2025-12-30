@@ -15,8 +15,8 @@ pub fn publish_event(
     action_id: Option<&str>,
     payload: serde_json::Value,
 ) {
-    let _ = crate::ntx::scenario_eventbus::event_bus::publish(
-        &crate::ntx::scenario_eventbus::event_bus::Event {
+    let _ = crate::bindmod::ntx::scenario_eventbus::event_bus::publish(
+        &crate::bindmod::ntx::scenario_eventbus::event_bus::Event {
             id: format!("ev-{}", EVENT_COUNTER.fetch_add(1, Ordering::Relaxed)),
             kind: kind.to_string(),
             user_id: user_id.map(|s| s.to_string()),
@@ -38,8 +38,8 @@ pub fn publish_event_with_corr(
     correlation_id: Option<&str>,
     payload: serde_json::Value,
 ) {
-    let _ = crate::ntx::scenario_eventbus::event_bus::publish(
-        &crate::ntx::scenario_eventbus::event_bus::Event {
+    let _ = crate::bindmod::ntx::scenario_eventbus::event_bus::publish(
+        &crate::bindmod::ntx::scenario_eventbus::event_bus::Event {
             id: format!("ev-{}", EVENT_COUNTER.fetch_add(1, Ordering::Relaxed)),
             kind: kind.to_string(),
             user_id: user_id.map(|s| s.to_string()),

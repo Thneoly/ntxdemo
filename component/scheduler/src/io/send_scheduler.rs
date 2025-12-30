@@ -6,7 +6,7 @@ use once_cell::sync::Lazy;
 use crate::eventing::events::publish_event_with_corr;
 use crate::eventing::topics::EventKind;
 use crate::scheduler::time;
-use crate::{ntx, SendRequest, SendRequestState, SendSchedule};
+use crate::{bindmod::ntx, SendRequest, SendRequestState, SendSchedule};
 
 use crate::net::net_hooks;
 
@@ -58,7 +58,7 @@ pub fn on_send_schedule_request(
                     .ok_or_else(|| "missing schedule.interval_ms".to_string())?;
                 let start_delay_ms = v.get("start_delay_ms").and_then(|x| x.as_u64());
                 Ok(SendSchedule::Periodic(
-                    crate::ntx::core_types::types::PeriodicSchedule {
+                    crate::bindmod::ntx::core_types::types::PeriodicSchedule {
                         interval_ms,
                         start_delay_ms,
                     },
@@ -77,7 +77,9 @@ pub fn on_send_schedule_request(
                     out.push(n);
                 }
                 Ok(SendSchedule::Timetable(
-                    crate::ntx::core_types::types::TimetableSchedule { timestamps_ms: out },
+                    crate::bindmod::ntx::core_types::types::TimetableSchedule {
+                        timestamps_ms: out,
+                    },
                 ))
             }
             "rate-limited" | "rate_limited" | "ratelimited" => {
@@ -87,7 +89,7 @@ pub fn on_send_schedule_request(
                     .ok_or_else(|| "missing schedule.pps".to_string())?;
                 let burst_size = v.get("burst_size").and_then(|x| x.as_u64());
                 Ok(SendSchedule::RateLimited(
-                    crate::ntx::core_types::types::RateLimitedSchedule {
+                    crate::bindmod::ntx::core_types::types::RateLimitedSchedule {
                         pps: pps as u32,
                         burst_size: burst_size.map(|b| b as u32),
                     },

@@ -2,11 +2,11 @@
 //!
 //! Extracted from `lib.rs` to keep the crate entrypoint small.
 
+use crate::bindmod::ntx::core_types::types::{ActionContext, ActionDef, ActionOutcome};
 use crate::eventing::events::EVENT_COUNTER;
 use crate::eventing::payloads::ActionResultPayload;
 use crate::eventing::topics::EventKind;
 use crate::net::net_hooks;
-use crate::ntx::core_types::types::{ActionContext, ActionDef, ActionOutcome};
 use crate::runtime::runtime_state::RUNTIME;
 use crate::scenario::template::TemplateContext;
 use crate::scheduler::state_machine::SmEvent;
@@ -240,11 +240,12 @@ pub(crate) fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result
             act_ctx.correlation_id.as_deref().unwrap_or("<none>")
         );
 
-        let outcome = crate::ntx::scenario_actions_executor::action_component::execute_action(
-            &def,
-            Some(&act_ctx),
-        )
-        .map_err(|e| format!("execute_action failed: {e}"))?;
+        let outcome =
+            crate::bindmod::ntx::scenario_actions_executor::action_component::execute_action(
+                &def,
+                Some(&act_ctx),
+            )
+            .map_err(|e| format!("execute_action failed: {e}"))?;
 
         eprintln!(
             "[scheduler] dispatch: action_outcome user_id={user_id} node_id={node_id} action_id={} status={:?}",
@@ -307,8 +308,8 @@ pub(crate) fn publish_action_result_event(
         "ar-{}",
         EVENT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
-    crate::ntx::scenario_eventbus::event_bus::publish(
-        &crate::ntx::scenario_eventbus::event_bus::Event {
+    crate::bindmod::ntx::scenario_eventbus::event_bus::publish(
+        &crate::bindmod::ntx::scenario_eventbus::event_bus::Event {
             id,
             kind: EventKind::SchedulerActionResult.as_str().to_string(),
             user_id: Some(user_id.to_string()),

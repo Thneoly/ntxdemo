@@ -20,7 +20,7 @@ use crate::scheduler::state_machine::SmEvent;
 use crate::scheduler::time::now_ms;
 use crate::scheduler::timers::schedule_timer;
 use crate::scheduler::workflow_helpers::find_start_nodes;
-use crate::{ntx, SchedulerContext, TaskState, STATE_MACHINE};
+use crate::{bindmod::ntx, SchedulerContext, TaskState, STATE_MACHINE};
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
