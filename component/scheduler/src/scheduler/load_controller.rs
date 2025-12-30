@@ -6,8 +6,8 @@
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 
-use crate::events::EVENT_COUNTER;
-use crate::RampPhase;
+use crate::eventing::events::EVENT_COUNTER;
+use crate::scenario::scenario_types::RampPhase;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LoadControllerState {

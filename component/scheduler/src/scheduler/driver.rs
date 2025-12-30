@@ -3,11 +3,12 @@
 //! This module owns the long-running event loop and subscription wiring.
 //! It exists to keep `lib.rs` focused on exports + shared state.
 
-use crate::{
-    handlers, publish_scheduler_state, pump_rx_once_nonblocking, send_scheduler,
-    tick_load_controller, tick_timers, SchedulerContext, SchedulerState, TopicFilter, LOAD,
-    RUNTIME, SCENARIOS,
-};
+use crate::eventing::{action_result, topics::EventKind, topics::TopicFilter};
+use crate::io::{rx_pump::pump_rx_once_nonblocking, send_scheduler, tx};
+use crate::runtime::runtime_state::RUNTIME;
+use crate::scenario::scenario_registry::SCENARIOS;
+use crate::scheduler::{dispatch, handlers, load_controller, timers};
+use crate::{publish_scheduler_state, SchedulerContext, SchedulerState};
 
 pub(crate) fn subscribe_or_log(filter: TopicFilter) -> Option<String> {
     let filter_str = filter.as_filter_str();
@@ -37,7 +38,7 @@ pub(crate) fn init_runtime(ctx: &SchedulerContext) -> Result<(), String> {
     }
 
     // init load controller
-    if let Ok(mut lc) = LOAD.lock() {
+    if let Ok(mut lc) = load_controller::LOAD.lock() {
         lc.started_at_ms = crate::now_ms();
         lc.next_phase = 0;
         lc.next_user_seq = 1;
@@ -51,10 +52,10 @@ pub(crate) fn init_runtime(ctx: &SchedulerContext) -> Result<(), String> {
 
     // 若没有 ramp-up phases，默认立即启动 1 个用户
     if sc.load.ramp_up.phases.is_empty() {
-        crate::publish_user_start_event(crate::now_ms(), 1, None);
+        load_controller::publish_user_start_event(crate::now_ms(), 1, None);
     } else {
         // 允许 phase.at_second == 0 立即触发
-        tick_load_controller(crate::now_ms());
+        load_controller::tick_load_controller(crate::now_ms());
     }
 
     Ok(())
@@ -108,9 +109,8 @@ pub(crate) fn run_event_loop(
                 did_work = true;
             }
             for ev in events {
-                if ev.kind == crate::EventKind::PacketTxRequest.as_str() {
-                    if let Err(e) =
-                        crate::tx::handle_tx_request(&ev.payload, ev.correlation_id.as_deref())
+                if ev.kind == EventKind::PacketTxRequest.as_str() {
+                    if let Err(e) = tx::handle_tx_request(&ev.payload, ev.correlation_id.as_deref())
                     {
                         println!("[scheduler] process tx-request failed: {e}");
                     }
@@ -126,8 +126,8 @@ pub(crate) fn run_event_loop(
                 did_work = true;
             }
             for ev in events {
-                if ev.kind == crate::EventKind::SendScheduleRequest.as_str() {
-                    if let Err(e) = crate::send_scheduler::on_send_schedule_request(&ev) {
+                if ev.kind == EventKind::SendScheduleRequest.as_str() {
+                    if let Err(e) = send_scheduler::on_send_schedule_request(&ev) {
                         println!("[scheduler] handle send.schedule-request failed: {e}");
                     }
                 }
@@ -142,8 +142,8 @@ pub(crate) fn run_event_loop(
                 did_work = true;
             }
             for ev in events {
-                if ev.kind == crate::EventKind::SchedulerActionResult.as_str() {
-                    crate::action_result::on_action_result_event(ctx, &ev)?;
+                if ev.kind == EventKind::SchedulerActionResult.as_str() {
+                    action_result::on_action_result_event(ctx, &ev)?;
                 }
             }
         }
@@ -155,7 +155,7 @@ pub(crate) fn run_event_loop(
                 did_work = true;
             }
             for ev in events {
-                if ev.kind == crate::EventKind::PacketRx.as_str() {
+                if ev.kind == EventKind::PacketRx.as_str() {
                     handlers::on_packet_rx(ctx, &ev)?;
                 }
             }
@@ -170,7 +170,7 @@ pub(crate) fn run_event_loop(
             }
             for ev in events {
                 if ev.kind.starts_with(
-                    crate::TopicFilter::SchedulerTimerAll
+                    TopicFilter::SchedulerTimerAll
                         .as_filter_str()
                         .trim_end_matches('*'),
                 ) {
@@ -188,10 +188,10 @@ pub(crate) fn run_event_loop(
             }
             for ev in events {
                 match ev.kind.as_str() {
-                    k if k == crate::EventKind::SchedulerUserStart.as_str() => {
+                    k if k == EventKind::SchedulerUserStart.as_str() => {
                         handlers::on_user_start_event(ctx, &ev)?
                     }
-                    k if k == crate::EventKind::SchedulerUserExit.as_str() => {
+                    k if k == EventKind::SchedulerUserExit.as_str() => {
                         handlers::on_user_exit_event(ctx, &ev)?
                     }
                     _ => {}
@@ -207,7 +207,7 @@ pub(crate) fn run_event_loop(
                 did_work = true;
             }
             for ev in events {
-                if ev.kind == crate::EventKind::TopologyChanged.as_str() {
+                if ev.kind == EventKind::TopologyChanged.as_str() {
                     if let Err(e) = handlers::on_topology_changed_event(ctx, &ev) {
                         println!("[scheduler] warn: topology.changed rejected: {}", e);
                     }
@@ -217,13 +217,13 @@ pub(crate) fn run_event_loop(
 
         // 5) drive load/timers
         let now = crate::now_ms();
-        tick_load_controller(now);
-        tick_timers(now);
+        load_controller::tick_load_controller(now);
+        timers::tick_timers(now);
 
         let paused = RUNTIME.lock().map(|rt| rt.paused).unwrap_or(false);
         if !paused {
             // 调度 ready tasks
-            did_work |= crate::dispatch_ready_tasks(ctx, 16)?;
+            did_work |= dispatch::dispatch_ready_tasks(ctx, 16)?;
         }
 
         // send-scheduler tick

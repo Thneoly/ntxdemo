@@ -2,18 +2,20 @@
 //!
 //! Extracted from `lib.rs` to keep the crate entrypoint small.
 
+use crate::eventing::events::EVENT_COUNTER;
+use crate::eventing::payloads::ActionResultPayload;
+use crate::eventing::topics::EventKind;
+use crate::net::udp_binding;
 use crate::ntx::core_types::types::{ActionContext, ActionDef, ActionOutcome};
-use crate::{
-    ensure_udp_socket_for_user, inject_udp_socket_id, node_priority, schedule_timer,
-    SchedulerContext, TaskState, TemplateContext, EVENT_COUNTER, RUNTIME, STATE_MACHINE,
-};
+use crate::runtime::runtime_state::RUNTIME;
+use crate::scenario::template::TemplateContext;
+use crate::scheduler::state_machine::SmEvent;
+use crate::{SchedulerContext, TaskState, STATE_MACHINE};
 
-// NOTE: We intentionally keep most dependencies via `crate::...` to avoid
-// a long import list; this module is internal and refactors are ongoing.
+use super::timers::schedule_timer;
+use super::workflow_helpers::node_priority;
 
 pub(crate) fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, String> {
-    // Re-export of the original function body is done by moving the code here.
-    // We include it verbatim-ish to minimize behavioral changes.
     let mut did = false;
 
     for _ in 0..max {
@@ -28,10 +30,11 @@ pub(crate) fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result
         eprintln!("[scheduler] dispatch: pop_ready user_id={user_id} node_id={node_id}");
 
         // per-user scenario (old users do not migrate)
-        let (_ver, sc_arc, wf_idx) = match crate::get_user_scenario_ctx(&user_id) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+        let (_ver, sc_arc, wf_idx) =
+            match crate::scenario::scenario_registry::get_user_scenario_ctx(&user_id) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
         let sc = sc_arc.as_ref();
 
         // Find node
@@ -90,7 +93,7 @@ pub(crate) fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result
 
         // Ensure UDP socket binding if needed
         if action.call.is_udp() {
-            ensure_udp_socket_for_user(ctx, sc, &user_id)?;
+            udp_binding::ensure_udp_socket_for_user(ctx, sc, &user_id)?;
         }
 
         // per-user concurrency cap + state transition
@@ -126,7 +129,7 @@ pub(crate) fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result
                     sc,
                     &wf_idx,
                     crate::now_ms(),
-                    crate::state_machine::SmEvent::DispatchStart {
+                    SmEvent::DispatchStart {
                         user_id: user_id.to_string(),
                         node_id: node_id.to_string(),
                     },
@@ -214,7 +217,7 @@ pub(crate) fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result
         let (mut def, act_ctx) =
             build_action_def_with_ctx(action, &tctx, Some(&user_id), Some(&node_id))?;
         if action.call.is_udp() {
-            inject_udp_socket_id(&user_id, &mut def)?;
+            udp_binding::inject_udp_socket_id(&user_id, &mut def)?;
         }
 
         // Timeout timer
@@ -227,7 +230,7 @@ pub(crate) fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result
         });
         if let Some(tmo) = timeout_ms {
             schedule_timer(
-                crate::EventKind::SchedulerTimerTimeout.as_str(),
+                EventKind::SchedulerTimerTimeout.as_str(),
                 crate::now_ms().saturating_add(tmo),
                 &user_id,
                 &node_id,
@@ -297,7 +300,7 @@ pub(crate) fn publish_action_result_event(
         .as_ref()
         .map(|s| serde_json::Value::String(s.clone()));
 
-    let payload = serde_json::to_string(&crate::ActionResultPayload {
+    let payload = serde_json::to_string(&ActionResultPayload {
         status: format!("{:?}", outcome.status),
         detail: detail_json,
         metrics,
@@ -312,7 +315,7 @@ pub(crate) fn publish_action_result_event(
     crate::ntx::scenario_eventbus::event_bus::publish(
         &crate::ntx::scenario_eventbus::event_bus::Event {
             id,
-            kind: crate::EventKind::SchedulerActionResult.as_str().to_string(),
+            kind: EventKind::SchedulerActionResult.as_str().to_string(),
             user_id: Some(user_id.to_string()),
             task_id: Some(task_id.to_string()),
             action_id: Some(action_id.to_string()),
@@ -332,7 +335,7 @@ pub(crate) fn build_action_def_with_ctx(
     user_id: Option<&str>,
     task_id: Option<&str>,
 ) -> Result<(ActionDef, ActionContext), String> {
-    let expanded = crate::template::render_value(&action.with, ctx)?;
+    let expanded = crate::scenario::template::render_value(&action.with, ctx)?;
     let params = serde_json::to_string(&expanded).map_err(|e| format!("encode params: {e}"))?;
 
     let def = ActionDef {
@@ -364,9 +367,9 @@ mod tests {
 
     #[test]
     fn action_with_is_encoded_as_json_params_string() {
-        let action = crate::scenario_types::Action {
+        let action = crate::scenario::scenario_types::Action {
             id: "a1".to_string(),
-            call: crate::scenario_types::ActionCall::UdpSendReply,
+            call: crate::scenario::scenario_types::ActionCall::UdpSendReply,
             with: serde_json::json!({
                 "payload_hex": "010203",
                 "timeout_ms": 1500,

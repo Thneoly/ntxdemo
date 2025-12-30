@@ -24,7 +24,7 @@ pub fn publish_event(
             action_id: action_id.map(|s| s.to_string()),
             payload: payload.to_string(),
             correlation_id: None,
-            timestamp_ms: crate::time::now_ms(),
+            timestamp_ms: crate::scheduler::time::now_ms(),
         },
     );
 }
@@ -47,7 +47,7 @@ pub fn publish_event_with_corr(
             action_id: action_id.map(|s| s.to_string()),
             payload: payload.to_string(),
             correlation_id: correlation_id.map(|s| s.to_string()),
-            timestamp_ms: crate::time::now_ms(),
+            timestamp_ms: crate::scheduler::time::now_ms(),
         },
     );
 }

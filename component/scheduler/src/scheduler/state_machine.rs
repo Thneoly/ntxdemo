@@ -1,8 +1,10 @@
 use std::collections::{HashMap, VecDeque};
 
-use crate::{
-    NodeKind, PacketRxPayload, Scenario, TaskState, WaitEvent, WorkflowIndex, WorkflowNodeDef,
+use crate::scenario::scenario_types::{NodeKind, Scenario, WaitEvent, WorkflowNodeDef};
+use crate::scheduler::workflow_helpers::{
+    edge_trigger_allows, find_start_nodes, node_priority, wait_match,
 };
+use crate::{PacketRxPayload, TaskState, WorkflowIndex};
 
 /// StateMachine（方案B）：权威的 workflow 引擎（per-user task 状态 + 边推进）。
 ///
@@ -280,7 +282,7 @@ impl StateMachine {
             });
         }
         // start nodes Ready
-        for nid in crate::find_start_nodes(sc) {
+        for nid in find_start_nodes(sc) {
             self.set_state(user_id, &nid, TaskState::Ready, now_ms);
             eff.push(SmEffect::SetState {
                 user_id: user_id.to_string(),
@@ -290,7 +292,7 @@ impl StateMachine {
             eff.push(SmEffect::EnqueueReady {
                 user_id: user_id.to_string(),
                 node_id: nid.clone(),
-                priority: crate::node_priority(sc, &nid),
+                priority: node_priority(sc, &nid),
             });
         }
         eff
@@ -317,7 +319,7 @@ impl StateMachine {
             SmEffect::EnqueueReady {
                 user_id: user_id.to_string(),
                 node_id: node_id.to_string(),
-                priority: crate::node_priority(sc, node_id),
+                priority: node_priority(sc, node_id),
             },
         ]
     }
@@ -355,7 +357,7 @@ impl StateMachine {
                                 .as_ref()
                                 .map(|o| o.event == WaitEvent::PacketRx)
                                 .unwrap_or(false)
-                            && crate::wait_match(n.on.as_ref(), action_id, task_id, p)
+                            && wait_match(n.on.as_ref(), action_id, task_id, p)
                     })
                     .unwrap_or(false)
             })
@@ -412,7 +414,7 @@ impl StateMachine {
                 SmEffect::EnqueueReady {
                     user_id: user_id.to_string(),
                     node_id: node_id.to_string(),
-                    priority: crate::node_priority(sc, node_id),
+                    priority: node_priority(sc, node_id),
                 },
             ];
         }
@@ -467,7 +469,7 @@ impl StateMachine {
 
         let mut eff = Vec::new();
         for e in &from.edges {
-            if !crate::edge_trigger_allows(e.trigger.as_ref(), reason, eval_ctx) {
+            if !edge_trigger_allows(e.trigger.as_ref(), reason, eval_ctx) {
                 continue;
             }
             let Some(to) = sc.workflows.nodes.iter().find(|n| n.id == e.to) else {
@@ -492,7 +494,7 @@ impl StateMachine {
                     eff.push(SmEffect::EnqueueReady {
                         user_id: user_id.to_string(),
                         node_id: to.id.clone(),
-                        priority: crate::node_priority(sc, &to.id),
+                        priority: node_priority(sc, &to.id),
                     });
                 }
                 NodeKind::End => {

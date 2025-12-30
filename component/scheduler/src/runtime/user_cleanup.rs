@@ -4,10 +4,15 @@
 
 use std::sync::atomic::Ordering;
 
-use crate::{
-    get_bound_udp_owner_id, now_ms, resources, send_scheduler, tx, SchedulerContext, EVENT_COUNTER,
-    RUNTIME, STATE_MACHINE, TIMERS,
-};
+use crate::eventing::events::EVENT_COUNTER;
+use crate::eventing::payloads::ResourceReleasedPayload;
+use crate::eventing::topics::EventKind;
+use crate::io::{send_scheduler, tx};
+use crate::net::udp_binding::get_bound_udp_owner_id;
+use crate::runtime::runtime_state::RUNTIME;
+use crate::scheduler::timers::TIMERS;
+use crate::ntx::host::resources;
+use crate::{SchedulerContext, STATE_MACHINE};
 
 pub(crate) fn finish_user(_ctx: &SchedulerContext, user_id: &str) -> Result<(), String> {
     // 1) read owner id (best-effort)
@@ -48,18 +53,16 @@ pub(crate) fn finish_user(_ctx: &SchedulerContext, user_id: &str) -> Result<(), 
                 let _ = crate::ntx::scenario_eventbus::event_bus::publish(
                     &crate::ntx::scenario_eventbus::event_bus::Event {
                         id: format!("rr-{}", EVENT_COUNTER.fetch_add(1, Ordering::Relaxed)),
-                        kind: crate::EventKind::SchedulerResourceReleased
-                            .as_str()
-                            .to_string(),
+                        kind: EventKind::SchedulerResourceReleased.as_str().to_string(),
                         user_id: Some(user_id.to_string()),
                         task_id: None,
                         action_id: None,
-                        payload: serde_json::to_string(&crate::ResourceReleasedPayload {
+                        payload: serde_json::to_string(&ResourceReleasedPayload {
                             owner_id: owner.to_string(),
                         })
                         .unwrap_or_else(|_| "{}".to_string()),
                         correlation_id: None,
-                        timestamp_ms: now_ms(),
+                        timestamp_ms: crate::scheduler::time::now_ms(),
                     },
                 );
             }

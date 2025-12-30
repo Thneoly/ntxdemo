@@ -3,7 +3,7 @@
 //! Goal: remove ad-hoc `serde_json::json!({ ... })` blobs for payloads that
 //! have a stable schema, while keeping the emitted JSON backward-compatible.
 
-use crate::codec;
+use crate::io::codec;
 
 /// Stable payload schema for `packet.rx` events.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

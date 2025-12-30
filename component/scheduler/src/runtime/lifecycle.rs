@@ -2,7 +2,14 @@
 //!
 //! Extracted from `lib.rs` to keep the crate entrypoint small.
 
-use crate::{get_user_scenario_ctx, SchedulerContext};
+use crate::eventing::events::EVENT_COUNTER;
+use crate::eventing::payloads::UserExitPayload;
+use crate::eventing::topics::EventKind;
+use crate::runtime::runtime_state::RUNTIME;
+use crate::scenario::scenario_registry::get_user_scenario_ctx;
+use crate::scenario::scenario_types::Scenario;
+use crate::scheduler::state_machine::SmEvent;
+use crate::SchedulerContext;
 
 /// Best-effort: if the state machine reached end, emit `scheduler.user.exit` once per iteration.
 pub(crate) fn maybe_finish_user(_ctx: &SchedulerContext, user_id: &str) -> Result<(), String> {
@@ -18,7 +25,7 @@ pub(crate) fn maybe_finish_user(_ctx: &SchedulerContext, user_id: &str) -> Resul
     if reached_end {
         // publish only once per iteration
         let mut should_emit = false;
-        if let Ok(mut rt) = crate::RUNTIME.lock() {
+        if let Ok(mut rt) = RUNTIME.lock() {
             if let Some(u) = rt.users.get_mut(user_id) {
                 if !u.meta.end_event_sent {
                     u.meta.end_event_sent = true;
@@ -37,9 +44,9 @@ pub(crate) fn maybe_finish_user(_ctx: &SchedulerContext, user_id: &str) -> Resul
 pub(crate) fn publish_user_exit_event(user_id: &str, reason: &str) {
     let id = format!(
         "ux-{}",
-        crate::EVENT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        EVENT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
-    let payload = serde_json::to_string(&crate::UserExitPayload {
+    let payload = serde_json::to_string(&UserExitPayload {
         user_id: user_id.to_string(),
         reason: reason.to_string(),
     })
@@ -47,7 +54,7 @@ pub(crate) fn publish_user_exit_event(user_id: &str, reason: &str) {
     let _ = crate::ntx::scenario_eventbus::event_bus::publish(
         &crate::ntx::scenario_eventbus::event_bus::Event {
             id,
-            kind: crate::EventKind::SchedulerUserExit.as_str().to_string(),
+            kind: EventKind::SchedulerUserExit.as_str().to_string(),
             user_id: Some(user_id.to_string()),
             task_id: None,
             action_id: None,
@@ -64,10 +71,10 @@ pub(crate) fn restart_user_iteration(_ctx: &SchedulerContext, user_id: &str) -> 
 }
 
 pub(crate) fn restart_user_iteration_with_scenario(
-    sc: &crate::Scenario,
+    sc: &Scenario,
     user_id: &str,
 ) -> Result<(), String> {
-    if let Ok(mut rt) = crate::RUNTIME.lock() {
+    if let Ok(mut rt) = RUNTIME.lock() {
         let Some(u) = rt.users.get_mut(user_id) else {
             return Ok(());
         };
@@ -87,7 +94,7 @@ pub(crate) fn restart_user_iteration_with_scenario(
             sc,
             &wf_idx,
             crate::now_ms(),
-            crate::SmEvent::UserReset {
+            SmEvent::UserReset {
                 user_id: user_id.to_string(),
             },
         )

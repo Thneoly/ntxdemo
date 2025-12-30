@@ -6,7 +6,8 @@ use once_cell::sync::Lazy;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Mutex;
 
-use crate::{TaskState, UserLifetime};
+use crate::scenario::scenario_types::{UserLifetime, UserLifetimeMode};
+use crate::TaskState;
 
 /// 运行态的 User/Task/Ready 队列（极简版）
 #[derive(Default)]
@@ -78,20 +79,20 @@ pub(crate) struct UserInstance {
 
 #[derive(Debug, Clone)]
 pub(crate) struct UserMeta {
-    pub(crate) mode: crate::UserLifetimeMode, // once / loop
-    pub(crate) iterations: Option<u64>,       // max iterations in loop mode
-    pub(crate) think_ms: Option<u64>,         // optional think-time between iterations
-    pub(crate) iteration: u64,                // completed iterations
-    pub(crate) end_event_sent: bool,          // prevent duplicate exit events per iteration
-    pub(crate) running: usize,                // current running tasks
-    pub(crate) max_running: usize,            // per-user concurrency cap
+    pub(crate) mode: UserLifetimeMode,  // once / loop
+    pub(crate) iterations: Option<u64>, // max iterations in loop mode
+    pub(crate) think_ms: Option<u64>,   // optional think-time between iterations
+    pub(crate) iteration: u64,          // completed iterations
+    pub(crate) end_event_sent: bool,    // prevent duplicate exit events per iteration
+    pub(crate) running: usize,          // current running tasks
+    pub(crate) max_running: usize,      // per-user concurrency cap
     pub(crate) scenario_version: u64, // topology version bound to this user (old users do not migrate)
 }
 
 impl Default for UserMeta {
     fn default() -> Self {
         Self {
-            mode: crate::UserLifetimeMode::Once,
+            mode: UserLifetimeMode::Once,
             iterations: None,
             think_ms: None,
             iteration: 0,

@@ -125,7 +125,7 @@ pub fn send_udp(
     action_id: Option<&str>,
     correlation_id: Option<&str>,
 ) -> Result<(), String> {
-    let now_ms = crate::time::now_ms();
+    let now_ms = crate::scheduler::time::now_ms();
 
     // record sock context for later packet.rx correlation
     if let Ok(mut map) = crate::SOCK_CTX.lock() {

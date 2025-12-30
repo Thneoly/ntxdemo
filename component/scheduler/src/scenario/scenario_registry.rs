@@ -6,9 +6,9 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::runtime_state::RUNTIME;
-use crate::WaitEvent;
-use crate::{NodeKind, Scenario, WorkflowIndex};
+use crate::runtime::runtime_state::RUNTIME;
+use crate::scenario::scenario_types::{NodeKind, Scenario, WaitEvent};
+use crate::WorkflowIndex;
 
 #[derive(Default)]
 pub(crate) struct ScenarioRegistry {

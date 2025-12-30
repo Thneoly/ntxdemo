@@ -2,7 +2,7 @@
 
 use std::sync::atomic::Ordering;
 
-use crate::codec;
+use crate::io::codec;
 
 // --- rx decode constants ---
 // This module is currently not wired into the main event loop in all builds.
@@ -118,7 +118,7 @@ pub fn drain_rx_ring(desc_mem: Vec<u8>, payload_mem: Vec<u8>) -> u32 {
             let payload = &payload_mem[payload_off..payload_off + payload_len];
 
             // Lookup user/task/action correlation by sock_id; refresh last_seen_ms.
-            let now_ms = crate::time::now_ms();
+            let now_ms = crate::scheduler::time::now_ms();
             let ctx = {
                 let mut guard = crate::SOCK_CTX.lock().ok();
                 guard

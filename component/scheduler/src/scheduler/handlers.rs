@@ -3,10 +3,24 @@
 //! Intentionally thin: these functions orchestrate existing runtime/state-machine helpers
 //! defined in `lib.rs`, so we can split files without large-scale redesign.
 
-use crate::{
-    ntx, publish_event_with_corr, schedule_timer, validate_scenario, Scenario, SchedulerContext,
-    SmEvent, TaskState, WorkflowEdge, EVENT_COUNTER, LOAD, RUNTIME, SCENARIOS, STATE_MACHINE,
+use crate::eventing::events::{publish_event_with_corr, EVENT_COUNTER};
+use crate::eventing::payloads::{ActionResultPayload, EvalCtx};
+use crate::eventing::topics::EventKind;
+use crate::runtime::lifecycle::{maybe_finish_user, restart_user_iteration_with_scenario};
+use crate::runtime::runtime_state::{TaskRuntime, UserInstance, RUNTIME};
+use crate::scenario::scenario_loader::validate_scenario;
+use crate::scenario::scenario_registry::{
+    get_active_scenario_ctx, get_user_scenario_ctx, SCENARIOS,
 };
+use crate::scenario::scenario_types::{
+    Action, Scenario, TriggerSpec, UserLifetimeMode, WorkflowEdge, WorkflowNodeDef,
+};
+use crate::scheduler::load_controller::LOAD;
+use crate::scheduler::state_machine::SmEvent;
+use crate::scheduler::time::now_ms;
+use crate::scheduler::timers::schedule_timer;
+use crate::scheduler::workflow_helpers::find_start_nodes;
+use crate::{ntx, SchedulerContext, TaskState, STATE_MACHINE};
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -26,26 +40,26 @@ pub fn on_timer_event(
     ev: &ntx::scenario_eventbus::event_bus::Event,
 ) -> Result<(), String> {
     match ev.kind.as_str() {
-        k if k == crate::EventKind::SchedulerTimerTimeout.as_str() => on_timeout_timer(ctx, ev),
-        k if k == crate::EventKind::SchedulerTimerRetry.as_str() => on_retry_timer(ctx, ev),
-        k if k == crate::EventKind::SchedulerTimerThink.as_str() => on_think_timer(ctx, ev),
+        k if k == EventKind::SchedulerTimerTimeout.as_str() => on_timeout_timer(ctx, ev),
+        k if k == EventKind::SchedulerTimerRetry.as_str() => on_retry_timer(ctx, ev),
+        k if k == EventKind::SchedulerTimerThink.as_str() => on_think_timer(ctx, ev),
         _ => Ok(()),
     }
 }
 
 pub fn on_control_event(ev: &ntx::scenario_eventbus::event_bus::Event) {
     match ev.kind.as_str() {
-        k if k == crate::EventKind::SchedulerControlStop.as_str() => {
+        k if k == EventKind::SchedulerControlStop.as_str() => {
             if let Ok(mut rt) = RUNTIME.lock() {
                 rt.stop = true;
             }
         }
-        k if k == crate::EventKind::SchedulerControlPause.as_str() => {
+        k if k == EventKind::SchedulerControlPause.as_str() => {
             if let Ok(mut rt) = RUNTIME.lock() {
                 rt.paused = true;
             }
         }
-        k if k == crate::EventKind::SchedulerControlResume.as_str() => {
+        k if k == EventKind::SchedulerControlResume.as_str() => {
             if let Ok(mut rt) = RUNTIME.lock() {
                 rt.paused = false;
             }
@@ -63,7 +77,7 @@ pub fn on_think_timer(
     if user_id.is_empty() {
         return Ok(());
     }
-    crate::restart_user_iteration(ctx, user_id)
+    crate::runtime::lifecycle::restart_user_iteration(ctx, user_id)
 }
 
 pub fn on_timeout_timer(
@@ -89,7 +103,7 @@ pub fn on_timeout_timer(
         {
             return Ok(());
         }
-        let (_ver, sc_arc, wf_idx) = crate::get_user_scenario_ctx(user_id)?;
+        let (_ver, sc_arc, wf_idx) = get_user_scenario_ctx(user_id)?;
         let sc = sc_arc.as_ref();
         let mut sm = STATE_MACHINE
             .lock()
@@ -97,7 +111,7 @@ pub fn on_timeout_timer(
         let effects = sm.apply(
             sc,
             &wf_idx,
-            crate::now_ms(),
+            now_ms(),
             SmEvent::TimeoutTimer {
                 user_id: user_id.to_string(),
                 node_id: task_id.to_string(),
@@ -123,7 +137,7 @@ pub fn on_timeout_timer(
         }
 
         // publish an action-result(timeout)
-        let payload = serde_json::to_string(&crate::ActionResultPayload {
+        let payload = serde_json::to_string(&ActionResultPayload {
             status: "Timeout".to_string(),
             detail: serde_json::Value::String("timeout fired".to_string()),
             metrics: None,
@@ -134,7 +148,7 @@ pub fn on_timeout_timer(
         let _ =
             ntx::scenario_eventbus::event_bus::publish(&ntx::scenario_eventbus::event_bus::Event {
                 id,
-                kind: crate::EventKind::SchedulerActionResult.as_str().to_string(),
+                kind: EventKind::SchedulerActionResult.as_str().to_string(),
                 user_id: Some(user_id.to_string()),
                 task_id: Some(task_id.to_string()),
                 action_id: if action_id.is_empty() {
@@ -144,7 +158,7 @@ pub fn on_timeout_timer(
                 },
                 payload,
                 correlation_id: None,
-                timestamp_ms: crate::now_ms(),
+                timestamp_ms: now_ms(),
             });
     }
 
@@ -162,7 +176,7 @@ pub fn on_retry_timer(
         return Ok(());
     }
 
-    let (_ver, sc_arc, wf_idx) = crate::get_user_scenario_ctx(user_id)?;
+    let (_ver, sc_arc, wf_idx) = get_user_scenario_ctx(user_id)?;
     let sc = sc_arc.as_ref();
     let node = sc.workflows.nodes.iter().find(|n| n.id == task_id);
     if node.is_none() {
@@ -175,7 +189,7 @@ pub fn on_retry_timer(
         sm.apply(
             sc,
             &wf_idx,
-            crate::now_ms(),
+            now_ms(),
             SmEvent::RetryTimer {
                 user_id: user_id.to_string(),
                 node_id: task_id.to_string(),
@@ -205,16 +219,16 @@ pub fn on_topology_changed_event(
             #[serde(default)]
             label: Option<String>,
             #[serde(default)]
-            trigger: Option<crate::TriggerSpec>,
+            trigger: Option<TriggerSpec>,
         },
         RemoveNode {
             node_id: String,
         },
         AddNode {
-            node: crate::WorkflowNodeDef,
+            node: WorkflowNodeDef,
         },
         UpsertAction {
-            action: crate::Action,
+            action: Action,
         },
     }
 
@@ -246,7 +260,7 @@ pub fn on_topology_changed_event(
         Ok(v) => v,
         Err(e) => {
             publish_event_with_corr(
-                crate::EventKind::SchedulerTopologyRejected.as_str(),
+                EventKind::SchedulerTopologyRejected.as_str(),
                 None,
                 None,
                 None,
@@ -263,7 +277,7 @@ pub fn on_topology_changed_event(
 
     if env.schema_version != 1 {
         publish_event_with_corr(
-            crate::EventKind::SchedulerTopologyRejected.as_str(),
+            EventKind::SchedulerTopologyRejected.as_str(),
             None,
             None,
             None,
@@ -350,7 +364,7 @@ pub fn on_topology_changed_event(
         let want = env.base_version.unwrap_or(active_ver);
         if want != active_ver {
             publish_event_with_corr(
-                crate::EventKind::SchedulerTopologyRejected.as_str(),
+                EventKind::SchedulerTopologyRejected.as_str(),
                 None,
                 None,
                 None,
@@ -392,7 +406,7 @@ pub fn on_topology_changed_event(
 
     if let Err(e) = validate_scenario(&new_sc) {
         publish_event_with_corr(
-            crate::EventKind::SchedulerTopologyRejected.as_str(),
+            EventKind::SchedulerTopologyRejected.as_str(),
             None,
             None,
             None,
@@ -424,7 +438,7 @@ pub fn on_topology_changed_event(
     }
 
     publish_event_with_corr(
-        crate::EventKind::SchedulerTopologyApplied.as_str(),
+        EventKind::SchedulerTopologyApplied.as_str(),
         None,
         None,
         None,
@@ -448,7 +462,7 @@ pub fn on_user_start_event(
     _ctx: &SchedulerContext,
     ev: &ntx::scenario_eventbus::event_bus::Event,
 ) -> Result<(), String> {
-    let (ver, sc_arc, wf_idx) = crate::get_active_scenario_ctx()?;
+    let (ver, sc_arc, wf_idx) = get_active_scenario_ctx()?;
     let sc = sc_arc.as_ref();
     let v: serde_json::Value = serde_json::from_str(&ev.payload).unwrap_or(serde_json::json!({}));
     let user_id = v.get("user_id").and_then(|x| x.as_str()).unwrap_or("");
@@ -459,11 +473,11 @@ pub fn on_user_start_event(
     eprintln!(
         "[scheduler] on_user_start: user_id={user_id} scenario_version={ver} workflows_nodes={} start_nodes={:?}",
         sc.workflows.nodes.len(),
-        crate::find_start_nodes(sc)
+        find_start_nodes(sc)
     );
 
     let resources = crate::build_resources_json(sc);
-    let mut user = crate::UserInstance {
+    let mut user = UserInstance {
         tasks: HashMap::new(),
         resources,
         meta: {
@@ -474,7 +488,7 @@ pub fn on_user_start_event(
     };
 
     for n in &sc.workflows.nodes {
-        let tr = crate::TaskRuntime {
+        let tr = TaskRuntime {
             state: TaskState::Created,
             // NOTE: vars/exports live in runtime and are intentionally JSON for template expansion.
             // This is internal state (not an event payload schema), so we keep `json!({})`.
@@ -501,7 +515,7 @@ pub fn on_user_start_event(
         sm.apply(
             sc,
             &wf_idx,
-            crate::now_ms(),
+            now_ms(),
             SmEvent::UserReset {
                 user_id: user_id.to_string(),
             },
@@ -538,7 +552,7 @@ pub fn on_user_exit_event(
     let Some(user_id) = ev.user_id.as_deref() else {
         return Ok(());
     };
-    let (_ver, sc_arc, _wf_idx) = crate::get_user_scenario_ctx(user_id)?;
+    let (_ver, sc_arc, _wf_idx) = get_user_scenario_ctx(user_id)?;
     let sc = sc_arc.as_ref();
 
     let (mode, iterations, think_ms, cur_iter) = {
@@ -554,7 +568,7 @@ pub fn on_user_exit_event(
         )
     };
 
-    if mode != crate::UserLifetimeMode::Loop {
+    if mode != UserLifetimeMode::Loop {
         return crate::finish_user(_ctx, user_id);
     }
 
@@ -574,8 +588,8 @@ pub fn on_user_exit_event(
 
     if let Some(ms) = think_ms {
         schedule_timer(
-            crate::EventKind::SchedulerTimerThink.as_str(),
-            crate::now_ms().saturating_add(ms),
+            EventKind::SchedulerTimerThink.as_str(),
+            now_ms().saturating_add(ms),
             user_id,
             "user",
             None,
@@ -590,7 +604,7 @@ pub fn on_user_exit_event(
         );
         Ok(())
     } else {
-        crate::restart_user_iteration_with_scenario(sc, user_id)
+        restart_user_iteration_with_scenario(sc, user_id)
     }
 }
 
@@ -604,11 +618,11 @@ fn handle_packet_rx_trigger(
     };
     let action_id = ev.action_id.as_deref().unwrap_or("");
     let task_id = ev.task_id.as_deref().unwrap_or("");
-    let (_ver, sc_arc, wf_idx) = crate::get_user_scenario_ctx(ctx_user)?;
+    let (_ver, sc_arc, wf_idx) = get_user_scenario_ctx(ctx_user)?;
     let sc = sc_arc.as_ref();
 
     let p: crate::PacketRxPayload = serde_json::from_str(&ev.payload).unwrap_or_default();
-    let eval_ctx = serde_json::to_value(crate::EvalCtx::packet_rx(
+    let eval_ctx = serde_json::to_value(EvalCtx::packet_rx(
         ctx_user,
         task_id,
         action_id,
@@ -625,7 +639,7 @@ fn handle_packet_rx_trigger(
         sm.apply(
             sc,
             &wf_idx,
-            crate::now_ms(),
+            now_ms(),
             SmEvent::PacketRx {
                 user_id: ctx_user.to_string(),
                 action_id: action_id.to_string(),
@@ -637,6 +651,6 @@ fn handle_packet_rx_trigger(
     };
 
     crate::apply_sm_effects(effects)?;
-    crate::maybe_finish_user(ctx, ctx_user)?;
+    maybe_finish_user(ctx, ctx_user)?;
     Ok(())
 }

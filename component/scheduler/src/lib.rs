@@ -34,59 +34,34 @@ struct SchedulerExports;
 
 export!(SchedulerExports);
 
-mod action_result;
-mod codec;
-mod conditions;
-mod dispatch;
-mod driver;
-mod events;
-mod handlers;
-mod lifecycle;
-mod load_controller;
-mod payloads;
-mod runtime_state;
-mod rx_decode;
-mod rx_pump;
-mod scenario_loader;
-mod scenario_registry;
-mod scenario_types;
-mod send_scheduler;
-mod state_machine;
-mod status;
-mod template;
-mod time;
-mod timers;
-mod topics;
-mod tx;
-mod udp_binding;
-mod user_cleanup;
-mod workflow_helpers;
+mod eventing;
+mod io;
+mod net;
+mod runtime;
+mod scenario;
+mod scheduler;
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-pub(crate) use workflow_helpers::{
-    edge_trigger_allows, find_start_nodes, node_priority, wait_match,
+use crate::io::{rx_pump, tx};
+use crate::net::udp_binding;
+use crate::runtime::runtime_state::{UserMeta, RUNTIME};
+use crate::runtime::{lifecycle, status, user_cleanup};
+use crate::scenario::scenario_loader::{self, ScenarioConfig};
+use crate::scenario::scenario_types::{Action, Scenario, UserLifetime};
+use crate::scenario::template;
+use crate::scheduler::{dispatch, driver};
+
+use crate::eventing::events::{publish_event, EVENT_COUNTER};
+use crate::eventing::payloads::{
+    PacketRxEventPayload, ResourceBoundPayload, SchedulerStateChangedPayload,
+    SchedulerTimerPayload, SendScheduledPayload, TaskStateChangedPayload, TopologyRejectedPayload,
+    UserStartPayload,
 };
-
-pub(crate) use events::publish_event_with_corr;
-use events::{publish_event, EVENT_COUNTER};
-
-pub(crate) use conditions::{eval_condition, match_reason};
-
-pub(crate) use runtime_state::{TaskRuntime, UserInstance, UserMeta, RUNTIME};
-pub(crate) use scenario_loader::{validate_scenario, ScenarioConfig};
-pub(crate) use scenario_registry::{get_active_scenario_ctx, get_user_scenario_ctx, SCENARIOS};
-
-pub(crate) use scenario_types::{
-    Action, NodeKind, RampPhase, Scenario, TriggerReason, TriggerSpec, TriggerWhen, UserLifetime,
-    UserLifetimeMode, WaitEvent, WaitOnSpec, WorkflowEdge, WorkflowNodeDef,
-};
-
-pub(crate) use load_controller::{publish_user_start_event, tick_load_controller, LOAD};
-use state_machine::{SmEffect, SmEvent, StateMachine};
-pub(crate) use timers::{schedule_timer, tick_timers, TIMERS};
+use crate::eventing::topics::{EventKind, TopicFilter};
+use crate::scheduler::state_machine::{SmEffect, StateMachine};
 
 use crate::ntx::core_types::types::{
     ActionContext,
@@ -97,15 +72,6 @@ use crate::ntx::core_types::types::{
     SendSchedule,
     // SendStatus,
 };
-use crate::ntx::host::resources;
-pub(crate) use payloads::{
-    ActionResultPayload, EvalCtx, EvalReason, PacketRxEventPayload, ResourceBoundPayload,
-    ResourceReleasedPayload, SchedulerStateChangedPayload, SchedulerTimerPayload,
-    SendScheduledPayload, TaskStateChangedPayload, TopologyRejectedPayload, UserExitPayload,
-    UserStartPayload,
-};
-pub(crate) use topics::{EventKind, TopicFilter};
-
 impl exports::ntx::scenario_scheduler::scheduler_component::Guest for SchedulerExports {
     fn run(config_dir: String) -> Result<(), String> {
         println!("[scheduler] run with config dir: {config_dir}");
@@ -205,7 +171,7 @@ enum TaskState {
 
 static SOCK_CTX: Lazy<Mutex<HashMap<u64, SockCtx>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
-/// StateMachine（方案B）：权威的 workflow 引擎（per-user task 状态 + 边推进）。
+/// StateMachine：权威的 workflow 引擎（per-user task 状态 + 边推进）。
 ///
 /// 约束：TaskRuntime(vars/exports/resources) 仍在 RUNTIME 内；StateMachine 只负责
 /// “哪个节点在什么状态、收到什么事件后如何沿 workflow 边推进”。
@@ -388,14 +354,12 @@ fn publish_action_result_event(
     dispatch::publish_action_result_event(user_id, task_id, action_id, correlation_id, outcome)
 }
 
-// ----------------- B) 真实资源绑定（最小：UDP socket create+bind） -----------------
-
 fn ensure_udp_socket_for_user(
-    _ctx: &SchedulerContext,
+    ctx: &SchedulerContext,
     sc: &Scenario,
     user_id: &str,
 ) -> Result<(), String> {
-    udp_binding::ensure_udp_socket_for_user(_ctx, sc, user_id)
+    udp_binding::ensure_udp_socket_for_user(ctx, sc, user_id)
 }
 
 fn inject_udp_socket_id(user_id: &str, def: &mut ActionDef) -> Result<(), String> {
@@ -418,11 +382,10 @@ fn set_bound_udp_owner_id(resources: &mut serde_json::Value, owner_id: &str) {
     udp_binding::set_bound_udp_owner_id(resources, owner_id)
 }
 
-fn finish_user(_ctx: &SchedulerContext, user_id: &str) -> Result<(), String> {
-    user_cleanup::finish_user(_ctx, user_id)
+fn finish_user(ctx: &SchedulerContext, user_id: &str) -> Result<(), String> {
+    user_cleanup::finish_user(ctx, user_id)
 }
 
-// ----------------- 模板展开与 Action 构造 -----------------
 #[allow(dead_code)]
 fn build_action_def_with_ctx(
     action: &Action,
@@ -444,5 +407,5 @@ pub fn clear_sock_ctx_for_user(user_id: &str) {
 }
 
 fn now_ms() -> u64 {
-    time::now_ms()
+    crate::scheduler::time::now_ms()
 }

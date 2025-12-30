@@ -3,7 +3,7 @@
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 
-use crate::events::EVENT_COUNTER;
+use crate::eventing::events::EVENT_COUNTER;
 
 #[derive(Clone, Debug)]
 pub(crate) struct TimerJob {

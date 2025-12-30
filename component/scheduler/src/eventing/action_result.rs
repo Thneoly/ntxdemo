@@ -3,10 +3,14 @@
 //! This is intentionally kept as a single module because it touches runtime state,
 //! state-machine step tracking, retry timers and workflow advancement.
 
-use crate::{
-    ntx, schedule_timer, Action, SchedulerContext, SmEvent, TaskState, EVENT_COUNTER, RUNTIME,
-    STATE_MACHINE,
-};
+use crate::eventing::events::EVENT_COUNTER;
+use crate::eventing::payloads::{EvalCtx, EvalReason};
+use crate::eventing::topics::EventKind;
+use crate::runtime::runtime_state::RUNTIME;
+use crate::scenario::scenario_types::Action;
+use crate::scheduler::state_machine::SmEvent;
+use crate::scheduler::timers::schedule_timer;
+use crate::{ntx, SchedulerContext, TaskState, STATE_MACHINE};
 
 use std::sync::atomic::Ordering;
 
@@ -27,20 +31,20 @@ pub fn on_action_result_event(
         return Ok(());
     };
 
-    let (_ver, sc_arc, wf_idx) = crate::get_user_scenario_ctx(user_id)?;
+    let (_ver, sc_arc, wf_idx) = crate::scenario::scenario_registry::get_user_scenario_ctx(user_id)?;
     let sc = sc_arc.as_ref();
 
     let status_lc = status.to_ascii_lowercase();
     let success = status_lc.contains("success");
     let timeout = status_lc.contains("timeout");
     let reason = if success {
-        crate::EvalReason::Success
+        EvalReason::Success
     } else if timeout {
-        crate::EvalReason::Timeout
+        EvalReason::Timeout
     } else {
-        crate::EvalReason::Failed
+        EvalReason::Failed
     };
-    let eval_ctx = serde_json::to_value(crate::EvalCtx::action_result(
+    let eval_ctx = serde_json::to_value(EvalCtx::action_result(
         user_id,
         task_id,
         ev.action_id.as_deref().unwrap_or(""),
@@ -176,7 +180,7 @@ pub fn on_action_result_event(
     if need_retry {
         let after = retry_after_ms.unwrap_or(1000);
         schedule_timer(
-            crate::EventKind::SchedulerTimerRetry.as_str(),
+            EventKind::SchedulerTimerRetry.as_str(),
             crate::now_ms().saturating_add(after),
             user_id,
             task_id,

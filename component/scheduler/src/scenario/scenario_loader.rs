@@ -3,7 +3,7 @@
 //! This module exists to keep `lib.rs` smaller. It owns all the file IO and
 //! serde parsing of scenario YAML/JSON, plus basic validation.
 
-use crate::scenario_types::{Actions, Load, NodeKind, Scenario, UserResources, Workbook, Workflow};
+use super::scenario_types::{Actions, Load, NodeKind, Scenario, UserResources, Workbook, Workflow};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt::Write as _;

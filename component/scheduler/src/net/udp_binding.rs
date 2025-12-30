@@ -88,7 +88,7 @@ pub fn set_bound_udp_owner_id(resources: &mut serde_json::Value, owner_id: &str)
 /// This is used by dispatch when an action call is UDP-related.
 pub fn ensure_udp_socket_for_user(
     _ctx: &crate::SchedulerContext,
-    sc: &crate::scenario_types::Scenario,
+    sc: &crate::scenario::scenario_types::Scenario,
     user_id: &str,
 ) -> Result<(), String> {
     // already bound?
@@ -105,12 +105,12 @@ pub fn ensure_udp_socket_for_user(
         .workbook
         .resources
         .iter()
-        .find(|r| r.r#type == crate::scenario_types::ResourceType::UdpEndpoint)
+        .find(|r| r.r#type == crate::scenario::scenario_types::ResourceType::UdpEndpoint)
         .or_else(|| {
             sc.workbook
                 .resources
                 .iter()
-                .find(|r| r.r#type == crate::scenario_types::ResourceType::UdpEndpoint)
+                .find(|r| r.r#type == crate::scenario::scenario_types::ResourceType::UdpEndpoint)
         })
         .ok_or_else(|| "no udp-endpoint resource in workbook.resources".to_string())?;
 

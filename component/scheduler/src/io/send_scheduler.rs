@@ -3,7 +3,12 @@ use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
 
-use crate::{ntx, publish_event_with_corr, time, tx, SendRequest, SendRequestState, SendSchedule};
+use crate::{ntx, SendRequest, SendRequestState, SendSchedule};
+use crate::eventing::events::publish_event_with_corr;
+use crate::eventing::topics::EventKind;
+use crate::scheduler::time;
+
+use super::tx;
 
 #[derive(Clone)]
 struct SendJob {
@@ -135,7 +140,7 @@ pub fn on_send_schedule_request(
 
     // optional: publish a status/ack event
     publish_event_with_corr(
-        crate::EventKind::SendScheduled.as_str(),
+        EventKind::SendScheduled.as_str(),
         Some(core_req.user_id.as_str()),
         Some(core_req.task_id.as_str()),
         ev.action_id.as_deref(),

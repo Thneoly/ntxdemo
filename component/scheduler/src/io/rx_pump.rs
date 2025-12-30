@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::rx_decode;
+use crate::io::rx_decode;
 
 /// Best-effort RX pumping when threads are unavailable.
 ///
@@ -37,7 +37,11 @@ pub(crate) fn pump_rx_once_nonblocking() {
         });
 
     // Stop flag
-    if crate::RUNTIME.lock().map(|rt| rt.stop).unwrap_or(false) {
+    if crate::runtime::runtime_state::RUNTIME
+        .lock()
+        .map(|rt| rt.stop)
+        .unwrap_or(false)
+    {
         return;
     }
 

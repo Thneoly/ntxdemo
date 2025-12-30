@@ -2,7 +2,7 @@ use once_cell::sync::Lazy;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
-use crate::events::EVENT_COUNTER;
+use crate::eventing::events::EVENT_COUNTER;
 use crate::now_ms;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
