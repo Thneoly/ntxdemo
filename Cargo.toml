@@ -13,13 +13,13 @@ members = [
 	"component/eventbus",
 	"component/core-types",
 	"component/core-libs/ntx-action-sdk",
-	"component/tools/actions-catalog-gen",
+	"crates/actions-catalog-gen",
 ]
 
 # Templates are used via `cargo-generate` and may contain placeholders that are
 # not valid Cargo manifests inside the workspace.
 exclude = [
-	"component/templates/*",
+	"component/actions-executor-template/*",
 ]
 
 [lib]
