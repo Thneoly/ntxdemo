@@ -1,6 +1,6 @@
 //! packet.tx-request handling and transmit helpers.
 
-use crate::net::protocol_hooks;
+use crate::net::net_hooks;
 
 /// Parse a tx-request JSON payload and transmit via protocol hooks.
 pub fn handle_tx_request(payload_json: &str, correlation_id: Option<&str>) -> Result<(), String> {
@@ -56,7 +56,7 @@ pub fn handle_tx_request(payload_json: &str, correlation_id: Option<&str>) -> Re
         return Err("missing payload: expected payload / payload_hex / payload_bytes".to_string());
     };
 
-    protocol_hooks::send_on_socket(
+    net_hooks::send_on_socket(
         req.sock_id,
         &payload,
         req.user_id.as_deref(),

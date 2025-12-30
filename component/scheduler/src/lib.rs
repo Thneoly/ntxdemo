@@ -282,7 +282,7 @@ fn build_resources_json(sc: &Scenario) -> serde_json::Value {
     let mut resources = serde_json::json!({});
 
     // Protocol-specific resource namespaces (UDP today; extensible later).
-    crate::net::protocol_hooks::init_user_resources_for_scenario(sc, &mut resources);
+    crate::net::net_hooks::init_user_resources_for_scenario(sc, &mut resources);
 
     resources
 }

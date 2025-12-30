@@ -5,7 +5,7 @@
 use crate::eventing::events::EVENT_COUNTER;
 use crate::eventing::payloads::ActionResultPayload;
 use crate::eventing::topics::EventKind;
-use crate::net::protocol_hooks;
+use crate::net::net_hooks;
 use crate::ntx::core_types::types::{ActionContext, ActionDef, ActionOutcome};
 use crate::runtime::runtime_state::RUNTIME;
 use crate::scenario::template::TemplateContext;
@@ -91,7 +91,7 @@ pub(crate) fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result
             action.call.as_call_str()
         );
 
-        protocol_hooks::before_dispatch_action(ctx, sc, &user_id, action)?;
+        net_hooks::before_dispatch_action(ctx, sc, &user_id, action)?;
 
         // per-user concurrency cap + state transition
         let (task_vars, task_exports, user_resources) = {
@@ -213,7 +213,7 @@ pub(crate) fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result
 
         let (mut def, act_ctx) =
             build_action_def_with_ctx(action, &tctx, Some(&user_id), Some(&node_id))?;
-        protocol_hooks::mutate_action_def_before_execute(&user_id, action, &mut def)?;
+        net_hooks::mutate_action_def_before_execute(&user_id, action, &mut def)?;
 
         // Timeout timer
         let timeout_ms = step_timeout_ms.or_else(|| {
