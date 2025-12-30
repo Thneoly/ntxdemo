@@ -101,18 +101,17 @@ pub fn ensure_udp_socket_for_user(
     }
 
     // pick first udp-endpoint resource
-    let res = sc
-        .workbook
-        .resources
-        .iter()
-        .find(|r| r.r#type == crate::scenario::scenario_types::ResourceType::UdpEndpoint)
-        .or_else(|| {
-            sc.workbook
-                .resources
-                .iter()
-                .find(|r| r.r#type == crate::scenario::scenario_types::ResourceType::UdpEndpoint)
-        })
-        .ok_or_else(|| "no udp-endpoint resource in workbook.resources".to_string())?;
+    let res =
+        sc.workbook
+            .resources
+            .iter()
+            .find(|r| r.r#type == crate::scenario::scenario_types::ResourceType::UdpEndpoint)
+            .or_else(|| {
+                sc.workbook.resources.iter().find(|r| {
+                    r.r#type == crate::scenario::scenario_types::ResourceType::UdpEndpoint
+                })
+            })
+            .ok_or_else(|| "no udp-endpoint resource in workbook.resources".to_string())?;
 
     let p = &res.properties;
     let peer_ip = parse_ipv4(p, &["peer_ip", "peer-ip", "peer_ipv4", "peer-ipv4"])

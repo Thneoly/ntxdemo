@@ -46,7 +46,6 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::io::{rx_pump, tx};
-use crate::net::udp_binding;
 use crate::runtime::runtime_state::{UserMeta, RUNTIME};
 use crate::runtime::{lifecycle, status, user_cleanup};
 use crate::scenario::scenario_loader::{self, ScenarioConfig};
@@ -280,26 +279,10 @@ fn parse_duration_ms(s: &str) -> Option<u64> {
 ///
 /// This is used during `on_user_start_event` to initialize `UserInstance.resources`.
 fn build_resources_json(sc: &Scenario) -> serde_json::Value {
-    // Keep this in crate root as a stable helper API for handlers.
-    // Currently only UDP is modeled as a bound resource.
     let mut resources = serde_json::json!({});
 
-    for a in &sc.actions.actions {
-        if a.call.is_udp() {
-            // Scheduler will fill / override these values when binding resources.
-            resources
-                .as_object_mut()
-                .expect("resources json object")
-                .insert(
-                    "udp".to_string(),
-                    serde_json::json!({
-                        "sock_id": serde_json::Value::Null,
-                        "owner_id": serde_json::Value::Null,
-                    }),
-                );
-            break;
-        }
-    }
+    // Protocol-specific resource namespaces (UDP today; extensible later).
+    crate::net::protocol_hooks::init_user_resources_for_scenario(sc, &mut resources);
 
     resources
 }
@@ -352,34 +335,6 @@ fn publish_action_result_event(
     outcome: &ActionOutcome,
 ) -> Result<(), String> {
     dispatch::publish_action_result_event(user_id, task_id, action_id, correlation_id, outcome)
-}
-
-fn ensure_udp_socket_for_user(
-    ctx: &SchedulerContext,
-    sc: &Scenario,
-    user_id: &str,
-) -> Result<(), String> {
-    udp_binding::ensure_udp_socket_for_user(ctx, sc, user_id)
-}
-
-fn inject_udp_socket_id(user_id: &str, def: &mut ActionDef) -> Result<(), String> {
-    udp_binding::inject_udp_socket_id(user_id, def)
-}
-
-fn get_bound_udp_socket_id(resources: &serde_json::Value) -> Option<u64> {
-    udp_binding::get_bound_udp_socket_id(resources)
-}
-
-fn get_bound_udp_owner_id(resources: &serde_json::Value) -> Option<String> {
-    udp_binding::get_bound_udp_owner_id(resources)
-}
-
-fn set_bound_udp_socket_id(resources: &mut serde_json::Value, sock_id: u64) {
-    udp_binding::set_bound_udp_socket_id(resources, sock_id)
-}
-
-fn set_bound_udp_owner_id(resources: &mut serde_json::Value, owner_id: &str) {
-    udp_binding::set_bound_udp_owner_id(resources, owner_id)
 }
 
 fn finish_user(ctx: &SchedulerContext, user_id: &str) -> Result<(), String> {

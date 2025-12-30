@@ -3,12 +3,12 @@ use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
 
-use crate::{ntx, SendRequest, SendRequestState, SendSchedule};
 use crate::eventing::events::publish_event_with_corr;
 use crate::eventing::topics::EventKind;
 use crate::scheduler::time;
+use crate::{ntx, SendRequest, SendRequestState, SendSchedule};
 
-use super::tx;
+use crate::net::protocol_hooks;
 
 #[derive(Clone)]
 struct SendJob {
@@ -172,7 +172,7 @@ pub fn tick_send_scheduler(now_ms: u64) {
     for id in to_send {
         let mut remove = false;
         if let Some(mut job) = SEND_JOBS.lock().ok().and_then(|mut m| m.remove(&id)) {
-            if let Err(e) = tx::send_udp(
+            if let Err(e) = protocol_hooks::send_on_socket(
                 job.req.socket_id,
                 job.req.payload.as_deref().unwrap_or(&[]),
                 Some(job.req.user_id.as_str()),

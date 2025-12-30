@@ -8,10 +8,10 @@ use crate::eventing::events::EVENT_COUNTER;
 use crate::eventing::payloads::ResourceReleasedPayload;
 use crate::eventing::topics::EventKind;
 use crate::io::{send_scheduler, tx};
-use crate::net::udp_binding::get_bound_udp_owner_id;
+use crate::net::protocol_hooks;
+use crate::ntx::host::resources;
 use crate::runtime::runtime_state::RUNTIME;
 use crate::scheduler::timers::TIMERS;
-use crate::ntx::host::resources;
 use crate::{SchedulerContext, STATE_MACHINE};
 
 pub(crate) fn finish_user(_ctx: &SchedulerContext, user_id: &str) -> Result<(), String> {
@@ -20,7 +20,7 @@ pub(crate) fn finish_user(_ctx: &SchedulerContext, user_id: &str) -> Result<(), 
         let rt = RUNTIME.lock().map_err(|_| "lock runtime".to_string())?;
         rt.users
             .get(user_id)
-            .and_then(|u| get_bound_udp_owner_id(&u.resources))
+            .and_then(|u| protocol_hooks::get_bound_owner_id(&u.resources))
     };
 
     // 2) remove ready queue entries for this user + drop runtime user

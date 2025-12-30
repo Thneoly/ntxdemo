@@ -73,10 +73,6 @@ impl ActionCall {
             ActionCall::Other => "other",
         }
     }
-
-    pub(crate) fn is_udp(&self) -> bool {
-        matches!(self, ActionCall::UdpSendReply)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
