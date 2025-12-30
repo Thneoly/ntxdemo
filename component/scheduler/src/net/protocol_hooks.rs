@@ -5,10 +5,10 @@
 //! Add new protocol behaviors by extending these hooks instead of scattering
 //! `if action.call.is_...()` across the codebase.
 
-use crate::net::udp_binding;
+use crate::net::{net_actions::ActionCall, udp_binding};
 use crate::ntx::core_types::types::ActionDef;
 use crate::ntx::host::udp_socket_control;
-use crate::scenario::scenario_types::{Action, ActionCall, Scenario};
+use crate::scenario::scenario_types::{Action, Scenario};
 use crate::SchedulerContext;
 
 pub(crate) fn get_bound_owner_id(resources: &serde_json::Value) -> Option<String> {

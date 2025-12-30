@@ -1,7 +1,3 @@
-//! Scenario configuration types.
-//!
-//! Kept in a standalone module to make `lib.rs` smaller and easier to navigate.
-
 use serde::{Deserialize, Serialize};
 
 /// Strongly typed scenario config (minimal).
@@ -29,18 +25,9 @@ pub(crate) struct Workbook {
 pub(crate) struct Resource {
     pub(crate) id: String,
     #[serde(rename = "type")]
-    pub(crate) r#type: ResourceType,
+    pub(crate) r#type: crate::net::net_resources::ResourceType,
     #[serde(default)]
     pub(crate) properties: serde_json::Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum ResourceType {
-    UdpEndpoint,
-    /// Forward-compat: allow new resource types without breaking deserialization.
-    #[serde(other)]
-    Other,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -52,27 +39,9 @@ pub(crate) struct Actions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Action {
     pub(crate) id: String,
-    pub(crate) call: ActionCall,
+    pub(crate) call: crate::net::net_actions::ActionCall,
     #[serde(default)]
     pub(crate) with: serde_json::Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum ActionCall {
-    UdpSendReply,
-    /// Forward-compat: allow new actions without breaking deserialization.
-    #[serde(other)]
-    Other,
-}
-
-impl ActionCall {
-    pub(crate) fn as_call_str(&self) -> &'static str {
-        match self {
-            ActionCall::UdpSendReply => "udp.send-reply",
-            ActionCall::Other => "other",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

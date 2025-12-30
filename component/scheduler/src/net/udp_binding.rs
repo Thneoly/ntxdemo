@@ -1,5 +1,6 @@
 //! UDP socket binding helpers used by scheduler.
 
+use crate::net::net_resources::ResourceType;
 use crate::ntx::core_types::types::ActionDef;
 use crate::ntx::host::{resources, types, udp_socket_control};
 
@@ -101,17 +102,18 @@ pub fn ensure_udp_socket_for_user(
     }
 
     // pick first udp-endpoint resource
-    let res =
-        sc.workbook
-            .resources
-            .iter()
-            .find(|r| r.r#type == crate::scenario::scenario_types::ResourceType::UdpEndpoint)
-            .or_else(|| {
-                sc.workbook.resources.iter().find(|r| {
-                    r.r#type == crate::scenario::scenario_types::ResourceType::UdpEndpoint
-                })
-            })
-            .ok_or_else(|| "no udp-endpoint resource in workbook.resources".to_string())?;
+    let res = sc
+        .workbook
+        .resources
+        .iter()
+        .find(|r| r.r#type == ResourceType::UdpEndpoint)
+        .or_else(|| {
+            sc.workbook
+                .resources
+                .iter()
+                .find(|r| r.r#type == ResourceType::UdpEndpoint)
+        })
+        .ok_or_else(|| "no udp-endpoint resource in workbook.resources".to_string())?;
 
     let p = &res.properties;
     let peer_ip = parse_ipv4(p, &["peer_ip", "peer-ip", "peer_ipv4", "peer-ipv4"])
