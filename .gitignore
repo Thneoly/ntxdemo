@@ -301,4 +301,6 @@ $RECYCLE.BIN/
 
 *.wasm
 examples/dify
+scripts/oras/*.json
+tmp
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,macos,linux,windows,rust,python,powershell
