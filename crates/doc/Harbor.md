@@ -526,3 +526,33 @@ oras push <harbor-host>/<project>/<repo>:<version> \
 ```bash
 oras pull <harbor-host>/<project>/<repo>:<version> -o <out-dir>
 ```
+
+### 11.7（推荐）使用本仓库脚本（`scripts/oras/push.sh` / `scripts/oras/pull.sh`）
+
+如果你希望按“构建 WASM → 生成 catalog → ORAS push（双 layer）”这条固定流程走，可以直接用仓库自带脚本。
+
+在 repo 根目录执行：
+
+```bash
+export HARBOR_REGISTRY=192.168.31.138
+export HARBOR_REF="$HARBOR_REGISTRY/ntx/executor:v0.0.1"
+
+# 自签 HTTPS：指定 CA（没有自签/已进系统信任链可不设）
+export HARBOR_CA_FILE=/home/cc/Desktop/harbor/certs/harbor.crt
+
+# 登录（也可提前手动 `oras login`，然后不设置 HARBOR_USER/HARBOR_PASS）
+export HARBOR_USER=admin
+export HARBOR_PASS='***'
+
+# push：会生成 scripts/oras/actions-catalog.json 并以双 layer 方式上传
+bash scripts/oras/push.sh
+
+# pull：会拉取并落盘到 scripts/oras/tmp（可用 OUTPUT_DIR 覆盖）
+bash scripts/oras/pull.sh
+```
+
+可选参数：
+
+- `OUTPUT_DIR=/path/to/out`：覆盖 `pull.sh` 默认输出目录
+- `SKIP_BUILD=1 WASM_PATH=/path/to/component.wasm`：跳过 `push.sh` 的 `cargo build`，直接发布指定 wasm
+- `ORAS_INSECURE=1` / `ORAS_PLAIN_HTTP=1`：仅用于临时排查

@@ -1,13 +1,16 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { ReactFlowProvider } from 'reactflow';
-import App from './App';
+import { BrowserRouter } from 'react-router-dom';
+import AppRouter from './AppRouter';
 import './styles.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
-        <ReactFlowProvider>
-            <App />
-        </ReactFlowProvider>
+        <BrowserRouter>
+            <ReactFlowProvider>
+                <AppRouter />
+            </ReactFlowProvider>
+        </BrowserRouter>
     </React.StrictMode>
 );

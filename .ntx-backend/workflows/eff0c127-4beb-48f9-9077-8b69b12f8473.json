@@ -1,0 +1,65 @@
+{
+  "graph": {
+    "edges": [
+      {
+        "id": "e-c40478a4-9256-41f2-b7a0-3919e31c9c90",
+        "source": "n-48d1f414-8e1b-49d0-bd97-d085a62c174a",
+        "target": "n-0f152d74-9e86-49f8-bc16-f87691cfde5e"
+      },
+      {
+        "id": "e-dcf063da-959a-4d99-89f5-6d8dafac8c8f",
+        "source": "n-0f152d74-9e86-49f8-bc16-f87691cfde5e",
+        "target": "n-471725f8-0565-4995-b3ce-b3ef1cec850d"
+      }
+    ],
+    "nodes": [
+      {
+        "data": {
+          "label": "start",
+          "ntx_node_type": "start"
+        },
+        "id": "n-48d1f414-8e1b-49d0-bd97-d085a62c174a",
+        "position": {
+          "x": 165.3560925521171,
+          "y": 150.82572075138128
+        },
+        "type": "start"
+      },
+      {
+        "data": {
+          "label": "wait",
+          "ntx_node_type": "wait",
+          "on": {
+            "event": "packet-rx",
+            "match": {}
+          }
+        },
+        "id": "n-0f152d74-9e86-49f8-bc16-f87691cfde5e",
+        "position": {
+          "x": 453.0087033531415,
+          "y": -44.368966384150625
+        },
+        "type": "wait"
+      },
+      {
+        "data": {
+          "label": "end",
+          "ntx_node_type": "end"
+        },
+        "id": "n-471725f8-0565-4995-b3ce-b3ef1cec850d",
+        "position": {
+          "x": 738.2022578589962,
+          "y": 144.0431670569048
+        },
+        "type": "end"
+      }
+    ],
+    "schema_version": 1,
+    "viewport": {
+      "x": -175.99390179068882,
+      "y": 329.2653693790095,
+      "zoom": 1.401071568617814
+    }
+  },
+  "id": "eff0c127-4beb-48f9-9077-8b69b12f8473"
+}

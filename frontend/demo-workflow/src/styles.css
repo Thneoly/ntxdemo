@@ -74,6 +74,22 @@ body {
     align-items: center;
 }
 
+.navLinks {
+    display: inline-flex;
+    gap: 10px;
+    align-items: center;
+    font-size: 12px;
+}
+
+.navLinks a {
+    color: inherit;
+    text-decoration: underline;
+}
+
+.navLinks a:hover {
+    text-decoration: none;
+}
+
 button {
     border: 1px solid #d1d5db;
     background: #fff;

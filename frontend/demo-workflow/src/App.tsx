@@ -20,6 +20,17 @@ import type { WorkflowExport } from './workflow/types';
 
 import { parse as parseYaml } from 'yaml';
 
+import {
+    backendCatalogUrl,
+    defaultCatalogRef,
+    defaultBackendBaseUrl,
+    loadWorkflow,
+    saveWorkflow,
+    type BackendWorkflowDraft,
+} from './api/ntxBackend';
+
+import { Link } from 'react-router-dom';
+
 function toRecord(data: unknown): Record<string, unknown> {
     if (data && typeof data === 'object' && !Array.isArray(data)) {
         return data as Record<string, unknown>;
@@ -141,6 +152,9 @@ export default function App() {
     const [catalogUrl, setCatalogUrl] = useState<string>('');
     const [catalogLoading, setCatalogLoading] = useState<boolean>(false);
 
+    const [workflowId, setWorkflowId] = useState<string | null>(null);
+    const [backendStatus, setBackendStatus] = useState<string | null>(null);
+
     const {
         nodes,
         setNodes,
@@ -199,8 +213,36 @@ export default function App() {
 
     const actions = useMemo(() => (catalog ? summarizeActions(catalog) : []), [catalog]);
 
+    const hydrateDraftNodes = (draft: BackendWorkflowDraft['nodes']) => {
+        return draft.map((n) => ({
+            id: n.id,
+            type: n.type,
+            position: { x: n.position.x, y: n.position.y },
+            data: withNodeActions(n.id, n.data),
+        })) as Node[];
+    };
+
+    const hydrateDraftEdges = (draft: BackendWorkflowDraft['edges']) => {
+        return draft.map((e) => ({
+            id: e.id,
+            source: e.source,
+            target: e.target,
+        })) as Edge[];
+    };
+
     useEffect(() => {
         // Default catalog load on first mount.
+        // Prefer backend catalog URL when env provides a catalog ref; fallback to public/actions-catalog.json.
+        const ref = defaultCatalogRef();
+        const baseUrl = defaultBackendBaseUrl();
+        const preferredUrl = ref ? backendCatalogUrl(ref, { baseUrl }) : null;
+
+        if (preferredUrl) {
+            setCatalogUrl(preferredUrl);
+            void reloadCatalog({ kind: 'url', url: preferredUrl });
+            return;
+        }
+
         setCatalogLoading(true);
         loadCatalog()
             .then((c) => {
@@ -214,6 +256,67 @@ export default function App() {
             })
             .finally(() => setCatalogLoading(false));
     }, []);
+
+    useEffect(() => {
+        // Auto-load a workflow draft from backend when possible.
+        // Priority: URL param ?wf=... -> localStorage.
+        const params = new URLSearchParams(window.location.search);
+        const wfFromUrl = params.get('wf');
+        const stored = window.localStorage.getItem('ntx.demo_workflow.workflow_id');
+        const initialId = wfFromUrl?.trim() || stored?.trim() || null;
+        if (!initialId) return;
+
+        setBackendStatus('loading workflow…');
+        loadWorkflow(initialId)
+            .then((draft) => {
+                setWorkflowId(initialId);
+                window.localStorage.setItem('ntx.demo_workflow.workflow_id', initialId);
+                setNodes(hydrateDraftNodes(draft.nodes));
+                setEdges(hydrateDraftEdges(draft.edges));
+                if (draft.viewport) {
+                    rf.setViewport(draft.viewport, { duration: 0 });
+                }
+                setBackendStatus(`loaded workflow ${initialId}`);
+            })
+            .catch((e) => {
+                setBackendStatus(`backend load failed: ${e instanceof Error ? e.message : String(e)}`);
+            });
+    }, []);
+
+    useEffect(() => {
+        // Auto-save draft to backend (debounced). No new UI required.
+        const timer = window.setTimeout(() => {
+            const draft: BackendWorkflowDraft = {
+                schema_version: 1,
+                nodes: nodes.map((n: Node) => ({
+                    id: n.id,
+                    type: String(n.type ?? 'default'),
+                    position: { x: n.position.x, y: n.position.y },
+                    data: stripUiFields(toRecord(n.data)),
+                })),
+                edges: edges.map((e: Edge) => ({
+                    id: e.id,
+                    source: e.source,
+                    target: e.target,
+                })),
+                viewport: rf.getViewport(),
+            };
+
+            saveWorkflow(draft, { id: workflowId ?? undefined })
+                .then((resp) => {
+                    if (!workflowId) {
+                        setWorkflowId(resp.id);
+                        window.localStorage.setItem('ntx.demo_workflow.workflow_id', resp.id);
+                    }
+                    setBackendStatus(`saved workflow ${workflowId ?? resp.id}`);
+                })
+                .catch((e) => {
+                    setBackendStatus(`backend save failed: ${e instanceof Error ? e.message : String(e)}`);
+                });
+        }, 800);
+
+        return () => window.clearTimeout(timer);
+    }, [nodes, edges, rf, workflowId]);
 
     const reloadCatalog = async (src: CatalogSource) => {
         setCatalogLoading(true);
@@ -448,10 +551,22 @@ export default function App() {
     return (
         <div className="app">
             <aside className="sidebar">
-                <h1>Ntx Workflow Demo</h1>
+                <div className="toolbar" style={{ justifyContent: 'space-between' }}>
+                    <h1 style={{ margin: 0 }}>Ntx Workflow Demo</h1>
+                    <div className="navLinks">
+                        <Link to="/wasm">WASM</Link>
+                        <Link to="/health">Health</Link>
+                    </div>
+                </div>
                 <div className="muted">
                     Catalog: <code>public/actions-catalog.json</code>
                 </div>
+
+                {backendStatus ? (
+                    <div className="muted" style={{ marginTop: 6 }}>
+                        Backend: <code>{backendStatus}</code>
+                    </div>
+                ) : null}
 
                 <div className="card">
                     <div className="toolbar" style={{ justifyContent: 'space-between' }}>
