@@ -1,0 +1,42 @@
+use ntx:net-types/types@0.1.0;
+
+/// UDP 控制接口
+interface udp-socket-control {
+    use types.{ipv4-addr, mac-addr};
+    type resource-id = string;
+    type sock-id = u64;
+
+    record udp-socket {
+        owner: resource-id,
+        sock: sock-id,
+    }
+
+    record udp-bind {
+        local-ipv4: ipv4-addr,
+        local-mac: mac-addr,
+        local-udp-port: u16,
+        peer-ipv4: ipv4-addr,
+        peer-port: u16,
+        peer-mac: mac-addr,
+        ttl: option<u8>,
+    }
+
+    record frame-handle {
+        region: u32,
+        offset: u32,
+        len: u32,
+    }
+
+    variant socket-error {
+        invalid-argument,
+        invalid-state,
+        not-found,
+        no-space,
+        other(string),
+    }
+
+    create: func(name: string) -> result<udp-socket, socket-error>;
+    bind: func(sock: sock-id, b: udp-bind) -> result<_, socket-error>;
+    build-reply: func(sock: sock-id, payload: list<u8>) -> result<frame-handle, socket-error>;
+    tx: func(frame: frame-handle) -> result<u32, socket-error>;
+}

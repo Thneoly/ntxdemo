@@ -9,8 +9,9 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 wasmtime::component::bindgen!({
     world: "ntx:scenario-actions-executor/action-executor-component@0.1.0",
     path: [
+        "../../wit/net-types",
         "../../wit/eventbus",
-        "../../wit/types",
+        "../../wit/core-types",
         "../../wit/actions-executor",
     ],
     exports: { default: async },
