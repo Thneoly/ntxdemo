@@ -8,8 +8,9 @@ mod bindmod {
     wit_bindgen::generate!({
         world: "ntx:scenario-scheduler/scheduler-main@0.1.0",
         path: [
+            "../wit/net-types",
+            "../wit/core-types",
             "../wit/host",
-            "../wit/types",
             "../wit/eventbus",
             "../wit/actions-executor",
             "../wit/scheduler",

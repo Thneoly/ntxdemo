@@ -15,14 +15,14 @@ mod packet_engine_bindings {
     wasmtime::component::bindgen!({
         world: "ntx:host/hostnet",
         // This package has file-based deps under `plugins/wit/packet-engine/deps/*`.
-        path: ["component/wit/host"],
+        path: ["component/wit/net-types", "component/wit/host"],
         debug:true,
     });
 }
 use packet_engine_bindings::ntx::host::resources::{
     Host as ResourceHost, ResourceError, UdpIdentity,
 };
-use packet_engine_bindings::ntx::host::types::{Host as TypesHost, Ipv4Addr, MacAddr};
+use packet_engine_bindings::ntx::net_types::types::{Host as TypesHost, Ipv4Addr, MacAddr};
 // (types imported via WIT bindings in signatures; concrete conversions use ntx_network types)
 use packet_engine_bindings::ntx::host::rx_ring::{Host as RxRingHost, RxBatch as WitRxBatch};
 use packet_engine_bindings::ntx::host::udp_socket_control::{

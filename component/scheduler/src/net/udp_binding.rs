@@ -1,7 +1,8 @@
 //! UDP socket binding helpers used by scheduler.
 
 use crate::bindmod::ntx::core_types::types::ActionDef;
-use crate::bindmod::ntx::host::{resources, types, udp_socket_control};
+use crate::bindmod::ntx::host::{resources, udp_socket_control};
+use crate::bindmod::ntx::net_types::types;
 use crate::net::net_resources::ResourceType;
 
 /// Inject `socket_id` into an action's JSON params if missing.

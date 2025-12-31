@@ -5,7 +5,7 @@ wit_bindgen::generate!({
     world: "ntx:scenario-actions-executor/action-executor-component@0.1.0",
     path: [
         "../wit/eventbus",
-        "../wit/types",
+        "../wit/core-types",
         "../wit/actions-executor",
     ],
     generate_all,
