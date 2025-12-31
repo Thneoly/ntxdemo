@@ -121,3 +121,68 @@ Make sure you built the component with the same profile/target you’re referenc
 3. **稳定 capabilities 输出**
 	- 把 debug string 改成稳定的字符串枚举，避免前端依赖 Rust Debug 输出
 
+4. **与 Harbor（OCI Registry）入库流程集成（推荐：B 方案）**
+	- 平台从 Harbor 拉取 `component.wasm`（OCI artifact layer）
+	- 以 `wasm sha256` 作为唯一版本/主键：生成并落库 `catalog_json`，保证 catalog 与 wasm 强一致
+	- 可选：把 `actions-catalog.json` 作为第二个 layer 一起发布，用于离线分发/快速预览；但仍推荐平台以 `wasm_sha256` 为准做校验或重算
+
+## 与 Harbor 入库流程集成
+
+目标：平台从 Harbor 接收/拉取 `component.wasm` 后，在入库流程中调用本工具生成 catalog，并与 wasm 以同一主键落库，避免“catalog 与 wasm 不匹配”。
+
+### 约定（建议）
+
+- OCI Artifact layers：
+	- `component.wasm`（必须）
+	- `actions-catalog.json`（可选）
+- 主键：`wasm_sha256 = sha256(component.wasm bytes)`
+- 入库强一致策略（推荐其一）：
+	- **生成式（推荐）**：忽略远端 catalog layer（即使存在），平台总是基于拉取到的 wasm 运行 `actions-catalog-gen` 生成并落库
+	- **校验式**：若 artifact 同时包含 `actions-catalog.json` layer，则平台用同一个 wasm 生成一份 catalog，与 layer 内容做字节级/哈希比对，通过才入库
+
+### 可执行入库步骤（平台侧）
+
+1) 从 Harbor 拉取 artifact，拿到 `component.wasm`
+
+```bash
+oras pull <harbor-host>/<project>/<repo>:<version> -o <out-dir>
+```
+
+2) 计算 `wasm_sha256`（主键/去重 key）
+
+```bash
+sha256sum <out-dir>/component.wasm
+```
+
+3) 运行 generator 生成 catalog（建议写到临时目录或直接 stdout 管道）
+
+```bash
+cargo run -p actions-catalog-gen -- <out-dir>/component.wasm > <out-dir>/actions-catalog.json
+```
+
+4) 开启 DB 事务（示意）：
+	- upsert `wasm_artifacts(wasm_sha256, wasm_bytes, wasm_size, ...)`
+	- upsert `wasm_catalogs(wasm_sha256, schema_version, catalog_json, generated_at, ...)`
+
+5)（可选）建立 tag->digest/sha 映射表，便于按 `<version>` 查询、回滚与审计
+
+## 可选：把 catalog 作为第二个 layer 一起发布
+
+适用：需要“离线分发时同时带上可读的 catalog”、或者想让非平台侧工具快速查看 action 列表。
+
+建议仍以 wasm 作为真相源：平台入库时重算或校验 catalog，以保证强一致。
+
+### ORAS push 示例（WASM + Catalog 双 layer）
+
+```bash
+oras push <harbor-host>/<project>/<repo>:<version> \
+	--artifact-type application/vnd.ntx.action-executor.v1 \
+	component.wasm:application/wasm \
+	actions-catalog.json:application/json
+```
+
+说明：
+
+- 文件名（`component.wasm` / `actions-catalog.json`）建议固定，便于平台侧 pull 后按约定读取。
+- 内容类型（media type）可按你们治理策略细化（例如为 catalog 定义 `application/vnd.ntx.actions-catalog.v1+json`），但最小可用用 `application/json`。
+
