@@ -12,16 +12,11 @@ pushd scheduler
     cargo build --target wasm32-wasip2
 popd
 
-pushd core-types
-    cargo build --target wasm32-wasip2
-popd
-
 rm -rf wac/deps/component/*.wasm
 mkdir -p wac/deps/component/
 cp ../target/wasm32-wasip2/debug/actions_executor.wasm wac/deps/component/actions-executor.wasm
 cp ../target/wasm32-wasip2/debug/eventbus.wasm wac/deps/component/eventbus.wasm
 cp ../target/wasm32-wasip2/debug/scheduler.wasm wac/deps/component/scheduler.wasm
-cp ../target/wasm32-wasip2/debug/core_types.wasm wac/deps/component/core-types.wasm
 
 wac compose wac/scheduler-composition.wac   --deps-dir wac/deps   -o wac/scheduler-composed.wasm
 
