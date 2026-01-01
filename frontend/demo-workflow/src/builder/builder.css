@@ -1,0 +1,83 @@
+.builderGrid {
+    height: 100%;
+    display: grid;
+    grid-template-columns: 320px 1fr 360px;
+    gap: 12px;
+    padding: 12px;
+    box-sizing: border-box;
+}
+
+@media (max-width: 1120px) {
+    .builderGrid {
+        grid-template-columns: 300px 1fr;
+    }
+
+    .builderRightbar {
+        display: none;
+    }
+}
+
+@media (max-width: 900px) {
+    .builderGrid {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr auto;
+    }
+
+    .builderSidebar {
+        display: block;
+        border-right: none;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+    }
+
+    .builderContent {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+        background: var(--surface);
+    }
+
+    .builderRightbar {
+        display: block;
+        border-left: none;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+    }
+}
+
+.builderSidebar {
+    border-right: 1px solid var(--border);
+    padding: 12px;
+    overflow: auto;
+    background: var(--surface-muted);
+    border-radius: var(--radius);
+}
+
+.builderSidebar h1 {
+    font-size: 16px;
+    margin: 0 0 10px 0;
+}
+
+.builderSidebar .muted {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-bottom: 12px;
+}
+
+.builderContent {
+    position: relative;
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--surface);
+    border: 1px solid var(--border);
+}
+
+.builderRightbar {
+    border-left: 1px solid var(--border);
+    padding: 12px;
+    overflow: auto;
+    background: var(--surface-muted);
+    border-radius: var(--radius);
+}

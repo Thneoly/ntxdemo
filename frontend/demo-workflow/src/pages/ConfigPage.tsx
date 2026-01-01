@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 
 import { putConfigBundle, type PutConfigBundleResp } from '../api/ntxBackendConfigBundles';
 
@@ -98,14 +97,9 @@ export function ConfigPage() {
 
     return (
         <div className="page">
-            <div className="pageHeader">
-                <h1 className="pageTitle">Config Bundle</h1>
-                <div className="pageActions">
-                    <Link to="/">Home</Link>
-                    <Link to="/builder">Builder</Link>
-                    <Link to="/wasm">WASM</Link>
-                </div>
-            </div>
+            <h1 className="pageTitleBlock">
+                Config Bundle
+            </h1>
 
             <div className="card" style={{ maxWidth: 980 }}>
                 <div style={{ fontWeight: 600 }}>Bundle name</div>

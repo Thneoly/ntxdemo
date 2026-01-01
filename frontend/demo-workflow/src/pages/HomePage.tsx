@@ -1,5 +1,3 @@
-import { Link } from 'react-router-dom';
-
 import { getAuthUser } from '../auth';
 
 export function HomePage() {
@@ -7,15 +5,9 @@ export function HomePage() {
 
     return (
         <div className="page">
-            <div className="pageHeader">
-                <h1 className="pageTitle">Home</h1>
-                <div className="pageActions">
-                    <Link to="/builder">Builder</Link>
-                    <Link to="/config">Config</Link>
-                    <Link to="/wasm">WASM</Link>
-                    <Link to="/health">Health</Link>
-                </div>
-            </div>
+            <h1 className="pageTitleBlock">
+                Home
+            </h1>
 
             <div className="card" style={{ maxWidth: 520 }}>
                 <div style={{ fontWeight: 600 }}>Session</div>

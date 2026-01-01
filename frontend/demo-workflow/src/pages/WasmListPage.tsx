@@ -57,11 +57,12 @@ export function WasmListPage() {
 
     return (
         <div className="page">
-            <div className="pageHeader">
-                <h1 className="pageTitle">WASM Versions</h1>
-                <div className="pageActions">
+            <div className="pageTitleRow">
+                <h1 className="pageTitle">
+                    WASM Versions
+                </h1>
+                <div className="navLinks">
                     <Link to="/wasm/upload">Upload</Link>
-                    <Link to="/builder">Builder</Link>
                 </div>
             </div>
 

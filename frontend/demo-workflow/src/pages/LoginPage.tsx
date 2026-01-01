@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import { getAuthUser, login } from '../auth';
 
@@ -34,12 +34,9 @@ export function LoginPage() {
 
     return (
         <div className="page">
-            <div className="pageHeader">
-                <h1 className="pageTitle">Login</h1>
-                <div className="pageActions">
-                    <Link to="/">Home</Link>
-                </div>
-            </div>
+            <h1 className="pageTitleBlock">
+                Login
+            </h1>
 
             <div className="card" style={{ maxWidth: 520 }}>
                 <div className="muted" style={{ fontSize: 12 }}>

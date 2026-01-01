@@ -26,11 +26,12 @@ export function WasmUploadPage() {
 
     return (
         <div className="page">
-            <div className="pageHeader">
-                <h1 className="pageTitle">Upload WASM</h1>
-                <div className="pageActions">
+            <div className="pageTitleRow">
+                <h1 className="pageTitle">
+                    Upload WASM
+                </h1>
+                <div className="navLinks">
                     <Link to="/wasm">Back to list</Link>
-                    <Link to="/builder">Builder</Link>
                 </div>
             </div>
 

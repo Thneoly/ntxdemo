@@ -8,13 +8,14 @@ import ReactFlow, {
     type NodeMouseHandler,
     useReactFlow,
 } from 'reactflow';
-import 'reactflow/dist/style.css';
 
-import type { ActionsCatalog, ActionSummary } from './types/catalog';
-import { nodeTypes } from './components/nodeTypes';
-import { getNtxNodeType, useWorkflowEditor, type NtxNodeType, type ValidationIssue } from './hooks/useWorkflowEditor';
-import { buildScenarioYaml } from './workflow/export';
-import { validateExportBlocking, validateGraph } from './workflow/validate';
+import './builder.css';
+
+import type { ActionsCatalog, ActionSummary } from '../types/catalog';
+import { nodeTypes } from '../components/nodeTypes';
+import { getNtxNodeType, useWorkflowEditor, type NtxNodeType, type ValidationIssue } from '../hooks/useWorkflowEditor';
+import { buildScenarioYaml } from '../workflow/export';
+import { validateExportBlocking, validateGraph } from '../workflow/validate';
 
 import {
     backendCatalogUrl,
@@ -23,12 +24,12 @@ import {
     loadWorkflow,
     saveWorkflow,
     type BackendWorkflowDraft,
-} from './api/ntxBackend';
+} from '../api/ntxBackend';
 
-import { getWasmGeneratedCatalog, listWasmVersions, type WasmEntry } from './api/ntxBackendWasm';
-import { getConfigBundle, listConfigBundles, type ConfigBundleSummary, type GetConfigBundleResp } from './api/ntxBackendConfigBundles';
+import { getWasmGeneratedCatalog, listWasmVersions, type WasmEntry } from '../api/ntxBackendWasm';
+import { getConfigBundle, listConfigBundles, type ConfigBundleSummary, type GetConfigBundleResp } from '../api/ntxBackendConfigBundles';
 
-import { BuilderSidebar } from './builder/BuilderSidebar';
+import { BuilderSidebar } from './BuilderSidebar';
 import {
     createRunBundle,
     getRunBundleLogs,
@@ -39,8 +40,7 @@ import {
     type RunBundleLogsResp,
     type RunBundleStatusResp,
     type RunRunBundleResp,
-} from './api/ntxBackendRunBundles';
-import { Link } from 'react-router-dom';
+} from '../api/ntxBackendRunBundles';
 
 function toRecord(data: unknown): Record<string, unknown> {
     if (data && typeof data === 'object' && !Array.isArray(data)) {
@@ -104,7 +104,7 @@ function summarizeActions(catalog: ActionsCatalog): ActionSummary[] {
         .sort((a, b) => a.id.localeCompare(b.id));
 }
 
-export default function App() {
+export default function BuilderApp() {
     const rf = useReactFlow();
     const [catalog, setCatalog] = useState<ActionsCatalog | null>(null);
     const [catalogError, setCatalogError] = useState<string | null>(null);
@@ -604,7 +604,7 @@ export default function App() {
     };
 
     return (
-        <div className="app">
+        <div className="builderGrid">
             <BuilderSidebar
                 catalog={catalog}
                 catalogError={catalogError}
@@ -652,7 +652,7 @@ export default function App() {
                 onRefreshRunInfo={() => void refreshRunInfo()}
             />
 
-            <main className="content">
+            <main className="builderContent">
                 <ReactFlow
                     nodes={nodes}
                     edges={edges}
@@ -668,16 +668,9 @@ export default function App() {
                     <Controls />
                 </ReactFlow>
             </main>
-            <aside className="rightbar">
+            <aside className="builderRightbar">
                 <div className="toolbar" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
                     <h1 style={{ fontSize: 16, margin: 0 }}>Inspector</h1>
-                    <div className="navLinks">
-                        <Link to="/">Home</Link>
-                        <Link to="/builder">Builder</Link>
-                        <Link to="/wasm">WASM</Link>
-                        <Link to="/config">Config</Link>
-                        <Link to="/health">Health</Link>
-                    </div>
                 </div>
 
                 {validationIssues.length || exportBlockingIssues.length ? (

@@ -1,9 +1,9 @@
 export function HealthPage() {
     return (
         <div className="page">
-            <div className="pageHeader">
-                <h1 className="pageTitle">Health</h1>
-            </div>
+            <h1 className="pageTitleBlock">
+                Health
+            </h1>
             <div className="card" style={{ maxWidth: 420 }}>
                 <div style={{ fontWeight: 600 }}>Status</div>
                 <div className="muted" style={{ marginTop: 6 }}>

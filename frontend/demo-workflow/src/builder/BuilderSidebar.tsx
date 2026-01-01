@@ -43,7 +43,7 @@ export function BuilderSidebar(props: {
     const { catalog, catalogError, catalogLoading } = props;
 
     return (
-        <aside className="sidebar">
+        <aside className="builderSidebar">
             <div className="toolbar" style={{ justifyContent: 'space-between' }}>
                 <h1 style={{ margin: 0 }}>Ntx Workflow Demo</h1>
             </div>
