@@ -1,6 +1,7 @@
 import type { ActionsCatalog, ActionSummary } from '../types/catalog';
 import { ActionPalette } from '../components/ActionPalette';
 import type { NtxNodeType } from '../hooks/useWorkflowEditor';
+import type { ConfigBundleSummary, GetConfigBundleResp } from '../api/ntxBackendConfigBundles';
 
 export function BuilderSidebar(props: {
     catalog: ActionsCatalog | null;
@@ -9,6 +10,13 @@ export function BuilderSidebar(props: {
     wasmCatalogs: Array<{ sha256: string; size_bytes: number; refs: string[] }>;
     selectedWasmSha256: string | null;
     onSelectWasmSha256: (sha256: string) => void;
+
+    configBundles: ConfigBundleSummary[];
+    configBundlesLoading: boolean;
+    configBundlesError: string | null;
+    selectedConfigBundleName: string | null;
+    selectedConfigBundle: GetConfigBundleResp | null;
+    onSelectConfigBundleName: (name: string) => void;
     actions: ActionSummary[];
     onPickAction: (a: ActionSummary) => void;
     onAddQuickNode: (t: NtxNodeType) => void;
@@ -70,6 +78,80 @@ export function BuilderSidebar(props: {
                 {catalog?.executor_component?.digest ? (
                     <div className="muted" style={{ marginTop: 8 }}>
                         digest: <code>{catalog.executor_component.digest}</code>
+                    </div>
+                ) : null}
+            </div>
+
+            <div className="card">
+                <div className="toolbar" style={{ justifyContent: 'space-between' }}>
+                    <strong>Config Bundle</strong>
+                    <span className="muted">
+                        {props.configBundlesLoading
+                            ? 'loading…'
+                            : props.configBundles.length
+                                ? `${props.configBundles.length} item(s)`
+                                : 'empty'}
+                    </span>
+                </div>
+
+                <div style={{ marginTop: 10 }}>
+                    <select
+                        style={{ width: '100%' }}
+                        value={props.selectedConfigBundleName ?? ''}
+                        onChange={(e) => {
+                            const v = e.target.value;
+                            if (v) props.onSelectConfigBundleName(v);
+                        }}
+                        disabled={!props.configBundles.length}
+                    >
+                        <option value="" disabled>
+                            Select a bundle…
+                        </option>
+                        {props.configBundles.map((b) => (
+                            <option key={b.name} value={b.name}>
+                                {b.name}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+
+                {props.configBundlesError ? (
+                    <div style={{ marginTop: 8, color: '#b91c1c', fontSize: 12 }}>{props.configBundlesError}</div>
+                ) : null}
+
+                {props.selectedConfigBundle ? (
+                    <div className="muted" style={{ marginTop: 10, fontSize: 12 }}>
+                        <div>
+                            dir: <code>{props.selectedConfigBundle.dir}</code>
+                        </div>
+
+                        {props.selectedConfigBundle.scheduler_wasm_parse_error ? (
+                            <div style={{ marginTop: 6, color: '#b91c1c' }}>
+                                app.yaml parse error: <code>{props.selectedConfigBundle.scheduler_wasm_parse_error}</code>
+                            </div>
+                        ) : null}
+
+                        {props.selectedConfigBundle.scheduler_wasm ? (
+                            <>
+                                <div style={{ marginTop: 6 }}>
+                                    component_path:{' '}
+                                    <code>{props.selectedConfigBundle.scheduler_wasm.component_path ?? '—'}</code>
+                                </div>
+                                <div style={{ marginTop: 4 }}>
+                                    config_dir: <code>{props.selectedConfigBundle.scheduler_wasm.config_dir ?? '—'}</code>
+                                </div>
+                                <div style={{ marginTop: 4 }}>
+                                    entry_candidates:{' '}
+                                    <code>
+                                        {props.selectedConfigBundle.scheduler_wasm.entry_candidates.length
+                                            ? props.selectedConfigBundle.scheduler_wasm.entry_candidates.join(', ')
+                                            : '—'}
+                                    </code>
+                                </div>
+                            </>
+                        ) : (
+                            <div style={{ marginTop: 6 }}>scheduler.wasm: <code>—</code></div>
+                        )}
                     </div>
                 ) : null}
             </div>

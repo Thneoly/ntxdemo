@@ -16,7 +16,9 @@ use crate::{routes, state::AppState};
 pub const ROUTES: &[&str] = &[
     "GET /healthz",
     "GET /api/v1/routes",
+    "GET /api/v1/config-bundles",
     "POST /api/v1/config-bundles",
+    "GET /api/v1/config-bundles/{name}",
     "GET /api/v1/catalog",
     "POST /api/v1/catalog",
     "POST /api/v1/ingest",
@@ -35,7 +37,12 @@ pub fn build_app(state: Arc<AppState>, cors_any_origin: bool) -> Router {
         .route("/api/v1/routes", get(routes::meta::get_routes))
         .route(
             "/api/v1/config-bundles",
-            post(routes::config_bundles::put_config_bundle),
+            get(routes::config_bundles::list_config_bundles)
+                .post(routes::config_bundles::put_config_bundle),
+        )
+        .route(
+            "/api/v1/config-bundles/{name}",
+            get(routes::config_bundles::get_config_bundle),
         )
         .route(
             "/api/v1/catalog",

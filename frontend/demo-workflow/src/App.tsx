@@ -27,6 +27,7 @@ import {
 } from './api/ntxBackend';
 
 import { getWasmGeneratedCatalog, listWasmVersions, type WasmEntry } from './api/ntxBackendWasm';
+import { getConfigBundle, listConfigBundles, type ConfigBundleSummary, type GetConfigBundleResp } from './api/ntxBackendConfigBundles';
 
 import { BuilderSidebar } from './builder/BuilderSidebar';
 import { Link } from 'react-router-dom';
@@ -101,6 +102,12 @@ export default function App() {
 
     const [wasmCatalogs, setWasmCatalogs] = useState<WasmEntry[]>([]);
     const [selectedWasmSha256, setSelectedWasmSha256] = useState<string | null>(null);
+
+    const [configBundles, setConfigBundles] = useState<ConfigBundleSummary[]>([]);
+    const [configBundlesLoading, setConfigBundlesLoading] = useState<boolean>(false);
+    const [configBundlesError, setConfigBundlesError] = useState<string | null>(null);
+    const [selectedConfigBundleName, setSelectedConfigBundleName] = useState<string | null>(null);
+    const [selectedConfigBundle, setSelectedConfigBundle] = useState<GetConfigBundleResp | null>(null);
 
     const [workflowId, setWorkflowId] = useState<string | null>(null);
 
@@ -187,6 +194,33 @@ export default function App() {
             })
             .finally(() => setCatalogLoading(false));
     }, []);
+
+    useEffect(() => {
+        // Load available config bundles (for app.yaml wasm linkage).
+        setConfigBundlesLoading(true);
+        setConfigBundlesError(null);
+        listConfigBundles()
+            .then((items) => {
+                setConfigBundles(items);
+            })
+            .catch((e) => {
+                setConfigBundles([]);
+                setConfigBundlesError(e instanceof Error ? e.message : String(e));
+            })
+            .finally(() => setConfigBundlesLoading(false));
+    }, []);
+
+    const selectConfigBundle = async (name: string) => {
+        setSelectedConfigBundleName(name);
+        setSelectedConfigBundle(null);
+        try {
+            const b = await getConfigBundle(name);
+            setSelectedConfigBundle(b);
+            setConfigBundlesError(null);
+        } catch (e) {
+            setConfigBundlesError(e instanceof Error ? e.message : String(e));
+        }
+    };
 
     const selectWasmCatalog = async (sha256: string) => {
         setSelectedWasmSha256(sha256);
@@ -439,6 +473,14 @@ export default function App() {
                 wasmCatalogs={wasmCatalogs}
                 selectedWasmSha256={selectedWasmSha256}
                 onSelectWasmSha256={(sha) => void selectWasmCatalog(sha)}
+
+                configBundles={configBundles}
+                configBundlesLoading={configBundlesLoading}
+                configBundlesError={configBundlesError}
+                selectedConfigBundleName={selectedConfigBundleName}
+                selectedConfigBundle={selectedConfigBundle}
+                onSelectConfigBundleName={(name) => void selectConfigBundle(name)}
+
                 actions={actions}
                 onPickAction={addActionNode}
                 onAddQuickNode={addQuickNode}
