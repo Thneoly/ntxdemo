@@ -220,41 +220,21 @@ async fn read_tail_string(path: &Path, max_bytes: usize) -> anyhow::Result<(Stri
     }
 }
 
-async fn ensure_ntx_setcap(ntx_path: &Path) -> anyhow::Result<()> {
-    // Check current caps (best effort; getcap might be missing in some envs).
-    if let Ok(out) = Command::new("getcap").arg(ntx_path).output().await {
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            if s.contains("cap_net_raw") && s.contains("cap_net_admin") && s.contains("=ep") {
-                return Ok(());
-            }
-        }
-    }
-
-    // Apply required caps.
-    let out = Command::new("setcap")
-        .arg("cap_net_raw,cap_net_admin+ep")
-        .arg(ntx_path)
-        .output()
-        .await?;
-
+async fn check_ntx_has_required_caps(ntx_path: &Path) -> anyhow::Result<Option<bool>> {
+    // Returns:
+    // - Ok(Some(true))  => getcap succeeded and required caps are present
+    // - Ok(Some(false)) => getcap succeeded and required caps are missing
+    // - Ok(None)        => getcap is unavailable or failed; cannot verify
+    let out = match Command::new("getcap").arg(ntx_path).output().await {
+        Ok(o) => o,
+        Err(_e) => return Ok(None),
+    };
     if !out.status.success() {
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        anyhow::bail!(
-            "setcap failed (exit={}): {}{}{}",
-            out.status,
-            stdout.trim(),
-            if stdout.trim().is_empty() || stderr.trim().is_empty() {
-                ""
-            } else {
-                "\n"
-            },
-            stderr.trim(),
-        );
+        return Ok(None);
     }
-
-    Ok(())
+    let s = String::from_utf8_lossy(&out.stdout);
+    let ok = s.contains("cap_net_raw") && s.contains("cap_net_admin") && s.contains("=ep");
+    Ok(Some(ok))
 }
 
 pub async fn create_run_bundle(
@@ -646,18 +626,26 @@ pub async fn run_run_bundle(
     };
 
     // Ensure required capabilities for AF_PACKET execution.
-    // Note: this will only succeed if the backend process has privilege to call setcap.
+    // Root-friendly behavior: do NOT attempt to call `setcap` automatically.
+    // Instead, detect missing caps (when possible) and return an actionable hint.
     let resolved_path = std::path::Path::new(&resolved_ntx_bin);
     if resolved_path.exists() {
-        if let Err(e) = ensure_ntx_setcap(resolved_path).await {
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!(
-                    "failed to setcap on ntx binary ({}): {e}. Hint: run backend as root, or run `sudo setcap cap_net_raw,cap_net_admin+ep {}` once",
-                    resolved_path.display(),
-                    resolved_path.display(),
-                ),
-            );
+        match check_ntx_has_required_caps(resolved_path).await {
+            Ok(Some(true)) => {}
+            Ok(Some(false)) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!(
+                        "ntx binary is missing required Linux capabilities for AF_PACKET (CAP_NET_RAW + CAP_NET_ADMIN): {}. Fix once with: sudo setcap cap_net_raw,cap_net_admin+ep {} (note: rebuilding the binary clears caps)",
+                        resolved_path.display(),
+                        resolved_path.display(),
+                    ),
+                );
+            }
+            Ok(None) | Err(_) => {
+                // Can't verify (getcap missing or failed). Let it run; if it fails with
+                // EPERM, the user will see the same setcap hint in logs/docs.
+            }
         }
     }
 
