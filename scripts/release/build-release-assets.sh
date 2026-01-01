@@ -45,21 +45,24 @@ echo "==> Packaging instance config"
 )
 
 echo "==> Packaging WIT bundles for wit-deps"
-WIT_STAGING="$DIST_DIR/wit-deps"
+
+# Publish deps.toml as a standalone asset (reference for wit-deps-cli).
+cp "$ROOT_DIR/plugins/wit/core/deps.toml" "$DIST_DIR/ntx-wit-deps.toml"
+
+# Each WIT package folder becomes its own zip (e.g. ntx-wit-actions-executor.zip).
+WIT_STAGING="$DIST_DIR/wit"
 mkdir -p "$WIT_STAGING"
-
-# Primary local WIT packages used by the build.
-mkdir -p "$WIT_STAGING/wit"
-cp -R "$ROOT_DIR/component/wit"/* "$WIT_STAGING/wit/"
-
-# Include deps.toml as a reference for the downloader.
-mkdir -p "$WIT_STAGING/plugins/wit/core"
-cp "$ROOT_DIR/plugins/wit/core/deps.toml" "$WIT_STAGING/plugins/wit/core/deps.toml"
+cp -R "$ROOT_DIR/component/wit"/* "$WIT_STAGING/"
 
 (
   cd "$DIST_DIR"
-  zip -r "$DIST_DIR/ntx-wit-deps.zip" wit-deps >/dev/null
+  for dir in wit/*; do
+    [[ -d "$dir" ]] || continue
+    name="$(basename "$dir")"
+    zip -r "$DIST_DIR/ntx-wit-${name}.zip" "$dir" >/dev/null
+  done
 )
+
 rm -rf "$WIT_STAGING"
 
 echo "==> Generating checksums"
