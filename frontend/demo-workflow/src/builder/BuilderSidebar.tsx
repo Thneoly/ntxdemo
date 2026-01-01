@@ -23,8 +23,7 @@ export function BuilderSidebar(props: {
     errorCount: number;
     warningCount: number;
     exportBlockCount: number;
-    onCopyJson: () => Promise<void>;
-    onCopyScenarioYaml: () => Promise<void>;
+    onDownloadScenarioYaml: () => Promise<void>;
 }) {
     const { catalog, catalogError, catalogLoading } = props;
 
@@ -36,50 +35,6 @@ export function BuilderSidebar(props: {
 
             <div className="muted" style={{ marginTop: 6, marginBottom: 12 }}>
                 Builder
-            </div>
-
-            <div className="card">
-                <div className="toolbar" style={{ justifyContent: 'space-between' }}>
-                    <strong>Catalog</strong>
-                    <span className="muted">
-                        {catalogLoading ? 'loading…' : catalog ? `schema_version=${catalog.schema_version}` : 'not loaded'}
-                    </span>
-                </div>
-
-                {props.wasmCatalogs.length ? (
-                    <div style={{ marginTop: 10 }}>
-                        <div className="muted" style={{ marginBottom: 6 }}>
-                            From uploaded WASM
-                        </div>
-                        <select
-                            style={{ width: '100%' }}
-                            value={props.selectedWasmSha256 ?? ''}
-                            onChange={(e) => {
-                                const v = e.target.value;
-                                if (v) props.onSelectWasmSha256(v);
-                            }}
-                        >
-                            <option value="" disabled>
-                                Select a wasm…
-                            </option>
-                            {props.wasmCatalogs.map((w) => {
-                                const labelRef = w.refs[0] ? ` — ${w.refs[0]}` : '';
-                                return (
-                                    <option key={w.sha256} value={w.sha256}>
-                                        {w.sha256.slice(0, 12)}…{labelRef}
-                                    </option>
-                                );
-                            })}
-                        </select>
-                    </div>
-                ) : null}
-
-                {catalogError ? <div style={{ marginTop: 8, color: '#b91c1c', fontSize: 12 }}>{catalogError}</div> : null}
-                {catalog?.executor_component?.digest ? (
-                    <div className="muted" style={{ marginTop: 8 }}>
-                        digest: <code>{catalog.executor_component.digest}</code>
-                    </div>
-                ) : null}
             </div>
 
             <div className="card">
@@ -156,6 +111,50 @@ export function BuilderSidebar(props: {
                 ) : null}
             </div>
 
+            <div className="card">
+                <div className="toolbar" style={{ justifyContent: 'space-between' }}>
+                    <strong>Catalog</strong>
+                    <span className="muted">
+                        {catalogLoading ? 'loading…' : catalog ? `schema_version=${catalog.schema_version}` : 'not loaded'}
+                    </span>
+                </div>
+
+                {props.wasmCatalogs.length ? (
+                    <div style={{ marginTop: 10 }}>
+                        <div className="muted" style={{ marginBottom: 6 }}>
+                            From uploaded WASM
+                        </div>
+                        <select
+                            style={{ width: '100%' }}
+                            value={props.selectedWasmSha256 ?? ''}
+                            onChange={(e) => {
+                                const v = e.target.value;
+                                if (v) props.onSelectWasmSha256(v);
+                            }}
+                        >
+                            <option value="" disabled>
+                                Select a wasm…
+                            </option>
+                            {props.wasmCatalogs.map((w) => {
+                                const labelRef = w.refs[0] ? ` — ${w.refs[0]}` : '';
+                                return (
+                                    <option key={w.sha256} value={w.sha256}>
+                                        {w.sha256.slice(0, 12)}…{labelRef}
+                                    </option>
+                                );
+                            })}
+                        </select>
+                    </div>
+                ) : null}
+
+                {catalogError ? <div style={{ marginTop: 8, color: '#b91c1c', fontSize: 12 }}>{catalogError}</div> : null}
+                {catalog?.executor_component?.digest ? (
+                    <div className="muted" style={{ marginTop: 8 }}>
+                        digest: <code>{catalog.executor_component.digest}</code>
+                    </div>
+                ) : null}
+            </div>
+
             <ActionPalette actions={props.actions} onPick={props.onPickAction} />
 
             <div className="card">
@@ -179,15 +178,14 @@ export function BuilderSidebar(props: {
                                 ? `${props.errorCount} error(s), ${props.warningCount} warning(s)`
                                 : 'ok'}
                         </span>
-                        <button onClick={props.onCopyJson}>Copy JSON</button>
-                        <button disabled={props.exportBlockCount > 0} onClick={props.onCopyScenarioYaml}>
-                            Copy scenario.yaml
+                        <button disabled={props.exportBlockCount > 0} onClick={props.onDownloadScenarioYaml}>
+                            Download scenario.yaml
                         </button>
                     </div>
                 </div>
 
                 <div className="muted" style={{ marginTop: 6 }}>
-                    Copy graph JSON and scenario.yaml to clipboard.
+                    Download scenario.yaml.
                 </div>
 
                 {props.exportBlockCount > 0 ? (

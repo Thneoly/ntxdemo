@@ -421,16 +421,24 @@ export default function App() {
     const errorCount = validationIssues.filter((i: ValidationIssue) => i.level === 'error').length;
     const exportBlockCount = exportBlockingIssues.filter((i: ValidationIssue) => i.level === 'error').length;
 
-    const copyExportJson = async () => {
-        await navigator.clipboard.writeText(JSON.stringify(exported, null, 2));
+    const downloadTextFile = (filename: string, contents: string, mimeType: string) => {
+        const blob = new Blob([contents], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
     };
 
-    const copyScenarioYaml = async () => {
+    const downloadScenarioYaml = async () => {
         if (exportBlockCount > 0) {
             setUiWarning('Export blocked: fix blocking issues first (see Validation).');
             return;
         }
-        await navigator.clipboard.writeText(scenarioYaml);
+        downloadTextFile('scenario.yaml', scenarioYaml, 'text/yaml');
     };
 
     const applyWaitToSelected = () => {
@@ -487,8 +495,7 @@ export default function App() {
                 errorCount={errorCount}
                 warningCount={warningCount}
                 exportBlockCount={exportBlockCount}
-                onCopyJson={copyExportJson}
-                onCopyScenarioYaml={copyScenarioYaml}
+                onDownloadScenarioYaml={downloadScenarioYaml}
             />
 
             <main className="content">
