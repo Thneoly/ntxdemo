@@ -133,6 +133,15 @@ async fn ensure_scheduler_composed(
     for name in ["eventbus.wasm", "scheduler.wasm"] {
         let src = deps_src_component.join(name);
         let dst = deps_dst_component.join(name);
+
+        if !fs::try_exists(&src).await.unwrap_or(false) {
+            anyhow::bail!(
+                "missing WAC dep: {} (expected in {}). Hint: pull Harbor deps into this directory (docker: set PULL_WAC_DEPS_ON_START=1 and configure Harbor TLS via HARBOR_CA_FILE or ORAS_INSECURE=1; for http registries set ORAS_PLAIN_HTTP=1)",
+                src.display(),
+                deps_src_component.display()
+            );
+        }
+
         fs::copy(&src, &dst)
             .await
             .with_context(|| format!("copy {} -> {}", src.display(), dst.display()))?;

@@ -165,19 +165,45 @@ pub async fn oras_push_files(
     catalog_file: Option<&Path>,
     composed_wasm_file: Option<&Path>,
 ) -> anyhow::Result<()> {
+    let base_dir = wasm_file
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("wasm_file has no parent dir: {}", wasm_file.display()))?;
+
+    // ORAS rejects absolute file paths by default. All layer files we pass live in the same
+    // tmp dir, so run from that directory and pass relative filenames.
+    let rel_layer = |p: &Path, media_type: &str| -> anyhow::Result<String> {
+        let rel = p
+            .strip_prefix(base_dir)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .to_string();
+
+        if rel.starts_with('/') {
+            anyhow::bail!(
+                "refusing to pass absolute path to oras (base_dir={} path={} rel={})",
+                base_dir.display(),
+                p.display(),
+                rel
+            );
+        }
+
+        Ok(format!("{rel}:{media_type}"))
+    };
+
     let mut cmd = Command::new(&state.oras_bin);
-    cmd.arg("push")
+    cmd.current_dir(base_dir)
+        .arg("push")
         .arg(reference)
         .arg("--artifact-type")
         .arg(artifact_type)
-        .arg(format!("{}:application/wasm", wasm_file.display()));
+        .arg(rel_layer(wasm_file, "application/wasm")?);
 
     if let Some(catalog_file) = catalog_file {
-        cmd.arg(format!("{}:application/json", catalog_file.display()));
+        cmd.arg(rel_layer(catalog_file, "application/json")?);
     }
 
     if let Some(composed) = composed_wasm_file {
-        cmd.arg(format!("{}:application/wasm", composed.display()));
+        cmd.arg(rel_layer(composed, "application/wasm")?);
     }
 
     if let Some(ca) = state.harbor_ca_file.as_deref() {

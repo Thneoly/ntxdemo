@@ -622,6 +622,15 @@ pub async fn create_run_bundle(
         to_abs_string(&out_config_dir.join("resource").join("resources.yaml")),
     );
 
+    // Allow container deployments to override the AF_PACKET interface name.
+    // Host installs typically use `ntx0`, but containers usually have `eth0`.
+    if let Ok(iface) = std::env::var("NTX_KERNEL_IFACE") {
+        let iface = iface.trim();
+        if !iface.is_empty() {
+            yaml_set_string(&mut cfg_yaml, &["nic", "iface"], iface.to_string());
+        }
+    }
+
     // Ensure capture output ends up under run-bundle output/pcap.
     // If capture is enabled (or capture section exists), set capture.dir to an absolute path.
     let capture_enabled = yaml_get_bool(&cfg_yaml, &["capture", "enabled"]).unwrap_or(false);

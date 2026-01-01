@@ -1,0 +1,60 @@
+services:
+  ntx-backend:
+    build:
+      context: ..
+      dockerfile: .build/Dockerfile.backend
+    image: ntx-backend:local
+    ports:
+      - "9090:9090"
+    # ntx requires network capabilities (equivalent to: setcap cap_net_admin,cap_net_raw+ep)
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      # Backend bind/data
+      NTX_BACKEND_BIND: ${NTX_BACKEND_BIND:-0.0.0.0:9090}
+      NTX_BACKEND_DATA_DIR: ${NTX_BACKEND_DATA_DIR:-/data}
+
+      # Pull WAC deps (eventbus/scheduler wasm) on container start
+      PULL_WAC_DEPS_ON_START: ${PULL_WAC_DEPS_ON_START:-1}
+
+      # NIC used by `ntx` AF_PACKET capture (rewrites run-bundle config.yaml nic.iface).
+      # In a container, the default interface is usually `eth0`.
+      NTX_KERNEL_IFACE: ${NTX_KERNEL_IFACE:-eth0}
+
+      # Local Harbor settings for WASM pull/push (set these in your shell or a compose .env)
+      HARBOR_REGISTRY: ${HARBOR_REGISTRY:-192.168.31.138}
+      WASM_TAG: ${WASM_TAG:-v0.0.1}
+      HARBOR_EVENTBUS_REF: ${HARBOR_EVENTBUS_REF:-}
+      HARBOR_SCHEDULER_REF: ${HARBOR_SCHEDULER_REF:-}
+
+      # Optional auth/tls
+      HARBOR_CA_FILE: ${HARBOR_CA_FILE:-}
+      HARBOR_USER: ${HARBOR_USER:-}
+      HARBOR_PASS: ${HARBOR_PASS:-}
+      # Local dev default: allow self-signed Harbor certs.
+      # Set to 0 if you provide a trusted CA via HARBOR_CA_FILE.
+      ORAS_INSECURE: ${ORAS_INSECURE:-1}
+      ORAS_PLAIN_HTTP: ${ORAS_PLAIN_HTTP:-0}
+
+      # Backend uses this artifact type when pushing via /api/v1/wasm/push
+      WASM_ARTIFACT_TYPE: ${WASM_ARTIFACT_TYPE:-application/vnd.ntx.action-executor.v1}
+    volumes:
+      - ./certs:/app/certs:ro
+      - ntx_backend_data:/data
+
+  ntx-frontend:
+    build:
+      context: ..
+      dockerfile: .build/Dockerfile.frontend
+      args:
+        # Browser will call backend on the host-mapped port
+        VITE_NTX_BACKEND_URL: ${VITE_NTX_BACKEND_URL:-http://127.0.0.1:9090}
+    image: ntx-frontend:local
+    ports:
+      - "5173:80"
+    depends_on:
+      - ntx-backend
+
+volumes:
+  ntx_backend_data:

@@ -1,0 +1,21 @@
+# Rust
+/target
+**/target
+
+# Frontend
+**/node_modules
+**/dist
+
+# Local build artifacts
+/build
+/dist
+
+# Git / editor
+.git
+**/.DS_Store
+
+# Local env/secrets
+.env
+
+# Misc
+*.log

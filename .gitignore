@@ -4,6 +4,10 @@
 # Local environment overrides
 .env
 
+# Local docker-compose overrides (do not commit secrets)
+.build/.env
+.build/certs/
+
 ### Linux ###
 *~
 

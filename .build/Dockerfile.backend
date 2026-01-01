@@ -1,0 +1,83 @@
+# syntax=docker/dockerfile:1
+
+FROM rust:1.91.1-slim-bookworm AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+# `ntx-wac-compose` shells out to the `wac` CLI.
+# Install it in the builder stage and copy the binary into the runtime image.
+RUN cargo install wac-cli --locked
+
+# Copy full repo (simple + reliable for workspace builds)
+COPY . .
+
+# Build the binaries needed by the backend container.
+RUN cargo build --release -p ntx-backend -p ntx -p ntx-wac-compose
+
+
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    bash \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install ORAS CLI (used by backend /api/v1/wasm/push and by optional startup pulls)
+ARG ORAS_VERSION=1.2.0
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+    amd64) oras_arch=amd64 ;; \
+    arm64) oras_arch=arm64 ;; \
+    *) echo "unsupported arch: $arch"; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_${oras_arch}.tar.gz" \
+    -o /tmp/oras.tgz; \
+    tar -xzf /tmp/oras.tgz -C /tmp oras; \
+    install -m 755 /tmp/oras /usr/local/bin/oras; \
+    rm -f /tmp/oras.tgz /tmp/oras
+
+# Runtime layout
+WORKDIR /app
+
+# Binaries
+COPY --from=builder /src/target/release/ntx-backend /usr/local/bin/ntx-backend
+COPY --from=builder /src/target/release/ntx /usr/local/bin/ntx
+COPY --from=builder /src/target/release/ntx-wac-compose /usr/local/bin/ntx-wac-compose
+COPY --from=builder /usr/local/cargo/bin/wac /usr/local/bin/wac
+
+# WAC composition file (repo marker) and deps dir (WASM deps are pulled at runtime)
+RUN mkdir -p /app/component/wac/deps/component /app/config
+COPY --from=builder /src/component/wac/scheduler-composition.wac /app/component/wac/scheduler-composition.wac
+
+# Reuse existing ORAS pull helper
+COPY --from=builder /src/scripts/oras/pull.sh /usr/local/bin/ntx-oras-pull.sh
+RUN chmod +x /usr/local/bin/ntx-oras-pull.sh
+
+# Entrypoint
+COPY .build/backend-entrypoint.sh /usr/local/bin/ntx-backend-entrypoint.sh
+RUN chmod +x /usr/local/bin/ntx-backend-entrypoint.sh
+
+# Persist backend state
+VOLUME ["/data"]
+
+EXPOSE 9090
+
+ENV NTX_BACKEND_BIND=0.0.0.0:9090 \
+    NTX_BACKEND_DATA_DIR=/data \
+    PULL_WAC_DEPS_ON_START=0
+
+ENTRYPOINT ["/usr/local/bin/ntx-backend-entrypoint.sh"]
