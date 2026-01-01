@@ -24,7 +24,9 @@ export function AppLayout() {
                         </Link>
                         {loggedIn ? (
                             <nav className="navLinks">
-                                <NavLink to="/">Home</NavLink>
+                                <NavLink to="/" end>
+                                    Home
+                                </NavLink>
                                 <NavLink to="/wasm">WASM</NavLink>
                                 <NavLink to="/config">Config</NavLink>
                                 <NavLink to="/builder">Builder</NavLink>
@@ -36,13 +38,17 @@ export function AppLayout() {
                     <div className="appHeaderRight">
                         {loggedIn ? (
                             <>
-                                <span className="muted" style={{ fontSize: 12 }}>
+                                <span className="muted appHeaderUser">
                                     {user ?? '—'}
                                 </span>
-                                <button onClick={onLogout}>Logout</button>
+                                <button type="button" onClick={onLogout}>
+                                    Logout
+                                </button>
                             </>
                         ) : (
-                            <Link to="/login">Login</Link>
+                            <Link to="/login" className="buttonLike">
+                                Login
+                            </Link>
                         )}
                     </div>
                 </div>

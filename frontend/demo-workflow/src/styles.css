@@ -72,6 +72,10 @@ body {
     flex-wrap: wrap;
 }
 
+.appHeaderUser {
+    font-size: 12px;
+}
+
 .appBrand {
     font-weight: 800;
     text-decoration: none;
@@ -212,7 +216,8 @@ code {
     border-color: var(--border);
 }
 
-button {
+button,
+.buttonLike {
     border: 1px solid var(--border-strong);
     background: var(--surface);
     padding: 6px 10px;
@@ -221,12 +226,14 @@ button {
     transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
 }
 
-button:hover {
+button:hover,
+.buttonLike:hover {
     border-color: var(--border-hover);
     box-shadow: var(--shadow-sm);
 }
 
-button:active {
+button:active,
+.buttonLike:active {
     transform: translateY(0.5px);
 }
 
@@ -235,9 +242,16 @@ button:disabled {
     cursor: not-allowed;
 }
 
-button:focus-visible {
+button:focus-visible,
+.buttonLike:focus-visible {
     outline: 2px solid var(--focus);
     outline-offset: 2px;
+}
+
+.buttonLike {
+    display: inline-flex;
+    align-items: center;
+    text-decoration: none;
 }
 
 a {
