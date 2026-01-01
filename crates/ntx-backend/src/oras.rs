@@ -163,6 +163,7 @@ pub async fn oras_push_files(
     artifact_type: &str,
     wasm_file: &Path,
     catalog_file: Option<&Path>,
+    composed_wasm_file: Option<&Path>,
 ) -> anyhow::Result<()> {
     let mut cmd = Command::new(&state.oras_bin);
     cmd.arg("push")
@@ -173,6 +174,10 @@ pub async fn oras_push_files(
 
     if let Some(catalog_file) = catalog_file {
         cmd.arg(format!("{}:application/json", catalog_file.display()));
+    }
+
+    if let Some(composed) = composed_wasm_file {
+        cmd.arg(format!("{}:application/wasm", composed.display()));
     }
 
     if let Some(ca) = state.harbor_ca_file.as_deref() {

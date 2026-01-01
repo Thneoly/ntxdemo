@@ -43,6 +43,14 @@ pub struct BackendConfigFile {
 
     #[serde(default)]
     pub wasm_artifact_type: Option<String>,
+
+    /// Path to `ntx-wac-compose` binary.
+    #[serde(default)]
+    pub wac_compose_bin: Option<String>,
+
+    /// Working directory used to run `wac compose` (repo root).
+    #[serde(default)]
+    pub wac_compose_cwd: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +65,8 @@ pub struct BackendConfig {
     pub ingest_keep_tmp: bool,
     pub catalog_auto_ingest: bool,
     pub wasm_artifact_type: String,
+    pub wac_compose_bin: String,
+    pub wac_compose_cwd: Option<PathBuf>,
 }
 
 impl BackendConfig {
@@ -72,6 +82,8 @@ impl BackendConfig {
             ingest_keep_tmp: false,
             catalog_auto_ingest: false,
             wasm_artifact_type: "application/vnd.ntx.action-executor.v1".to_string(),
+            wac_compose_bin: "ntx-wac-compose".to_string(),
+            wac_compose_cwd: None,
         })
     }
 
@@ -96,6 +108,13 @@ impl BackendConfig {
         }
         if let Some(v) = cfg.wasm_artifact_type {
             self.wasm_artifact_type = v;
+        }
+
+        if let Some(v) = cfg.wac_compose_bin {
+            self.wac_compose_bin = v;
+        }
+        if let Some(v) = cfg.wac_compose_cwd {
+            self.wac_compose_cwd = Some(v);
         }
 
         if let Some(h) = cfg.harbor {
@@ -125,6 +144,8 @@ impl BackendConfig {
         ingest_keep_tmp: Option<bool>,
         catalog_auto_ingest: Option<bool>,
         wasm_artifact_type: Option<String>,
+        wac_compose_bin: Option<String>,
+        wac_compose_cwd: Option<PathBuf>,
     ) -> Self {
         if let Some(v) = bind {
             self.bind = v;
@@ -155,6 +176,12 @@ impl BackendConfig {
         }
         if let Some(v) = wasm_artifact_type {
             self.wasm_artifact_type = v;
+        }
+        if let Some(v) = wac_compose_bin {
+            self.wac_compose_bin = v;
+        }
+        if let Some(v) = wac_compose_cwd {
+            self.wac_compose_cwd = Some(v);
         }
         self
     }

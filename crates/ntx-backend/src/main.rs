@@ -40,6 +40,8 @@ async fn main() -> anyhow::Result<()> {
         ingest_keep_tmp,
         catalog_auto_ingest,
         wasm_artifact_type,
+        wac_compose_bin,
+        wac_compose_cwd,
     } = args;
 
     let file_cfg = load_config_file(&config)?;
@@ -56,6 +58,8 @@ async fn main() -> anyhow::Result<()> {
             ingest_keep_tmp,
             catalog_auto_ingest,
             wasm_artifact_type,
+            wac_compose_bin,
+            wac_compose_cwd,
         );
 
     ensure_layout(&cfg.data_dir).await?;
@@ -69,6 +73,8 @@ async fn main() -> anyhow::Result<()> {
         ingest_keep_tmp: cfg.ingest_keep_tmp,
         catalog_auto_ingest: cfg.catalog_auto_ingest,
         wasm_artifact_type: cfg.wasm_artifact_type,
+        wac_compose_bin: cfg.wac_compose_bin,
+        wac_compose_cwd: cfg.wac_compose_cwd,
     });
 
     let app = app::build_app(state, cfg.cors_any_origin);

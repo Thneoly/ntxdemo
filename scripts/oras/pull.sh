@@ -17,10 +17,10 @@ if [[ -z "${HARBOR_REF:-}" ]]; then
   echo "ERROR: HARBOR_REF is required." >&2
   echo "Example:" >&2
   echo "  export HARBOR_REGISTRY=192.168.31.138" >&2
-  echo "  export HARBOR_REF=\"$HARBOR_REGISTRY/ntx/executor:v0.0.1\"" >&2
   echo "  export HARBOR_CA_FILE=/home/cc/Desktop/harbor/certs/harbor.crt" >&2
   echo "  export HARBOR_USER=admin" >&2
-  echo "  export HARBOR_PASS='***'" >&2
+  echo "  export HARBOR_PASS='Harbor12345'" >&2
+  echo "  export HARBOR_REF=\"$HARBOR_REGISTRY/ntx/executor:v0.0.1\"" >&2
   echo "  $0" >&2
   exit 2
 fi

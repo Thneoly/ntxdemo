@@ -28,6 +28,12 @@ pub fn wasm_catalog_path(data_dir: &Path, wasm_sha256_hex: &str) -> PathBuf {
         .join(format!("{}.catalog.json", wasm_sha256_hex))
 }
 
+pub fn wasm_scheduler_composed_path(data_dir: &Path, wasm_sha256_hex: &str) -> PathBuf {
+    data_dir
+        .join("wasm")
+        .join(format!("{}.scheduler-composed.wasm", wasm_sha256_hex))
+}
+
 pub fn workflow_path(data_dir: &Path, id: &str) -> PathBuf {
     data_dir.join("workflows").join(format!("{}.json", id))
 }

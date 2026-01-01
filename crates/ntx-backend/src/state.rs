@@ -52,6 +52,16 @@ pub struct Args {
     /// Default artifact type when pushing wasm to Harbor.
     #[arg(long)]
     pub wasm_artifact_type: Option<String>,
+
+    /// Path to `ntx-wac-compose` binary.
+    #[arg(long)]
+    pub wac_compose_bin: Option<String>,
+
+    /// Working directory used to run `wac compose` (repo root).
+    ///
+    /// If unset, the backend will try to auto-detect by walking up from current_dir.
+    #[arg(long)]
+    pub wac_compose_cwd: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -64,6 +74,9 @@ pub struct AppState {
     pub ingest_keep_tmp: bool,
     pub catalog_auto_ingest: bool,
     pub wasm_artifact_type: String,
+
+    pub wac_compose_bin: String,
+    pub wac_compose_cwd: Option<PathBuf>,
 }
 
 pub async fn ensure_layout(data_dir: &Path) -> anyhow::Result<()> {

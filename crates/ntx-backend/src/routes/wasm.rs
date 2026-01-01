@@ -12,14 +12,149 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::fs;
+use tokio::process::Command;
 use tracing::error;
 
 use crate::{
     oras::{maybe_oras_login, oras_push_files},
     respond::json_error,
     state::AppState,
-    util::{looks_like_sha256_hex, ref_has_registry_and_repo, wasm_catalog_path, wasm_path},
+    util::{
+        looks_like_sha256_hex, ref_has_registry_and_repo, wasm_catalog_path, wasm_path,
+        wasm_scheduler_composed_path,
+    },
 };
+
+const DEFAULT_WAC_FILE: &str = "component/wac/scheduler-composition.wac";
+const DEFAULT_WAC_DEPS_COMPONENT_DIR: &str = "component/wac/deps/component";
+
+fn find_repo_root(explicit: Option<&PathBuf>) -> anyhow::Result<PathBuf> {
+    let has_marker = |p: &Path| p.join(DEFAULT_WAC_FILE).is_file();
+
+    if let Some(p) = explicit {
+        if has_marker(p) {
+            return Ok(p.clone());
+        }
+        anyhow::bail!(
+            "wac_compose_cwd does not look like repo root (missing {}): {}",
+            DEFAULT_WAC_FILE,
+            p.display()
+        );
+    }
+
+    let mut cur = std::env::current_dir().context("get current_dir")?;
+    for _ in 0..8 {
+        if has_marker(&cur) {
+            return Ok(cur);
+        }
+        if !cur.pop() {
+            break;
+        }
+    }
+
+    anyhow::bail!(
+        "failed to auto-detect repo root (could not find {} by walking up from current_dir); set --wac-compose-cwd",
+        DEFAULT_WAC_FILE
+    )
+}
+
+async fn run_ntx_wac_compose(
+    state: &AppState,
+    repo_root: &Path,
+    deps_dir: &Path,
+    out: &Path,
+) -> anyhow::Result<()> {
+    let args = [
+        "--cwd",
+        repo_root
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("repo_root not valid utf-8"))?,
+        "--wac-file",
+        DEFAULT_WAC_FILE,
+        "--deps-dir",
+        deps_dir
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("deps_dir not valid utf-8"))?,
+        "-o",
+        out.to_str()
+            .ok_or_else(|| anyhow::anyhow!("out not valid utf-8"))?,
+    ];
+
+    // Prefer running the binary directly; fall back to `cargo run` if not found.
+    let direct = Command::new(&state.wac_compose_bin)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await;
+
+    let output = match direct {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Command::new("cargo")
+            .args(["run", "-p", "ntx-wac-compose", "--"])
+            .args(args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .await
+            .context("run cargo -p ntx-wac-compose")?,
+        Err(e) => return Err(e).context("spawn ntx-wac-compose"),
+    };
+
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "ntx-wac-compose failed (exit={})\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            output.status,
+            stdout.trim(),
+            stderr.trim()
+        );
+    }
+
+    Ok(())
+}
+
+async fn ensure_scheduler_composed(
+    state: &AppState,
+    executor_wasm: &Path,
+    out_file: &Path,
+    tmp_deps_root: &Path,
+) -> anyhow::Result<()> {
+    let repo_root = find_repo_root(state.wac_compose_cwd.as_ref())?;
+
+    let deps_src_component = repo_root.join(DEFAULT_WAC_DEPS_COMPONENT_DIR);
+    let deps_dst_component = tmp_deps_root.join("component");
+    fs::create_dir_all(&deps_dst_component)
+        .await
+        .with_context(|| format!("create deps dir {}", deps_dst_component.display()))?;
+
+    // Copy static components.
+    for name in ["eventbus.wasm", "scheduler.wasm"] {
+        let src = deps_src_component.join(name);
+        let dst = deps_dst_component.join(name);
+        fs::copy(&src, &dst)
+            .await
+            .with_context(|| format!("copy {} -> {}", src.display(), dst.display()))?;
+    }
+
+    // Inject uploaded executor as `actions-executor.wasm`.
+    let injected = deps_dst_component.join("actions-executor.wasm");
+    fs::copy(executor_wasm, &injected)
+        .await
+        .with_context(|| format!("copy executor -> {}", injected.display()))?;
+
+    run_ntx_wac_compose(state, &repo_root, tmp_deps_root, out_file).await?;
+
+    if !fs::try_exists(out_file).await.unwrap_or(false) {
+        anyhow::bail!(
+            "compose reported success but output missing: {}",
+            out_file.display()
+        );
+    }
+
+    Ok(())
+}
 
 pub async fn get_wasm_catalog(
     State(state): State<std::sync::Arc<AppState>>,
@@ -215,6 +350,9 @@ pub struct UploadWasmResp {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub catalog_file: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub composed_file: Option<String>,
 }
 
 pub async fn upload_wasm(
@@ -296,6 +434,7 @@ pub async fn upload_wasm(
     // Best-effort: generate action catalog for this wasm and cache it for push.
     let catalog_file_path = wasm_catalog_path(&state.data_dir, &sha256_hex);
     let mut catalog_file_resp: Option<String> = None;
+    let mut composed_file_resp: Option<String> = None;
     match actions_catalog_gen::load_catalog_from_component(&out).await {
         Ok(catalog) => {
             let v = match serde_json::to_value(catalog) {
@@ -326,6 +465,32 @@ pub async fn upload_wasm(
         }
     }
 
+    // Best-effort: after generating catalog, compose scheduler-composed.wasm for this executor.
+    // Do not fail upload if this step fails; push will enforce it when include_catalog=true.
+    if catalog_file_resp.is_some() {
+        let composed_cache = wasm_scheduler_composed_path(&state.data_dir, &sha256_hex);
+        let tmp_deps_root = state
+            .data_dir
+            .join("tmp")
+            .join(format!("compose-{}", uuid::Uuid::new_v4()));
+
+        if let Err(e) = fs::create_dir_all(&tmp_deps_root).await {
+            error!(%e, dir = %tmp_deps_root.display(), "create compose tmp dir failed");
+        } else {
+            if let Err(e) =
+                ensure_scheduler_composed(&state, &out, &composed_cache, &tmp_deps_root).await
+            {
+                error!(%e, "compose scheduler-composed.wasm failed");
+            } else {
+                composed_file_resp = Some(composed_cache.display().to_string());
+            }
+
+            if !state.ingest_keep_tmp {
+                let _ = fs::remove_dir_all(&tmp_deps_root).await;
+            }
+        }
+    }
+
     (
         StatusCode::OK,
         Json(UploadWasmResp {
@@ -333,6 +498,8 @@ pub async fn upload_wasm(
             size_bytes: wasm_bytes.len() as u64,
             file: out.display().to_string(),
             catalog_file: catalog_file_resp,
+            // Backward-compatible: ignore in older frontends.
+            composed_file: composed_file_resp,
         }),
     )
         .into_response()
@@ -433,6 +600,7 @@ pub async fn push_wasm(
     }
 
     let mut catalog_path_opt: Option<PathBuf> = None;
+    let mut composed_path_opt: Option<PathBuf> = None;
     if body.include_catalog {
         // Prefer the cached catalog generated at upload time.
         let cached_catalog = wasm_catalog_path(&state.data_dir, &body.wasm_sha256);
@@ -496,6 +664,34 @@ pub async fn push_wasm(
                 }
             }
         }
+
+        // After catalog is ensured, compose scheduler-composed.wasm with this executor.
+        let composed_for_push = tmp_dir.join("scheduler-composed.wasm");
+        let deps_root = tmp_dir.join("wac-deps");
+        if let Err(e) = fs::create_dir_all(&deps_root).await {
+            let _ = fs::remove_dir_all(&tmp_dir).await;
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create wac deps dir failed: {e}"),
+            );
+        }
+
+        if let Err(e) =
+            ensure_scheduler_composed(&state, &wasm_copy, &composed_for_push, &deps_root).await
+        {
+            let _ = fs::remove_dir_all(&tmp_dir).await;
+            return json_error(
+                StatusCode::BAD_GATEWAY,
+                format!("compose scheduler-composed.wasm failed: {e}"),
+            );
+        }
+
+        // Best-effort cache write.
+        let composed_cache = wasm_scheduler_composed_path(&state.data_dir, &body.wasm_sha256);
+        if let Err(e) = fs::copy(&composed_for_push, &composed_cache).await {
+            error!(%e, file = %composed_cache.display(), "write cached composed wasm failed");
+        }
+        composed_path_opt = Some(composed_for_push);
     }
 
     let push_result = oras_push_files(
@@ -504,6 +700,7 @@ pub async fn push_wasm(
         &artifact_type,
         &wasm_copy,
         catalog_path_opt.as_deref(),
+        composed_path_opt.as_deref(),
     )
     .await;
 
