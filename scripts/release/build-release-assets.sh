@@ -34,35 +34,93 @@ cp "$BACKEND_BIN_SRC" "$DIST_DIR/ntx-backend-${TARGET_TRIPLE}"
 chmod +x "$DIST_DIR/ntx-${TARGET_TRIPLE}" "$DIST_DIR/ntx-backend-${TARGET_TRIPLE}"
 
 echo "==> Packaging instance config"
-# Keep folder structure under `config/`.
+# Flatten: app.yaml, config.yaml, resource/ at archive root.
 (
-  cd "$ROOT_DIR"
-  zip -r "$DIST_DIR/ntx-config.zip" \
-    config/app.yaml \
-    config/config.yaml \
-    config/resource \
+  cd "$ROOT_DIR/config"
+  zip -r "$DIST_DIR/config.zip" \
+    app.yaml \
+    config.yaml \
+    resource \
     >/dev/null
 )
 
-echo "==> Packaging WIT bundles for wit-deps"
+# Also ship backend config alongside instance config.
+# Put it at the archive root (no extra directories) so it extracts under /tmp/ntx/config.
+BACKEND_CONF_SRC="$ROOT_DIR/crates/ntx-backend/conf/ntx-backend.yaml"
+if [[ -f "$BACKEND_CONF_SRC" ]]; then
+  zip -j "$DIST_DIR/config.zip" "$BACKEND_CONF_SRC" >/dev/null
+else
+  echo "warning: backend config not found at $BACKEND_CONF_SRC" >&2
+fi
 
-# Publish deps.toml as a standalone asset (reference for wit-deps-cli).
-cp "$ROOT_DIR/plugins/wit/core/deps.toml" "$DIST_DIR/ntx-wit-deps.toml"
+echo "==> Packaging WIT bundles"
 
-# Each WIT package folder becomes its own zip (e.g. ntx-wit-actions-executor.zip).
-WIT_STAGING="$DIST_DIR/wit"
-mkdir -p "$WIT_STAGING"
-cp -R "$ROOT_DIR/component/wit"/* "$WIT_STAGING/"
+# Each WIT package folder becomes its own tar.gz.
+# Structure mirrors GitHub archive tarballs like:
+#   wasi-sockets-0.2.6/wit/...
+# We create:
+#   ntx-<version>/wit/<folder>/...
+VERSION_TAG="${GITHUB_REF_NAME:-}"
 
-(
-  cd "$WIT_STAGING"
-  for dir in *; do
-    [[ -d "$dir" ]] || continue
-    zip -r "$DIST_DIR/ntx-wit-${dir}.zip" "$dir" >/dev/null
-  done
+# Prefer an exact tag on HEAD when available.
+if [[ -z "$VERSION_TAG" ]]; then
+  VERSION_TAG="$(git describe --tags --exact-match 2>/dev/null || true)"
+fi
+
+# For local packaging (no tag), fall back to the root crate version.
+if [[ -z "$VERSION_TAG" ]]; then
+  MANIFEST_VERSION="$(awk -F'"' '/^version = "[^"]+"/{print $2; exit}' "$ROOT_DIR/Cargo.toml" || true)"
+  if [[ -n "$MANIFEST_VERSION" ]]; then
+    VERSION_TAG="v${MANIFEST_VERSION}"
+  fi
+fi
+
+# Last resort: something stable-ish.
+if [[ -z "$VERSION_TAG" ]]; then
+  VERSION_TAG="$(git describe --tags --always 2>/dev/null || echo v0.0.0)"
+fi
+
+VERSION="${VERSION_TAG#v}"
+
+TMP_WIT_ROOT="$DIST_DIR/_wit_pkg"
+rm -rf "$TMP_WIT_ROOT"
+mkdir -p "$TMP_WIT_ROOT"
+
+# Only publish selected WIT packages.
+WIT_ALLOWLIST=(
+  "actions-executor"
+  "core-types"
+  "eventbus"
 )
 
-rm -rf "$WIT_STAGING"
+for src_dir in "$ROOT_DIR/component/wit"/*; do
+  [[ -d "$src_dir" ]] || continue
+  folder="$(basename "$src_dir")"
+
+  allowed=false
+  for allowed_folder in "${WIT_ALLOWLIST[@]}"; do
+    if [[ "$folder" == "$allowed_folder" ]]; then
+      allowed=true
+      break
+    fi
+  done
+  if [[ "$allowed" != "true" ]]; then
+    continue
+  fi
+
+  # Match GitHub archive behavior: the top-level directory inside the tarball
+  # equals the archive base name.
+  ARCHIVE_ROOT="ntx-wit-${folder}-${VERSION}"
+
+  rm -rf "$TMP_WIT_ROOT/$ARCHIVE_ROOT"
+  mkdir -p "$TMP_WIT_ROOT/$ARCHIVE_ROOT/wit"
+  # Since each tarball is already per-folder, avoid an extra '<folder>/' layer.
+  cp -a "$src_dir/." "$TMP_WIT_ROOT/$ARCHIVE_ROOT/wit/"
+
+  tar -czf "$DIST_DIR/ntx-wit-${folder}-${VERSION}.tar.gz" -C "$TMP_WIT_ROOT" "$ARCHIVE_ROOT"
+done
+
+rm -rf "$TMP_WIT_ROOT"
 
 echo "==> Generating checksums"
 (

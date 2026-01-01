@@ -13,6 +13,9 @@ repo_root="$(cd "$script_dir/../.." && pwd)"
 #   ORAS_INSECURE=1   (optional) pass --insecure
 #   ORAS_PLAIN_HTTP=1 (optional) pass --plain-http
 #   ARTIFACT_TYPE     (optional) default: application/vnd.ntx.action-executor.v1
+#   OUTPUT_DIR        (optional) directory to place generated/picked artifacts before pushing
+#                    default: scripts/oras/
+#   PUSH_WASM_ONLY=1  (optional) push only the wasm file (no catalog json)
 #
 # Build / inputs:
 #   SKIP_BUILD=1      skip cargo build & copy
@@ -36,14 +39,20 @@ fi
 
 artifact_type="${ARTIFACT_TYPE:-application/vnd.ntx.action-executor.v1}"
 
-out_wasm="$script_dir/actions_executor.wasm"
-out_catalog="$script_dir/actions-catalog.json"
+output_dir="${OUTPUT_DIR:-$script_dir}"
+mkdir -p "$output_dir"
+
+out_wasm="$output_dir/actions_executor.wasm"
+out_catalog="$output_dir/actions-catalog.json"
 
 if [[ "${SKIP_BUILD:-}" == "1" ]]; then
   if [[ -z "${WASM_PATH:-}" ]]; then
     echo "ERROR: SKIP_BUILD=1 requires WASM_PATH=/path/to/actions_executor.wasm" >&2
     exit 2
   fi
+
+  # Preserve filename so callers can push eventbus.wasm / scheduler.wasm, etc.
+  out_wasm="$output_dir/$(basename "$WASM_PATH")"
   cp "$WASM_PATH" "$out_wasm"
 else
   pushd "$repo_root" >/dev/null
@@ -56,9 +65,11 @@ else
   popd >/dev/null
 fi
 
-pushd "$repo_root" >/dev/null
-  cargo run -p actions-catalog-gen -- "$out_wasm" "$out_catalog"
-popd >/dev/null
+if [[ "${PUSH_WASM_ONLY:-}" != "1" ]]; then
+  pushd "$repo_root" >/dev/null
+    cargo run -p actions-catalog-gen -- "$out_wasm" "$out_catalog"
+  popd >/dev/null
+fi
 
 login_args=()
 push_args=()
@@ -84,7 +95,17 @@ if [[ -n "${HARBOR_USER:-}" ]]; then
   fi
 fi
 
-oras push "${push_args[@]}" "$HARBOR_REF" \
-  --artifact-type "$artifact_type" \
-  "$out_wasm:application/wasm" \
-  "$out_catalog:application/json"
+if [[ "${PUSH_WASM_ONLY:-}" == "1" ]]; then
+  pushd "$output_dir" >/dev/null
+    oras push "${push_args[@]}" "$HARBOR_REF" \
+      --artifact-type "$artifact_type" \
+      "$(basename "$out_wasm"):application/wasm"
+  popd >/dev/null
+else
+  pushd "$output_dir" >/dev/null
+    oras push "${push_args[@]}" "$HARBOR_REF" \
+      --artifact-type "$artifact_type" \
+      "$(basename "$out_wasm"):application/wasm" \
+      "$(basename "$out_catalog"):application/json"
+  popd >/dev/null
+fi
