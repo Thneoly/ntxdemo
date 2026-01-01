@@ -1,16 +1,19 @@
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use clap::Parser;
 use tokio::fs;
+use tokio::{process::Child, sync::Mutex};
 
 #[derive(Debug, Parser)]
 #[command(name = "ntx-backend")]
 pub struct Args {
     /// YAML config file path.
-    #[arg(long, default_value = "config/ntx-backend.yaml")]
+    #[arg(long, default_value = "crates/ntx-backend/conf/ntx-backend.yaml")]
     pub config: PathBuf,
 
     /// Bind address.
@@ -62,6 +65,10 @@ pub struct Args {
     /// If unset, the backend will try to auto-detect by walking up from current_dir.
     #[arg(long)]
     pub wac_compose_cwd: Option<PathBuf>,
+
+    /// Path to `ntx` binary used for run-bundles execution.
+    #[arg(long)]
+    pub ntx_bin: Option<String>,
 }
 
 #[derive(Clone)]
@@ -77,11 +84,27 @@ pub struct AppState {
 
     pub wac_compose_bin: String,
     pub wac_compose_cwd: Option<PathBuf>,
+
+    pub ntx_bin: String,
+
+    /// In-memory process table for run-bundles.
+    ///
+    /// Minimal lifecycle management: start, status, stop, logs.
+    pub run_processes: Arc<Mutex<HashMap<String, RunProcess>>>,
+}
+
+pub struct RunProcess {
+    pub child: Child,
+    pub run_dir: PathBuf,
+    pub command: Vec<String>,
+    pub stdout_path: PathBuf,
+    pub stderr_path: PathBuf,
 }
 
 pub async fn ensure_layout(data_dir: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(data_dir.join("catalog")).await?;
     fs::create_dir_all(data_dir.join("config-bundles")).await?;
+    fs::create_dir_all(data_dir.join("run-bundles")).await?;
     fs::create_dir_all(data_dir.join("tmp")).await?;
     fs::create_dir_all(data_dir.join("wasm")).await?;
     fs::create_dir_all(data_dir.join("workflows")).await?;

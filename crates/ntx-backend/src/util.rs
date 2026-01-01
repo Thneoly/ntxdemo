@@ -38,6 +38,10 @@ pub fn workflow_path(data_dir: &Path, id: &str) -> PathBuf {
     data_dir.join("workflows").join(format!("{}.json", id))
 }
 
+pub fn run_bundle_dir(data_dir: &Path, id: &str) -> PathBuf {
+    data_dir.join("run-bundles").join(id)
+}
+
 pub fn looks_like_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
 }

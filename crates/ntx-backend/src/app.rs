@@ -19,6 +19,11 @@ pub const ROUTES: &[&str] = &[
     "GET /api/v1/config-bundles",
     "POST /api/v1/config-bundles",
     "GET /api/v1/config-bundles/{name}",
+    "POST /api/v1/run-bundles",
+    "POST /api/v1/run-bundles/{id}/run",
+    "GET /api/v1/run-bundles/{id}/status",
+    "POST /api/v1/run-bundles/{id}/stop",
+    "GET /api/v1/run-bundles/{id}/logs",
     "GET /api/v1/catalog",
     "POST /api/v1/catalog",
     "POST /api/v1/ingest",
@@ -43,6 +48,26 @@ pub fn build_app(state: Arc<AppState>, cors_any_origin: bool) -> Router {
         .route(
             "/api/v1/config-bundles/{name}",
             get(routes::config_bundles::get_config_bundle),
+        )
+        .route(
+            "/api/v1/run-bundles",
+            post(routes::run_bundles::create_run_bundle),
+        )
+        .route(
+            "/api/v1/run-bundles/{id}/run",
+            post(routes::run_bundles::run_run_bundle),
+        )
+        .route(
+            "/api/v1/run-bundles/{id}/status",
+            get(routes::run_bundles::get_run_bundle_status),
+        )
+        .route(
+            "/api/v1/run-bundles/{id}/stop",
+            post(routes::run_bundles::stop_run_bundle),
+        )
+        .route(
+            "/api/v1/run-bundles/{id}/logs",
+            get(routes::run_bundles::get_run_bundle_logs),
         )
         .route(
             "/api/v1/catalog",

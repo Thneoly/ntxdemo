@@ -15,7 +15,6 @@ import { nodeTypes } from './components/nodeTypes';
 import { getNtxNodeType, useWorkflowEditor, type NtxNodeType, type ValidationIssue } from './hooks/useWorkflowEditor';
 import { buildScenarioYaml } from './workflow/export';
 import { validateExportBlocking, validateGraph } from './workflow/validate';
-import type { WorkflowExport } from './workflow/types';
 
 import {
     backendCatalogUrl,
@@ -30,6 +29,17 @@ import { getWasmGeneratedCatalog, listWasmVersions, type WasmEntry } from './api
 import { getConfigBundle, listConfigBundles, type ConfigBundleSummary, type GetConfigBundleResp } from './api/ntxBackendConfigBundles';
 
 import { BuilderSidebar } from './builder/BuilderSidebar';
+import {
+    createRunBundle,
+    getRunBundleLogs,
+    getRunBundleStatus,
+    runRunBundle,
+    stopRunBundle,
+    type CreateRunBundleResp,
+    type RunBundleLogsResp,
+    type RunBundleStatusResp,
+    type RunRunBundleResp,
+} from './api/ntxBackendRunBundles';
 import { Link } from 'react-router-dom';
 
 function toRecord(data: unknown): Record<string, unknown> {
@@ -138,6 +148,20 @@ export default function App() {
     const [waitEvent, setWaitEvent] = useState<string>('packet-rx');
     const [waitMatchText, setWaitMatchText] = useState<string>('{}');
     const [waitError, setWaitError] = useState<string | null>(null);
+
+    const [runPackaging, setRunPackaging] = useState<boolean>(false);
+    const [runPackageError, setRunPackageError] = useState<string | null>(null);
+    const [runPackageResult, setRunPackageResult] = useState<CreateRunBundleResp | null>(null);
+
+    const [runStarting, setRunStarting] = useState<boolean>(false);
+    const [runStartError, setRunStartError] = useState<string | null>(null);
+    const [runStartResult, setRunStartResult] = useState<RunRunBundleResp | null>(null);
+
+    const [runStatusLoading, setRunStatusLoading] = useState<boolean>(false);
+    const [runStatus, setRunStatus] = useState<RunBundleStatusResp | null>(null);
+    const [runLogsLoading, setRunLogsLoading] = useState<boolean>(false);
+    const [runLogs, setRunLogs] = useState<RunBundleLogsResp | null>(null);
+    const [runControlError, setRunControlError] = useState<string | null>(null);
 
     const actions = useMemo(() => (catalog ? summarizeActions(catalog) : []), [catalog]);
 
@@ -380,24 +404,6 @@ export default function App() {
         setNodes((ns: Node[]) => [...ns, base]);
     };
 
-    const exported: WorkflowExport = useMemo(
-        () => ({
-            schema_version: 1,
-            nodes: nodes.map((n: Node) => ({
-                id: n.id,
-                type: String(n.type ?? 'default'),
-                position: { x: n.position.x, y: n.position.y },
-                data: stripUiFields(toRecord(n.data)),
-            })),
-            edges: edges.map((e: Edge) => ({
-                id: e.id,
-                source: e.source,
-                target: e.target,
-            })),
-        }),
-        [nodes, edges]
-    );
-
     const scenarioYaml = useMemo(
         () =>
             buildScenarioYaml({
@@ -421,25 +427,141 @@ export default function App() {
     const errorCount = validationIssues.filter((i: ValidationIssue) => i.level === 'error').length;
     const exportBlockCount = exportBlockingIssues.filter((i: ValidationIssue) => i.level === 'error').length;
 
-    const downloadTextFile = (filename: string, contents: string, mimeType: string) => {
-        const blob = new Blob([contents], { type: mimeType });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-    };
+    const packageRunBundle = async () => {
+        setRunPackageError(null);
+        setRunPackageResult(null);
+        setRunStartError(null);
+        setRunStartResult(null);
+        setRunStatus(null);
+        setRunLogs(null);
+        setRunControlError(null);
+        setUiWarning(null);
 
-    const downloadScenarioYaml = async () => {
-        if (exportBlockCount > 0) {
-            setUiWarning('Export blocked: fix blocking issues first (see Validation).');
+        if (!selectedConfigBundleName) {
+            setRunPackageError('Select a Config Bundle');
             return;
         }
-        downloadTextFile('scenario.yaml', scenarioYaml, 'text/yaml');
+        if (!selectedWasmSha256) {
+            setRunPackageError('Select a Catalog (From uploaded WASM)');
+            return;
+        }
+        if (exportBlockCount > 0) {
+            setUiWarning('Packaging blocked: fix blocking issues first (see Validation).');
+            return;
+        }
+
+        setRunPackaging(true);
+        try {
+            const resp = await createRunBundle({
+                config_bundle: selectedConfigBundleName,
+                wasm_sha256: selectedWasmSha256,
+                scenario_yaml: scenarioYaml,
+            });
+            setRunPackageResult(resp);
+        } catch (e) {
+            setRunPackageError(e instanceof Error ? e.message : String(e));
+        } finally {
+            setRunPackaging(false);
+        }
     };
+
+    const runPackagedBundle = async () => {
+        setRunStartError(null);
+        setRunStartResult(null);
+        setRunControlError(null);
+        setUiWarning(null);
+
+        if (!runPackageResult) {
+            setRunStartError('Package a run bundle first.');
+            return;
+        }
+
+        setRunStarting(true);
+        try {
+            const resp = await runRunBundle(runPackageResult.id);
+            setRunStartResult(resp);
+            // Kick an immediate refresh for status/logs.
+            try {
+                const [st, lg] = await Promise.all([
+                    getRunBundleStatus(runPackageResult.id),
+                    getRunBundleLogs(runPackageResult.id),
+                ]);
+                setRunStatus(st);
+                setRunLogs(lg);
+            } catch {
+                // Ignore refresh errors here; they'll be visible via manual refresh.
+            }
+        } catch (e) {
+            setRunStartError(e instanceof Error ? e.message : String(e));
+        } finally {
+            setRunStarting(false);
+        }
+    };
+
+    const refreshRunInfo = async () => {
+        setRunControlError(null);
+        if (!runPackageResult) {
+            setRunControlError('Package a run bundle first.');
+            return;
+        }
+
+        setRunStatusLoading(true);
+        setRunLogsLoading(true);
+        try {
+            const [st, lg] = await Promise.all([
+                getRunBundleStatus(runPackageResult.id),
+                getRunBundleLogs(runPackageResult.id),
+            ]);
+            setRunStatus(st);
+            setRunLogs(lg);
+        } catch (e) {
+            setRunControlError(e instanceof Error ? e.message : String(e));
+        } finally {
+            setRunStatusLoading(false);
+            setRunLogsLoading(false);
+        }
+    };
+
+    const stopRunningBundle = async () => {
+        setRunControlError(null);
+        if (!runPackageResult) {
+            setRunControlError('Package a run bundle first.');
+            return;
+        }
+
+        try {
+            await stopRunBundle(runPackageResult.id);
+            await refreshRunInfo();
+        } catch (e) {
+            setRunControlError(e instanceof Error ? e.message : String(e));
+        }
+    };
+
+    useEffect(() => {
+        // When a run bundle is packaged (or changed), load initial status/logs.
+        if (!runPackageResult) return;
+        void refreshRunInfo();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [runPackageResult?.id]);
+
+    useEffect(() => {
+        // Poll while running (lightweight demo UX).
+        if (!runPackageResult?.id) return;
+        if (!runStatus?.running) return;
+        const id = runPackageResult.id;
+        const t = window.setInterval(() => {
+            void (async () => {
+                try {
+                    const [st, lg] = await Promise.all([getRunBundleStatus(id), getRunBundleLogs(id)]);
+                    setRunStatus(st);
+                    setRunLogs(lg);
+                } catch {
+                    // Ignore transient polling errors.
+                }
+            })();
+        }, 1500);
+        return () => window.clearInterval(t);
+    }, [runPackageResult?.id, runStatus?.running]);
 
     const applyWaitToSelected = () => {
         if (!selectedNodeId) return;
@@ -492,10 +614,24 @@ export default function App() {
                 actions={actions}
                 onPickAction={addActionNode}
                 onAddQuickNode={addQuickNode}
-                errorCount={errorCount}
-                warningCount={warningCount}
                 exportBlockCount={exportBlockCount}
-                onDownloadScenarioYaml={downloadScenarioYaml}
+
+                runPackaging={runPackaging}
+                runPackageError={runPackageError}
+                runPackageResult={runPackageResult ? { id: runPackageResult.id, dir: runPackageResult.dir } : null}
+                runStarting={runStarting}
+                runStartError={runStartError}
+                runStartResult={runStartResult ? { pid: runStartResult.pid } : null}
+
+                runStatusLoading={runStatusLoading}
+                runStatus={runStatus ? { running: runStatus.running, pid: runStatus.pid, exit_code: runStatus.exit_code } : null}
+                runLogsLoading={runLogsLoading}
+                runLogs={runLogs ? { stdout: runLogs.stdout, stderr: runLogs.stderr, truncated: runLogs.truncated } : null}
+                runControlError={runControlError}
+                onPackage={packageRunBundle}
+                onRun={() => void runPackagedBundle()}
+                onStop={() => void stopRunningBundle()}
+                onRefreshRunInfo={() => void refreshRunInfo()}
             />
 
             <main className="content">

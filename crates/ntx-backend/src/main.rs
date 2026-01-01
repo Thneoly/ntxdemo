@@ -13,6 +13,8 @@ use std::sync::Arc;
 use clap::Parser;
 use tracing::info;
 
+use tokio::sync::Mutex;
+
 use crate::{
     config::{BackendConfig, load_config_file},
     state::{AppState, Args, ensure_layout},
@@ -42,6 +44,7 @@ async fn main() -> anyhow::Result<()> {
         wasm_artifact_type,
         wac_compose_bin,
         wac_compose_cwd,
+        ntx_bin,
     } = args;
 
     let file_cfg = load_config_file(&config)?;
@@ -60,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
             wasm_artifact_type,
             wac_compose_bin,
             wac_compose_cwd,
+            ntx_bin,
         );
 
     ensure_layout(&cfg.data_dir).await?;
@@ -75,6 +79,8 @@ async fn main() -> anyhow::Result<()> {
         wasm_artifact_type: cfg.wasm_artifact_type,
         wac_compose_bin: cfg.wac_compose_bin,
         wac_compose_cwd: cfg.wac_compose_cwd,
+        ntx_bin: cfg.ntx_bin,
+        run_processes: Arc::new(Mutex::new(std::collections::HashMap::new())),
     });
 
     let app = app::build_app(state, cfg.cors_any_origin);

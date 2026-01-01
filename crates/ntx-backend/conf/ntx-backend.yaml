@@ -1,5 +1,5 @@
 # ntx-backend configuration (YAML)
-# This file is loaded by default: `ntx-backend --config config/ntx-backend.yaml`
+# This file is loaded by default: `ntx-backend --config crates/ntx-backend/conf/ntx-backend.yaml`
 
 bind: "127.0.0.1:9090"
 data_dir: "./.ntx-backend"
@@ -9,6 +9,10 @@ cors_any_origin: true
 
 # Path to `oras` binary (or just "oras" if it is in PATH)
 oras_bin: "oras"
+
+# Path to `ntx` binary used by run-bundles execution.
+# If you built `ntx` from this repo, a typical dev path is: "./target/debug/Ntx"
+ntx_bin: "/home/cc/Desktop/code/GitHub/Ntx/target/debug/Ntx"
 
 # Harbor/OCI registry settings used by ingest/push.
 harbor:

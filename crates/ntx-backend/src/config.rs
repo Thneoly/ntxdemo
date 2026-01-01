@@ -51,6 +51,10 @@ pub struct BackendConfigFile {
     /// Working directory used to run `wac compose` (repo root).
     #[serde(default)]
     pub wac_compose_cwd: Option<PathBuf>,
+
+    /// Path to `ntx` binary used for run-bundles execution.
+    #[serde(default)]
+    pub ntx_bin: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +71,8 @@ pub struct BackendConfig {
     pub wasm_artifact_type: String,
     pub wac_compose_bin: String,
     pub wac_compose_cwd: Option<PathBuf>,
+
+    pub ntx_bin: String,
 }
 
 impl BackendConfig {
@@ -84,6 +90,7 @@ impl BackendConfig {
             wasm_artifact_type: "application/vnd.ntx.action-executor.v1".to_string(),
             wac_compose_bin: "ntx-wac-compose".to_string(),
             wac_compose_cwd: None,
+            ntx_bin: "ntx".to_string(),
         })
     }
 
@@ -117,6 +124,10 @@ impl BackendConfig {
             self.wac_compose_cwd = Some(v);
         }
 
+        if let Some(v) = cfg.ntx_bin {
+            self.ntx_bin = v;
+        }
+
         if let Some(h) = cfg.harbor {
             if h.ca_file.is_some() {
                 self.harbor_ca_file = h.ca_file;
@@ -146,6 +157,7 @@ impl BackendConfig {
         wasm_artifact_type: Option<String>,
         wac_compose_bin: Option<String>,
         wac_compose_cwd: Option<PathBuf>,
+        ntx_bin: Option<String>,
     ) -> Self {
         if let Some(v) = bind {
             self.bind = v;
@@ -182,6 +194,9 @@ impl BackendConfig {
         }
         if let Some(v) = wac_compose_cwd {
             self.wac_compose_cwd = Some(v);
+        }
+        if let Some(v) = ntx_bin {
+            self.ntx_bin = v;
         }
         self
     }

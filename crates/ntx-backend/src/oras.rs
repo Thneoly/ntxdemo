@@ -10,7 +10,7 @@ fn hint_for_oras_output(stdout: &str, stderr: &str) -> Option<&'static str> {
         || stderr.contains("x509: certificate signed by unknown authority")
     {
         return Some(
-            "TLS verify failed (self-signed/unknown CA). Configure harbor.ca_file in config/ntx-backend.yaml (or install the CA into the system trust store), then retry.",
+            "TLS verify failed (self-signed/unknown CA). Configure harbor.ca_file in crates/ntx-backend/conf/ntx-backend.yaml (or install the CA into the system trust store), then retry.",
         );
     }
     None

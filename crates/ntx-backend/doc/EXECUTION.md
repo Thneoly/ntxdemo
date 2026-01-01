@@ -16,14 +16,14 @@
 cargo run -p ntx-backend
 ```
 
-默认监听：`127.0.0.1:9090`（由 `config/ntx-backend.yaml` 控制）
+默认监听：`127.0.0.1:9090`（由 `crates/ntx-backend/conf/ntx-backend.yaml` 控制）
 
-配置文件（默认路径）：`config/ntx-backend.yaml`
+配置文件（默认路径）：`crates/ntx-backend/conf/ntx-backend.yaml`
 
 修改配置后直接重启后端即可生效；也可以显式指定配置文件：
 
 ```bash
-cargo run -p ntx-backend -- --config config/ntx-backend.yaml
+cargo run -p ntx-backend -- --config crates/ntx-backend/conf/ntx-backend.yaml
 ```
 
 健康检查：
@@ -104,7 +104,7 @@ curl -sS 'http://127.0.0.1:9090/api/v1/catalog?ref=192.168.31.138/ntx/executor:v
 curl -sS 'http://127.0.0.1:9090/api/v1/catalog?ref=192.168.31.138/ntx/executor:v0.0.1&auto_ingest=true'
 
 # 方式 B：全局开启（配置文件）
-# 修改 config/ntx-backend.yaml: catalog_auto_ingest: true
+# 修改 crates/ntx-backend/conf/ntx-backend.yaml: catalog_auto_ingest: true
 ```
 
 落盘位置：`${NTX_BACKEND_DATA_DIR}/catalog/<sha256(ref)>.json`
@@ -122,7 +122,7 @@ curl -sS 'http://127.0.0.1:9090/api/v1/catalog?ref=192.168.31.138/ntx/executor:v
    - `${NTX_BACKEND_DATA_DIR}/catalog/<sha256(ref)>.json`
    - `${NTX_BACKEND_DATA_DIR}/wasm/<sha256(wasm)>.wasm`
 
-相关配置项（在 `config/ntx-backend.yaml`）：
+相关配置项（在 `crates/ntx-backend/conf/ntx-backend.yaml`）：
 
 - `oras_bin`
 - `harbor.ca_file`
@@ -165,7 +165,7 @@ curl -sS 'http://127.0.0.1:9090/api/v1/catalog?ref=192.168.31.138/ntx/executor:v
 证书注意事项：
 - 若 Harbor 使用自签证书：ORAS 需要 `--ca-file` 或把 CA 安装到系统信任库。
 
-对本后端来说，推荐直接在 `config/ntx-backend.yaml` 配置：
+对本后端来说，推荐直接在 `crates/ntx-backend/conf/ntx-backend.yaml` 配置：
 
 - `harbor.ca_file: /path/to/harbor.crt`
 

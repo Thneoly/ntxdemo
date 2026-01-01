@@ -20,10 +20,24 @@ export function BuilderSidebar(props: {
     actions: ActionSummary[];
     onPickAction: (a: ActionSummary) => void;
     onAddQuickNode: (t: NtxNodeType) => void;
-    errorCount: number;
-    warningCount: number;
     exportBlockCount: number;
-    onDownloadScenarioYaml: () => Promise<void>;
+
+    runPackaging: boolean;
+    runPackageError: string | null;
+    runPackageResult: { id: string; dir: string } | null;
+    runStarting: boolean;
+    runStartError: string | null;
+    runStartResult: { pid: number } | null;
+
+    runStatusLoading: boolean;
+    runStatus: { running: boolean; pid: number | null; exit_code: number | null } | null;
+    runLogsLoading: boolean;
+    runLogs: { stdout: string; stderr: string; truncated: boolean } | null;
+    runControlError: string | null;
+    onPackage: () => Promise<void>;
+    onRun: () => void;
+    onStop: () => void;
+    onRefreshRunInfo: () => void;
 }) {
     const { catalog, catalogError, catalogLoading } = props;
 
@@ -171,26 +185,125 @@ export function BuilderSidebar(props: {
 
             <div className="card">
                 <div className="toolbar" style={{ justifyContent: 'space-between' }}>
-                    <strong>Export</strong>
+                    <strong>Run</strong>
                     <div style={{ display: 'flex', gap: 8 }}>
-                        <span className="muted" style={{ alignSelf: 'center' }}>
-                            {props.errorCount || props.warningCount
-                                ? `${props.errorCount} error(s), ${props.warningCount} warning(s)`
-                                : 'ok'}
-                        </span>
-                        <button disabled={props.exportBlockCount > 0} onClick={props.onDownloadScenarioYaml}>
-                            Download scenario.yaml
+                        <button disabled={props.runPackaging} onClick={props.onPackage}>
+                            {props.runPackaging ? 'Packaging…' : 'Package'}
+                        </button>
+                        <button disabled={!props.runPackageResult || props.runStarting} onClick={props.onRun}>
+                            {props.runStarting ? 'Starting…' : 'Run'}
+                        </button>
+                        <button disabled={!props.runStatus?.running} onClick={props.onStop}>
+                            Stop
                         </button>
                     </div>
                 </div>
 
                 <div className="muted" style={{ marginTop: 6 }}>
-                    Download scenario.yaml.
+                    Package config + scenario.yaml + wasm to backend.
                 </div>
+
+                <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+                    <div>
+                        config bundle: <code>{props.selectedConfigBundleName ?? '—'}</code>
+                    </div>
+                    <div style={{ marginTop: 4 }}>
+                        wasm: <code>{props.selectedWasmSha256 ? `${props.selectedWasmSha256.slice(0, 12)}…` : '—'}</code>
+                    </div>
+                    <div style={{ marginTop: 4 }}>
+                        export blocking: <code>{props.exportBlockCount > 0 ? `${props.exportBlockCount} blocked` : 'ok'}</code>
+                    </div>
+                </div>
+
+                {props.runPackageError ? (
+                    <div style={{ marginTop: 8, color: '#b91c1c', fontSize: 12 }}>{props.runPackageError}</div>
+                ) : null}
+
+                {props.runStartError ? (
+                    <div style={{ marginTop: 8, color: '#b91c1c', fontSize: 12 }}>{props.runStartError}</div>
+                ) : null}
+
+                {props.runControlError ? (
+                    <div style={{ marginTop: 8, color: '#b91c1c', fontSize: 12 }}>{props.runControlError}</div>
+                ) : null}
+
+                {props.runPackageResult ? (
+                    <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+                        bundled: <code>{props.runPackageResult.dir}</code>
+                    </div>
+                ) : null}
+
+                {props.runStartResult ? (
+                    <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+                        started pid: <code>{props.runStartResult.pid}</code>
+                    </div>
+                ) : null}
+
+                <div style={{ marginTop: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong style={{ fontSize: 12 }}>Status</strong>
+                    <button disabled={!props.runPackageResult || props.runStatusLoading || props.runLogsLoading} onClick={props.onRefreshRunInfo}>
+                        {props.runStatusLoading || props.runLogsLoading ? 'Refreshing…' : 'Refresh'}
+                    </button>
+                </div>
+
+                <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+                    <div>
+                        running:{' '}
+                        <code>
+                            {props.runStatus ? (props.runStatus.running ? 'true' : 'false') : props.runPackageResult ? 'unknown' : '—'}
+                        </code>
+                    </div>
+                    <div style={{ marginTop: 4 }}>
+                        pid: <code>{props.runStatus?.pid ?? '—'}</code>
+                    </div>
+                    <div style={{ marginTop: 4 }}>
+                        exit_code: <code>{props.runStatus?.exit_code ?? '—'}</code>
+                    </div>
+                </div>
+
+                {props.runLogs ? (
+                    <div style={{ marginTop: 10 }}>
+                        <div className="muted" style={{ fontSize: 12 }}>
+                            logs tail{props.runLogs.truncated ? ' (truncated)' : ''}:
+                        </div>
+                        <div style={{ marginTop: 6 }}>
+                            <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+                                stdout
+                            </div>
+                            <pre
+                                style={{
+                                    margin: 0,
+                                    fontSize: 11,
+                                    whiteSpace: 'pre-wrap',
+                                    maxHeight: 160,
+                                    overflow: 'auto',
+                                }}
+                            >
+                                {props.runLogs.stdout || '—'}
+                            </pre>
+                        </div>
+                        <div style={{ marginTop: 10 }}>
+                            <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+                                stderr
+                            </div>
+                            <pre
+                                style={{
+                                    margin: 0,
+                                    fontSize: 11,
+                                    whiteSpace: 'pre-wrap',
+                                    maxHeight: 160,
+                                    overflow: 'auto',
+                                }}
+                            >
+                                {props.runLogs.stderr || '—'}
+                            </pre>
+                        </div>
+                    </div>
+                ) : null}
 
                 {props.exportBlockCount > 0 ? (
                     <div style={{ marginTop: 8, color: '#b91c1c', fontSize: 12 }}>
-                        Export is blocked ({props.exportBlockCount}). See Validation panel.
+                        Packaging is blocked ({props.exportBlockCount}). See Validation panel.
                     </div>
                 ) : null}
             </div>
