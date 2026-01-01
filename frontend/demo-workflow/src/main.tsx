@@ -1,12 +1,13 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { ReactFlowProvider } from 'reactflow';
-import 'reactflow/dist/style.css';
 import { BrowserRouter } from 'react-router-dom';
 import AppRouter from './AppRouter';
-import './ui/forms.css';
-import './ui/reactflow-nodes.css';
 import './styles.css';
+import './ui/primitives.css';
+import './ui/forms.css';
+import 'reactflow/dist/style.css';
+import './ui/reactflow-nodes.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
