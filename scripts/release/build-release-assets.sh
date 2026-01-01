@@ -55,11 +55,10 @@ mkdir -p "$WIT_STAGING"
 cp -R "$ROOT_DIR/component/wit"/* "$WIT_STAGING/"
 
 (
-  cd "$DIST_DIR"
-  for dir in wit/*; do
+  cd "$WIT_STAGING"
+  for dir in *; do
     [[ -d "$dir" ]] || continue
-    name="$(basename "$dir")"
-    zip -r "$DIST_DIR/ntx-wit-${name}.zip" "$dir" >/dev/null
+    zip -r "$DIST_DIR/ntx-wit-${dir}.zip" "$dir" >/dev/null
   done
 )
 
