@@ -55,6 +55,14 @@
     border-radius: var(--radius);
 }
 
+.builderRunActions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    max-width: 100%;
+}
+
 .builderSidebar h1 {
     font-size: 16px;
     margin: 0 0 10px 0;
@@ -80,4 +88,46 @@
     overflow: auto;
     background: var(--surface-muted);
     border-radius: var(--radius);
+}
+
+.builderOutputDrawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    height: 100vh;
+    width: min(720px, 45vw);
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+}
+
+@media (max-width: 900px) {
+    .builderOutputDrawer {
+        width: 100vw;
+    }
+}
+
+.builderOutputDrawerHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-muted);
+}
+
+.builderOutputDrawerBody {
+    flex: 1;
+    min-height: 0;
+    padding: 12px;
+}
+
+.builderOutputDrawerFrame {
+    width: 100%;
+    height: 100%;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
 }

@@ -26,6 +26,7 @@ export function BuilderSidebar(props: {
     runPackageError: string | null;
     runPackageResult: { id: string; dir: string } | null;
     runOutputUrl: string | null;
+    runOutputOpen: boolean;
     runStarting: boolean;
     runStartError: string | null;
     runStartResult: { pid: number } | null;
@@ -39,6 +40,7 @@ export function BuilderSidebar(props: {
     onRun: () => void;
     onStop: () => void;
     onRefreshRunInfo: () => void;
+    onToggleRunOutput: () => void;
 }) {
     const { catalog, catalogError, catalogLoading } = props;
 
@@ -187,24 +189,18 @@ export function BuilderSidebar(props: {
             <div className="card">
                 <div className="toolbar" style={{ justifyContent: 'space-between' }}>
                     <strong>Run</strong>
-                    <div style={{ display: 'flex', gap: 8 }}>
+                    <div className="builderRunActions">
                         <button disabled={props.runPackaging} onClick={props.onPackage}>
                             {props.runPackaging ? 'Packaging…' : 'Package'}
-                        </button>
-                        <button
-                            disabled={!props.runOutputUrl}
-                            onClick={() => {
-                                if (!props.runOutputUrl) return;
-                                window.open(props.runOutputUrl, '_blank', 'noopener,noreferrer');
-                            }}
-                        >
-                            View
                         </button>
                         <button disabled={!props.runPackageResult || props.runStarting} onClick={props.onRun}>
                             {props.runStarting ? 'Starting…' : 'Run'}
                         </button>
                         <button disabled={!props.runStatus?.running} onClick={props.onStop}>
                             Stop
+                        </button>
+                        <button disabled={!props.runOutputUrl} onClick={props.onToggleRunOutput}>
+                            {props.runOutputOpen ? 'View (open)' : 'View'}
                         </button>
                     </div>
                 </div>

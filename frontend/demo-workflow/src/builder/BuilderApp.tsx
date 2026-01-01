@@ -105,6 +105,7 @@ function summarizeActions(catalog: ActionsCatalog): ActionSummary[] {
 }
 
 export default function BuilderApp() {
+    const [runOutputOpen, setRunOutputOpen] = useState(false);
     const rf = useReactFlow();
     const [catalog, setCatalog] = useState<ActionsCatalog | null>(null);
     const [catalogError, setCatalogError] = useState<string | null>(null);
@@ -637,6 +638,7 @@ export default function BuilderApp() {
                         })()
                         : null
                 }
+                runOutputOpen={runOutputOpen}
                 runStarting={runStarting}
                 runStartError={runStartError}
                 runStartResult={runStartResult ? { pid: runStartResult.pid } : null}
@@ -650,6 +652,7 @@ export default function BuilderApp() {
                 onRun={() => void runPackagedBundle()}
                 onStop={() => void stopRunningBundle()}
                 onRefreshRunInfo={() => void refreshRunInfo()}
+                onToggleRunOutput={() => setRunOutputOpen((v) => !v)}
             />
 
             <main className="builderContent">
@@ -875,6 +878,30 @@ export default function BuilderApp() {
                     ) : null}
                 </div>
             </aside>
+
+            {runOutputOpen ? (
+                <aside className="builderOutputDrawer" aria-label="Run output">
+                    <div className="builderOutputDrawerHeader">
+                        <strong>Run output</strong>
+                        <button onClick={() => setRunOutputOpen(false)}>Close</button>
+                    </div>
+                    <div className="builderOutputDrawerBody">
+                        {runPackageResult ? (
+                            <iframe
+                                title="Run output"
+                                src={(() => {
+                                    const baseUrl = defaultBackendBaseUrl().replace(/\/$/, '');
+                                    const id = encodeURIComponent(runPackageResult.id);
+                                    return `${baseUrl}/api/v1/run-bundles/${id}/output`;
+                                })()}
+                                className="builderOutputDrawerFrame"
+                            />
+                        ) : (
+                            <div className="muted" style={{ fontSize: 12 }}>No run bundle yet.</div>
+                        )}
+                    </div>
+                </aside>
+            ) : null}
         </div>
     );
 }
