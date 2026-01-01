@@ -43,7 +43,7 @@ cp ../../component/conf/udp-echo-minimal/actions-catalog.json public/actions-cat
 设置环境变量（Vite 只识别 `VITE_` 前缀）：
 
 ```bash
-export VITE_NTX_BACKEND_URL=http://127.0.0.1:8080
+export VITE_NTX_BACKEND_URL=http://127.0.0.1:9090
 export VITE_NTX_CATALOG_REF=192.168.31.138/ntx/executor:v0.0.1
 ```
 

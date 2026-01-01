@@ -1,8 +1,15 @@
 export function HealthPage() {
     return (
-        <div style={{ padding: 16 }}>
-            <h1 style={{ margin: 0, fontSize: 18 }}>Health</h1>
-            <p style={{ marginTop: 8 }}>ok</p>
+        <div className="page">
+            <div className="pageHeader">
+                <h1 className="pageTitle">Health</h1>
+            </div>
+            <div className="card" style={{ maxWidth: 420 }}>
+                <div style={{ fontWeight: 600 }}>Status</div>
+                <div className="muted" style={{ marginTop: 6 }}>
+                    ok
+                </div>
+            </div>
         </div>
     );
 }

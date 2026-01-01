@@ -16,26 +16,20 @@
 cargo run -p ntx-backend
 ```
 
-默认监听：`127.0.0.1:8080`
+默认监听：`127.0.0.1:9090`（由 `config/ntx-backend.yaml` 控制）
 
-可用环境变量：
+配置文件（默认路径）：`config/ntx-backend.yaml`
 
-- `NTX_BACKEND_BIND`：监听地址，默认 `127.0.0.1:8080`
-- `NTX_BACKEND_DATA_DIR`：数据目录，默认 `./.ntx-backend`
-- `NTX_BACKEND_CORS_ANY_ORIGIN`：是否允许任意来源 CORS（开发方便），默认 `true`
-
-示例：
+修改配置后直接重启后端即可生效；也可以显式指定配置文件：
 
 ```bash
-NTX_BACKEND_BIND=0.0.0.0:8080 \
-NTX_BACKEND_DATA_DIR=./.data/ntx-backend \
-cargo run -p ntx-backend
+cargo run -p ntx-backend -- --config config/ntx-backend.yaml
 ```
 
 健康检查：
 
 ```bash
-curl -sS http://127.0.0.1:8080/healthz
+curl -sS http://127.0.0.1:9090/healthz
 ```
 
 ---
@@ -53,7 +47,7 @@ cargo run -p ntx-backend
 ```bash
 cd frontend/demo-workflow
 
-export VITE_NTX_BACKEND_URL=http://127.0.0.1:8080
+export VITE_NTX_BACKEND_URL=http://127.0.0.1:9090
 export VITE_NTX_CATALOG_REF=192.168.31.138/ntx/executor:v0.0.1
 
 npm run dev
@@ -74,7 +68,7 @@ npm run dev
 创建/更新：
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/api/v1/workflows \
+curl -sS -X POST http://127.0.0.1:9090/api/v1/workflows \
   -H 'content-type: application/json' \
   -d '{"graph": {"nodes": [], "edges": [], "viewport": {"x":0,"y":0,"zoom":1}}}'
 ```
@@ -82,7 +76,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/workflows \
 读取：
 
 ```bash
-curl -sS http://127.0.0.1:8080/api/v1/workflows/<id>
+curl -sS http://127.0.0.1:9090/api/v1/workflows/<id>
 ```
 
 落盘位置：`${NTX_BACKEND_DATA_DIR}/workflows/<id>.json`
@@ -92,7 +86,7 @@ curl -sS http://127.0.0.1:8080/api/v1/workflows/<id>
 写入（临时用于联调；后续会由“入库/生成流程”自动写入）：
 
 ```bash
-curl -sS -X POST 'http://127.0.0.1:8080/api/v1/catalog' \
+curl -sS -X POST 'http://127.0.0.1:9090/api/v1/catalog' \
   -H 'content-type: application/json' \
   -d '{"ref":"192.168.31.138/ntx/executor:v0.0.1","catalog": {"schema-version": 1, "actions": []}}'
 ```
@@ -100,17 +94,17 @@ curl -sS -X POST 'http://127.0.0.1:8080/api/v1/catalog' \
 读取：
 
 ```bash
-curl -sS 'http://127.0.0.1:8080/api/v1/catalog?ref=192.168.31.138/ntx/executor:v0.0.1'
+curl -sS 'http://127.0.0.1:9090/api/v1/catalog?ref=192.168.31.138/ntx/executor:v0.0.1'
 ```
 
 （可选）cache miss 自动触发 ingest：
 
 ```bash
 # 方式 A：单次请求开启
-curl -sS 'http://127.0.0.1:8080/api/v1/catalog?ref=192.168.31.138/ntx/executor:v0.0.1&auto_ingest=true'
+curl -sS 'http://127.0.0.1:9090/api/v1/catalog?ref=192.168.31.138/ntx/executor:v0.0.1&auto_ingest=true'
 
-# 方式 B：全局开启（环境变量）
-export NTX_CATALOG_AUTO_INGEST=true
+# 方式 B：全局开启（配置文件）
+# 修改 config/ntx-backend.yaml: catalog_auto_ingest: true
 ```
 
 落盘位置：`${NTX_BACKEND_DATA_DIR}/catalog/<sha256(ref)>.json`
@@ -128,17 +122,17 @@ export NTX_CATALOG_AUTO_INGEST=true
    - `${NTX_BACKEND_DATA_DIR}/catalog/<sha256(ref)>.json`
    - `${NTX_BACKEND_DATA_DIR}/wasm/<sha256(wasm)>.wasm`
 
-相关环境变量（可选）：
+相关配置项（在 `config/ntx-backend.yaml`）：
 
-- `NTX_ORAS_BIN`：`oras` 可执行文件路径（默认 `oras`）
-- `NTX_HARBOR_CA_FILE`：Harbor 自签 HTTPS 的 CA 文件
-- `NTX_HARBOR_USER` / `NTX_HARBOR_PASS`：用于后端自动 `oras login --password-stdin`（也可以提前手动登录，然后不配这两个）
-- `NTX_INGEST_KEEP_TMP=true`：保留 `${DATA_DIR}/tmp/ingest-*`（排障用）
+- `oras_bin`
+- `harbor.ca_file`
+- `harbor.user` / `harbor.pass`
+- `ingest_keep_tmp`
 
 请求示例：
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/api/v1/ingest \
+curl -sS -X POST http://127.0.0.1:9090/api/v1/ingest \
   -H 'content-type: application/json' \
   -d '{"ref":"192.168.31.138/ntx/executor:v0.0.1","prefer_published_catalog":true}'
 ```
@@ -146,7 +140,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/ingest \
 随后读取缓存的 catalog：
 
 ```bash
-curl -sS 'http://127.0.0.1:8080/api/v1/catalog?ref=192.168.31.138/ntx/executor:v0.0.1'
+curl -sS 'http://127.0.0.1:9090/api/v1/catalog?ref=192.168.31.138/ntx/executor:v0.0.1'
 ```
 
 ---
@@ -170,6 +164,10 @@ curl -sS 'http://127.0.0.1:8080/api/v1/catalog?ref=192.168.31.138/ntx/executor:v
 
 证书注意事项：
 - 若 Harbor 使用自签证书：ORAS 需要 `--ca-file` 或把 CA 安装到系统信任库。
+
+对本后端来说，推荐直接在 `config/ntx-backend.yaml` 配置：
+
+- `harbor.ca_file: /path/to/harbor.crt`
 
 ### 3.1 参考脚本：用 ORAS pull/push（推荐）
 

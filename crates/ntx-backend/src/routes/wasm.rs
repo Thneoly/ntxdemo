@@ -18,8 +18,75 @@ use crate::{
     oras::{maybe_oras_login, oras_push_files},
     respond::json_error,
     state::AppState,
-    util::{looks_like_sha256_hex, registry_from_ref, wasm_path},
+    util::{looks_like_sha256_hex, ref_has_registry_and_repo, wasm_catalog_path, wasm_path},
 };
+
+pub async fn get_wasm_catalog(
+    State(state): State<std::sync::Arc<AppState>>,
+    AxumPath(sha256): AxumPath<String>,
+) -> impl IntoResponse {
+    if !looks_like_sha256_hex(&sha256) {
+        return json_error(StatusCode::BAD_REQUEST, "sha256 must be 64 hex chars");
+    }
+
+    let wasm_file = wasm_path(&state.data_dir, &sha256);
+    if !fs::try_exists(&wasm_file).await.unwrap_or(false) {
+        return json_error(StatusCode::NOT_FOUND, "wasm not found (upload first)");
+    }
+
+    let cached = wasm_catalog_path(&state.data_dir, &sha256);
+    if fs::try_exists(&cached).await.unwrap_or(false) {
+        match fs::read_to_string(&cached).await {
+            Ok(s) => match serde_json::from_str::<Value>(&s) {
+                Ok(v) => return (StatusCode::OK, Json(v)).into_response(),
+                Err(e) => {
+                    error!(%e, file = %cached.display(), "cached wasm catalog json invalid");
+                    // fall through and regenerate
+                }
+            },
+            Err(e) => {
+                error!(%e, file = %cached.display(), "read cached wasm catalog failed");
+                // fall through and regenerate
+            }
+        }
+    }
+
+    match actions_catalog_gen::load_catalog_from_component(&wasm_file).await {
+        Ok(catalog) => {
+            let v = match serde_json::to_value(catalog) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!(%e, "serialize wasm catalog failed");
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "serialize wasm catalog failed",
+                    );
+                }
+            };
+            let s = match serde_json::to_string_pretty(&v) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!(%e, "serialize wasm catalog failed");
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "serialize wasm catalog failed",
+                    );
+                }
+            };
+            if let Err(e) = fs::write(&cached, &s).await {
+                error!(%e, file = %cached.display(), "write cached wasm catalog failed");
+            }
+            (StatusCode::OK, Json(v)).into_response()
+        }
+        Err(e) => {
+            error!(%e, sha256 = %sha256, "generate wasm catalog failed");
+            json_error(
+                StatusCode::BAD_GATEWAY,
+                format!("generate catalog failed: {e}"),
+            )
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct WasmEntry {
@@ -145,32 +212,74 @@ pub struct UploadWasmResp {
     pub sha256: String,
     pub size_bytes: u64,
     pub file: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalog_file: Option<String>,
 }
 
 pub async fn upload_wasm(
     State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     // Expect a multipart form field named "file".
     let mut wasm_bytes: Option<Vec<u8>> = None;
 
-    while let Ok(Some(field)) = multipart.next_field().await {
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let content_length = headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(e) => {
+                error!(
+                    %e,
+                    content_type = %content_type,
+                    content_length = %content_length,
+                    "read multipart field failed"
+                );
+                return json_error(StatusCode::BAD_REQUEST, "invalid multipart upload");
+            }
+        };
+
         if field.name() != Some("file") {
             continue;
         }
+
+        let file_name = field.file_name().map(|s| s.to_string()).unwrap_or_default();
         match field.bytes().await {
             Ok(b) => {
                 wasm_bytes = Some(b.to_vec());
                 break;
             }
             Err(e) => {
-                error!(%e, "read multipart field failed");
+                error!(
+                    %e,
+                    content_type = %content_type,
+                    content_length = %content_length,
+                    file_name = %file_name,
+                    "read multipart field failed"
+                );
                 return json_error(StatusCode::BAD_REQUEST, "invalid multipart upload");
             }
         }
     }
 
     let Some(wasm_bytes) = wasm_bytes else {
+        if !content_type.starts_with("multipart/form-data") {
+            error!(
+                content_type = %content_type,
+                content_length = %content_length,
+                "upload_wasm called without multipart/form-data"
+            );
+        }
         return json_error(StatusCode::BAD_REQUEST, "missing multipart field 'file'");
     };
 
@@ -184,12 +293,46 @@ pub async fn upload_wasm(
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "write wasm failed");
     }
 
+    // Best-effort: generate action catalog for this wasm and cache it for push.
+    let catalog_file_path = wasm_catalog_path(&state.data_dir, &sha256_hex);
+    let mut catalog_file_resp: Option<String> = None;
+    match actions_catalog_gen::load_catalog_from_component(&out).await {
+        Ok(catalog) => {
+            let v = match serde_json::to_value(catalog) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!(%e, "serialize wasm catalog failed");
+                    Value::Null
+                }
+            };
+            if !v.is_null() {
+                match serde_json::to_string_pretty(&v) {
+                    Ok(s) => {
+                        if let Err(e) = fs::write(&catalog_file_path, s).await {
+                            error!(%e, file = %catalog_file_path.display(), "write wasm catalog failed");
+                        } else {
+                            catalog_file_resp = Some(catalog_file_path.display().to_string());
+                        }
+                    }
+                    Err(e) => {
+                        error!(%e, "serialize wasm catalog failed");
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            // Don't fail upload if catalog generation fails; push can retry generation.
+            error!(%e, "generate wasm catalog failed");
+        }
+    }
+
     (
         StatusCode::OK,
         Json(UploadWasmResp {
             sha256: sha256_hex,
             size_bytes: wasm_bytes.len() as u64,
             file: out.display().to_string(),
+            catalog_file: catalog_file_resp,
         }),
     )
         .into_response()
@@ -228,7 +371,7 @@ pub struct PushWasmBody {
     pub wasm_sha256: String,
     pub r#ref: String,
 
-    /// If true, attach actions-catalog.json layer (generated) when pushing.
+    /// If true, attach catalog.json layer (generated/cached) when pushing.
     #[serde(default)]
     pub include_catalog: bool,
 
@@ -248,10 +391,10 @@ pub async fn push_wasm(
     State(state): State<std::sync::Arc<AppState>>,
     Json(body): Json<PushWasmBody>,
 ) -> impl IntoResponse {
-    if registry_from_ref(&body.r#ref).is_none() {
+    if !ref_has_registry_and_repo(&body.r#ref) {
         return json_error(
             StatusCode::BAD_REQUEST,
-            "ref must include registry host (e.g. host/project/repo:tag)",
+            "ref must be in the form <registry>/<repo>[:tag|@digest] (no http/https scheme), e.g. 192.168.31.138/ntx/executor:v0.0.1",
         );
     }
     if !looks_like_sha256_hex(&body.wasm_sha256) {
@@ -291,36 +434,66 @@ pub async fn push_wasm(
 
     let mut catalog_path_opt: Option<PathBuf> = None;
     if body.include_catalog {
-        match actions_catalog_gen::load_catalog_from_component(&wasm_copy).await {
-            Ok(catalog) => {
-                let v = match serde_json::to_value(catalog) {
-                    Ok(v) => v,
-                    Err(e) => {
+        // Prefer the cached catalog generated at upload time.
+        let cached_catalog = wasm_catalog_path(&state.data_dir, &body.wasm_sha256);
+        let catalog_for_push = tmp_dir.join("catalog.json");
+
+        if fs::try_exists(&cached_catalog).await.unwrap_or(false) {
+            if let Err(e) = fs::copy(&cached_catalog, &catalog_for_push).await {
+                let _ = fs::remove_dir_all(&tmp_dir).await;
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("copy cached catalog failed: {e}"),
+                );
+            }
+            catalog_path_opt = Some(catalog_for_push);
+        } else {
+            // Cache-miss: generate now, write cache, and push as catalog.json.
+            match actions_catalog_gen::load_catalog_from_component(&wasm_copy).await {
+                Ok(catalog) => {
+                    let v = match serde_json::to_value(catalog) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let _ = fs::remove_dir_all(&tmp_dir).await;
+                            return json_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("serialize catalog failed: {e}"),
+                            );
+                        }
+                    };
+                    let s = match serde_json::to_string_pretty(&v) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let _ = fs::remove_dir_all(&tmp_dir).await;
+                            return json_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("serialize catalog failed: {e}"),
+                            );
+                        }
+                    };
+
+                    if let Err(e) = fs::write(&catalog_for_push, &s).await {
                         let _ = fs::remove_dir_all(&tmp_dir).await;
                         return json_error(
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("serialize catalog failed: {e}"),
+                            format!("write catalog failed: {e}"),
                         );
                     }
-                };
-                let catalog_file = tmp_dir.join("actions-catalog.json");
-                if let Err(e) =
-                    fs::write(&catalog_file, serde_json::to_string_pretty(&v).unwrap()).await
-                {
+
+                    // Best-effort cache write.
+                    if let Err(e) = fs::write(&cached_catalog, &s).await {
+                        error!(%e, file = %cached_catalog.display(), "write cached catalog failed");
+                    }
+
+                    catalog_path_opt = Some(catalog_for_push);
+                }
+                Err(e) => {
                     let _ = fs::remove_dir_all(&tmp_dir).await;
                     return json_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("write catalog failed: {e}"),
+                        StatusCode::BAD_GATEWAY,
+                        format!("generate catalog failed: {e}"),
                     );
                 }
-                catalog_path_opt = Some(catalog_file);
-            }
-            Err(e) => {
-                let _ = fs::remove_dir_all(&tmp_dir).await;
-                return json_error(
-                    StatusCode::BAD_GATEWAY,
-                    format!("generate catalog failed: {e}"),
-                );
             }
         }
     }

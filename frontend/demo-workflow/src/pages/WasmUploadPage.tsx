@@ -25,15 +25,16 @@ export function WasmUploadPage() {
     }
 
     return (
-        <div style={{ padding: 16 }}>
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                <h1 style={{ margin: 0, fontSize: 18 }}>Upload WASM</h1>
-                <Link to="/wasm">Back to list</Link>
-                <span style={{ flex: 1 }} />
-                <Link to="/builder">Builder</Link>
+        <div className="page">
+            <div className="pageHeader">
+                <h1 className="pageTitle">Upload WASM</h1>
+                <div className="pageActions">
+                    <Link to="/wasm">Back to list</Link>
+                    <Link to="/builder">Builder</Link>
+                </div>
             </div>
 
-            <div style={{ marginTop: 12 }}>
+            <div>
                 <input
                     type="file"
                     accept=".wasm,application/wasm"

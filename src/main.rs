@@ -1,6 +1,15 @@
 use anyhow::Result;
+use clap::Parser;
 use ntx::{app_config::AppConfig, kernel, logger, scheduler};
 use std::path::PathBuf;
+
+#[derive(Debug, Parser)]
+#[command(name = "ntx")]
+struct Cli {
+    /// Unified app config file path (YAML).
+    #[arg(long, default_value = "config/app.yaml")]
+    config: PathBuf,
+}
 
 /// Host entrypoint.
 ///
@@ -8,12 +17,25 @@ use std::path::PathBuf;
 /// a single owner that drives the guest scheduler `run()`.
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
     logger::logger_init();
     tracing::info!(target: "ntx::main", "ntx starting");
 
     // Unified app config (kernel + scheduler/wasm). We fall back to defaults
     // if the file doesn't exist so the binary remains runnable.
-    let cfg = AppConfig::load_yaml_file("config/app.yaml").unwrap_or_default();
+    let cfg = match AppConfig::load_yaml_file(&cli.config) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::warn!(
+                target: "ntx::main",
+                config = %cli.config.display(),
+                error = %e,
+                "failed to load app config; falling back to defaults"
+            );
+            AppConfig::default()
+        }
+    };
 
     kernel::init(&cfg.kernel.config_path)?;
     tracing::info!(target: "ntx::main", "kernel initialized");

@@ -22,6 +22,12 @@ pub fn wasm_path(data_dir: &Path, wasm_sha256_hex: &str) -> PathBuf {
         .join(format!("{}.wasm", wasm_sha256_hex))
 }
 
+pub fn wasm_catalog_path(data_dir: &Path, wasm_sha256_hex: &str) -> PathBuf {
+    data_dir
+        .join("wasm")
+        .join(format!("{}.catalog.json", wasm_sha256_hex))
+}
+
 pub fn workflow_path(data_dir: &Path, id: &str) -> PathBuf {
     data_dir.join("workflows").join(format!("{}.json", id))
 }
@@ -32,6 +38,16 @@ pub fn looks_like_sha256_hex(s: &str) -> bool {
 
 pub fn registry_from_ref(reference: &str) -> Option<&str> {
     reference.split('/').next().filter(|s| !s.is_empty())
+}
+
+pub fn ref_has_registry_and_repo(reference: &str) -> bool {
+    if reference.contains("://") {
+        return false;
+    }
+    let mut it = reference.split('/');
+    let registry = it.next().unwrap_or("");
+    let repo_rest = it.next().unwrap_or("");
+    !registry.is_empty() && !repo_rest.is_empty()
 }
 
 pub async fn read_first_wasm_file(dir: &Path) -> anyhow::Result<PathBuf> {

@@ -9,49 +9,49 @@ use tokio::fs;
 #[derive(Debug, Parser)]
 #[command(name = "ntx-backend")]
 pub struct Args {
+    /// YAML config file path.
+    #[arg(long, default_value = "config/ntx-backend.yaml")]
+    pub config: PathBuf,
+
     /// Bind address.
-    #[arg(long, env = "NTX_BACKEND_BIND", default_value = "127.0.0.1:8080")]
-    pub bind: SocketAddr,
+    #[arg(long)]
+    pub bind: Option<SocketAddr>,
 
     /// Data directory for persisted artifacts (catalog/workflows).
-    #[arg(long, env = "NTX_BACKEND_DATA_DIR", default_value = "./.ntx-backend")]
-    pub data_dir: PathBuf,
+    #[arg(long)]
+    pub data_dir: Option<PathBuf>,
 
     /// Allow all CORS origins (dev default).
-    #[arg(long, env = "NTX_BACKEND_CORS_ANY_ORIGIN", default_value_t = true)]
-    pub cors_any_origin: bool,
+    #[arg(long)]
+    pub cors_any_origin: Option<bool>,
 
     /// Path to oras binary.
-    #[arg(long, env = "NTX_ORAS_BIN", default_value = "oras")]
-    pub oras_bin: String,
+    #[arg(long)]
+    pub oras_bin: Option<String>,
 
     /// Default Harbor/registry CA file for self-signed TLS.
-    #[arg(long, env = "NTX_HARBOR_CA_FILE")]
+    #[arg(long)]
     pub harbor_ca_file: Option<PathBuf>,
 
     /// Default Harbor/registry username (optional; can also pre-login with oras).
-    #[arg(long, env = "NTX_HARBOR_USER")]
+    #[arg(long)]
     pub harbor_user: Option<String>,
 
     /// Default Harbor/registry password (optional; used with --password-stdin).
-    #[arg(long, env = "NTX_HARBOR_PASS")]
+    #[arg(long)]
     pub harbor_pass: Option<String>,
 
     /// Keep ingest temp directories under data_dir/tmp (debugging).
-    #[arg(long, env = "NTX_INGEST_KEEP_TMP", default_value_t = false)]
-    pub ingest_keep_tmp: bool,
+    #[arg(long)]
+    pub ingest_keep_tmp: Option<bool>,
 
     /// When GET /api/v1/catalog cache-misses, automatically ingest from registry.
-    #[arg(long, env = "NTX_CATALOG_AUTO_INGEST", default_value_t = false)]
-    pub catalog_auto_ingest: bool,
+    #[arg(long)]
+    pub catalog_auto_ingest: Option<bool>,
 
     /// Default artifact type when pushing wasm to Harbor.
-    #[arg(
-        long,
-        env = "NTX_WASM_ARTIFACT_TYPE",
-        default_value = "application/vnd.ntx.action-executor.v1"
-    )]
-    pub wasm_artifact_type: String,
+    #[arg(long)]
+    pub wasm_artifact_type: Option<String>,
 }
 
 #[derive(Clone)]

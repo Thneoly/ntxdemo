@@ -26,7 +26,7 @@ function envString(key: string): string | undefined {
 }
 
 export function defaultBackendBaseUrl(): string {
-    return envString('VITE_NTX_BACKEND_URL') ?? 'http://127.0.0.1:8080';
+    return envString('VITE_NTX_BACKEND_URL') ?? 'http://127.0.0.1:9090';
 }
 
 export function defaultCatalogRef(): string | undefined {

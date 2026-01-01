@@ -303,4 +303,5 @@ $RECYCLE.BIN/
 examples/dify
 scripts/oras/*.json
 tmp
+.ntx-backend/
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,macos,linux,windows,rust,python,powershell

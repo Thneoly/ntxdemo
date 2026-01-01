@@ -15,8 +15,8 @@ export function WasmListPage() {
     const [error, setError] = useState<string | null>(null);
 
     const [pushRef, setPushRef] = useState<string>('');
-    const [includeCatalog, setIncludeCatalog] = useState<boolean>(true);
-    const [pushStatus, setPushStatus] = useState<string | null>(null);
+    const [pushingSha, setPushingSha] = useState<string | null>(null);
+    const [pushMessage, setPushMessage] = useState<{ kind: 'info' | 'success' | 'error'; text: string } | null>(null);
 
     const sorted = useMemo(() => [...items].sort((a, b) => a.sha256.localeCompare(b.sha256)), [items]);
 
@@ -39,28 +39,33 @@ export function WasmListPage() {
 
     async function pushOne(sha256: string) {
         if (!pushRef.trim()) {
-            setPushStatus('missing ref');
+            setPushMessage({ kind: 'error', text: 'missing ref' });
             return;
         }
-        setPushStatus('pushing...');
+        setPushMessage({ kind: 'info', text: `pushing ${sha256}...` });
+        setPushingSha(sha256);
         try {
-            const resp = await pushWasmToHarbor({ ref: pushRef.trim(), wasmSha256: sha256, includeCatalog });
-            setPushStatus(`ok: ${resp.ref}`);
+            const resp = await pushWasmToHarbor({ ref: pushRef.trim(), wasmSha256: sha256, includeCatalog: true });
+            setPushMessage({ kind: 'success', text: `ok: ${resp.ref}` });
         } catch (e) {
-            setPushStatus(e instanceof Error ? e.message : String(e));
+            const msg = e instanceof Error ? e.message : String(e);
+            setPushMessage({ kind: 'error', text: msg });
+        } finally {
+            setPushingSha((cur) => (cur === sha256 ? null : cur));
         }
     }
 
     return (
-        <div style={{ padding: 16 }}>
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                <h1 style={{ margin: 0, fontSize: 18 }}>WASM Versions</h1>
-                <Link to="/wasm/upload">Upload</Link>
-                <span style={{ flex: 1 }} />
-                <Link to="/builder">Builder</Link>
+        <div className="page">
+            <div className="pageHeader">
+                <h1 className="pageTitle">WASM Versions</h1>
+                <div className="pageActions">
+                    <Link to="/wasm/upload">Upload</Link>
+                    <Link to="/builder">Builder</Link>
+                </div>
             </div>
 
-            <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 <button onClick={() => void refresh()} disabled={loading}>
                     Refresh
                 </button>
@@ -77,49 +82,98 @@ export function WasmListPage() {
                             style={{ width: 360 }}
                             value={pushRef}
                             onChange={(e) => setPushRef(e.target.value)}
-                            placeholder="192.168.31.138/ntx/executor:v0.0.1"
+                            placeholder="192.168.31.138/ntx/executor:v0.0.1 (no http/https)"
                         />
                     </label>
-                    <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                        <input type="checkbox" checked={includeCatalog} onChange={(e) => setIncludeCatalog(e.target.checked)} />
-                        <span>Include catalog</span>
-                    </label>
-                    {pushStatus ? <span>{pushStatus}</span> : null}
                 </div>
                 <div style={{ marginTop: 6, color: '#666', fontSize: 12 }}>
-                    Click “Push” on a row to publish that wasm under the ref.
+                    Click “Push” on a row to publish that wasm + catalog.json under the ref.
                 </div>
+                <div style={{ marginTop: 6, color: '#666', fontSize: 12 }}>
+                    Ref format: <span className="mono">&lt;registry&gt;/&lt;repo&gt;:tag</span> (example above).
+                </div>
+                {pushMessage ? (
+                    <div
+                        style={{
+                            marginTop: 10,
+                            padding: '8px 10px',
+                            borderRadius: 6,
+                            border: '1px solid #ddd',
+                            background: '#fafafa',
+                        }}
+                    >
+                        <div
+                            style={{
+                                fontSize: 12,
+                                color:
+                                    pushMessage.kind === 'error'
+                                        ? 'crimson'
+                                        : pushMessage.kind === 'success'
+                                            ? '#0a7a0a'
+                                            : '#555',
+                                fontWeight: 600,
+                            }}
+                        >
+                            {pushMessage.kind === 'error'
+                                ? 'Push failed'
+                                : pushMessage.kind === 'success'
+                                    ? 'Push succeeded'
+                                    : 'Push'}
+                        </div>
+                        <pre
+                            className="mono"
+                            style={{
+                                margin: '6px 0 0 0',
+                                fontSize: 12,
+                                color: '#444',
+                                whiteSpace: 'pre-wrap',
+                                overflowWrap: 'anywhere',
+                                maxHeight: 220,
+                                overflow: 'auto',
+                            }}
+                        >
+                            {pushMessage.text}
+                        </pre>
+                    </div>
+                ) : null}
             </div>
 
-            <table style={{ width: '100%', marginTop: 12, borderCollapse: 'collapse' }}>
+            <table className="table" style={{ marginTop: 12 }}>
                 <thead>
                     <tr>
-                        <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '8px 6px' }}>sha256</th>
-                        <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '8px 6px' }}>refs</th>
-                        <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '8px 6px' }}>size</th>
-                        <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '8px 6px' }}>actions</th>
+                        <th>sha256</th>
+                        <th>refs</th>
+                        <th style={{ textAlign: 'right' }}>size</th>
+                        <th>actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     {sorted.map((it) => (
                         <tr key={it.sha256}>
-                            <td style={{ padding: '8px 6px', fontFamily: 'monospace' }}>{it.sha256}</td>
-                            <td style={{ padding: '8px 6px', color: '#555' }}>
+                            <td className="mono">{it.sha256}</td>
+                            <td style={{ color: '#555' }}>
                                 {it.refs.length === 0 ? (
                                     <span style={{ color: '#999' }}>—</span>
                                 ) : it.refs.length === 1 ? (
-                                    <span style={{ fontFamily: 'monospace' }}>{it.refs[0]}</span>
+                                    <span className="mono">{it.refs[0]}</span>
                                 ) : (
-                                    <span style={{ fontFamily: 'monospace' }}>{it.refs[0]}</span>
+                                    <span className="mono">{it.refs[0]}</span>
                                 )}
                                 {it.refs.length > 1 ? <span style={{ marginLeft: 8, color: '#999' }}>+{it.refs.length - 1}</span> : null}
                             </td>
-                            <td style={{ padding: '8px 6px', textAlign: 'right' }}>{bytes(it.size_bytes)}</td>
-                            <td style={{ padding: '8px 6px', display: 'flex', gap: 10, alignItems: 'center' }}>
-                                <a href={wasmDownloadUrl(it.sha256)} target="_blank" rel="noreferrer">
-                                    Download
-                                </a>
-                                <button onClick={() => void pushOne(it.sha256)}>Push</button>
+                            <td style={{ textAlign: 'right' }}>{bytes(it.size_bytes)}</td>
+                            <td>
+                                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                                    <a href={wasmDownloadUrl(it.sha256)} target="_blank" rel="noreferrer">
+                                        Download
+                                    </a>
+                                    <button
+                                        onClick={() => void pushOne(it.sha256)}
+                                        disabled={!pushRef.trim() || pushingSha === it.sha256}
+                                    >
+                                        {pushingSha === it.sha256 ? 'Pushing…' : 'Push'}
+                                    </button>
+                                </div>
                             </td>
                         </tr>
                     ))}

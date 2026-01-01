@@ -1,0 +1,30 @@
+# ntx-backend configuration (YAML)
+# This file is loaded by default: `ntx-backend --config config/ntx-backend.yaml`
+
+bind: "127.0.0.1:9090"
+data_dir: "./.ntx-backend"
+
+# Allow any origin CORS (dev convenience). Set to false in production.
+cors_any_origin: true
+
+# Path to `oras` binary (or just "oras" if it is in PATH)
+oras_bin: "oras"
+
+# Harbor/OCI registry settings used by ingest/push.
+harbor:
+  # For self-signed Harbor HTTPS, set this to your Harbor CA/cert file.
+  # Example: "/home/cc/Desktop/harbor/certs/harbor.crt"
+  ca_file: /home/cc/Desktop/harbor/certs/harbor.crt
+
+  # Optional: if set, backend will do `oras login -u <user> --password-stdin <registry>`.
+  user: admin
+  pass: Harbor12345
+
+# Keep ingest/push temp dirs under data_dir/tmp (debugging)
+ingest_keep_tmp: false
+
+# Auto ingest on catalog cache miss.
+catalog_auto_ingest: false
+
+# Artifact type used by `POST /api/v1/wasm/push` when pushing to Harbor.
+wasm_artifact_type: "application/vnd.ntx.action-executor.v1"

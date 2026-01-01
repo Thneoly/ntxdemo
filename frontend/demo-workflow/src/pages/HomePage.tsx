@@ -6,14 +6,21 @@ export function HomePage() {
     const user = getAuthUser();
 
     return (
-        <div style={{ padding: 16, maxWidth: 720 }}>
-            <h1 style={{ margin: 0, fontSize: 18 }}>Home</h1>
-            <div style={{ marginTop: 8, color: '#666' }}>{user ? `Logged in as ${user}` : null}</div>
+        <div className="page">
+            <div className="pageHeader">
+                <h1 className="pageTitle">Home</h1>
+                <div className="pageActions">
+                    <Link to="/builder">Builder</Link>
+                    <Link to="/wasm">WASM</Link>
+                    <Link to="/health">Health</Link>
+                </div>
+            </div>
 
-            <div style={{ marginTop: 14, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                <Link to="/builder">Builder</Link>
-                <Link to="/wasm">WASM</Link>
-                <Link to="/health">Health</Link>
+            <div className="card" style={{ maxWidth: 520 }}>
+                <div style={{ fontWeight: 600 }}>Session</div>
+                <div className="muted" style={{ marginTop: 6 }}>
+                    {user ? `Logged in as ${user}` : '—'}
+                </div>
             </div>
         </div>
     );

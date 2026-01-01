@@ -5,6 +5,73 @@ use tokio::process::Command;
 
 use crate::{state::AppState, util::registry_from_ref};
 
+fn hint_for_oras_output(stdout: &str, stderr: &str) -> Option<&'static str> {
+    if stdout.contains("x509: certificate signed by unknown authority")
+        || stderr.contains("x509: certificate signed by unknown authority")
+    {
+        return Some(
+            "TLS verify failed (self-signed/unknown CA). Configure harbor.ca_file in config/ntx-backend.yaml (or install the CA into the system trust store), then retry.",
+        );
+    }
+    None
+}
+
+fn cap_text(s: &str, max_len: usize) -> (&str, bool) {
+    if s.len() <= max_len {
+        return (s, false);
+    }
+    // Safe because `max_len` is a byte index; adjust to char boundary.
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&s[..end], true)
+}
+
+fn format_oras_failure(
+    op: &str,
+    status: std::process::ExitStatus,
+    stdout: &str,
+    stderr: &str,
+) -> anyhow::Error {
+    const CAP: usize = 16 * 1024;
+
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+
+    let (stdout_cap, stdout_trunc) = cap_text(stdout, CAP);
+    let (stderr_cap, stderr_trunc) = cap_text(stderr, CAP);
+
+    let mut msg = String::new();
+    msg.push_str(op);
+    msg.push_str(" failed (exit=");
+    msg.push_str(&status.to_string());
+    msg.push_str(")");
+
+    if !stdout_cap.is_empty() {
+        msg.push_str("\n--- stdout ---\n");
+        msg.push_str(stdout_cap);
+        if stdout_trunc {
+            msg.push_str("\n... <stdout truncated>");
+        }
+    }
+
+    if !stderr_cap.is_empty() {
+        msg.push_str("\n--- stderr ---\n");
+        msg.push_str(stderr_cap);
+        if stderr_trunc {
+            msg.push_str("\n... <stderr truncated>");
+        }
+    }
+
+    if let Some(hint) = hint_for_oras_output(stdout, stderr) {
+        msg.push_str("\n--- hint ---\n");
+        msg.push_str(hint);
+    }
+
+    anyhow::anyhow!(msg)
+}
+
 pub async fn maybe_oras_login(state: &AppState, reference: &str) -> anyhow::Result<()> {
     let Some(registry) = registry_from_ref(reference) else {
         anyhow::bail!("invalid ref (missing registry host): {reference}");
@@ -45,8 +112,14 @@ pub async fn maybe_oras_login(state: &AppState, reference: &str) -> anyhow::Resu
 
     let output = child.wait_with_output().await?;
     if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("oras login failed: {stderr}");
+        return Err(format_oras_failure(
+            "oras login",
+            output.status,
+            &stdout,
+            &stderr,
+        ));
     }
 
     Ok(())
@@ -71,8 +144,14 @@ pub async fn oras_pull_to_dir(
         .await?;
 
     if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("oras pull failed: {stderr}");
+        return Err(format_oras_failure(
+            "oras pull",
+            output.status,
+            &stdout,
+            &stderr,
+        ));
     }
 
     Ok(())
@@ -108,8 +187,14 @@ pub async fn oras_push_files(
         .context("run oras push")?;
 
     if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("oras push failed: {stderr}");
+        return Err(format_oras_failure(
+            "oras push",
+            output.status,
+            &stdout,
+            &stderr,
+        ));
     }
 
     Ok(())

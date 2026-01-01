@@ -33,30 +33,34 @@ export function LoginPage() {
     }
 
     return (
-        <div style={{ padding: 16, maxWidth: 520 }}>
-            <h1 style={{ margin: 0, fontSize: 18 }}>Login</h1>
-            <div style={{ marginTop: 8, color: '#666', fontSize: 12 }}>
-                Enter any username for this demo.
+        <div className="page">
+            <div className="pageHeader">
+                <h1 className="pageTitle">Login</h1>
+                <div className="pageActions">
+                    <Link to="/">Home</Link>
+                </div>
             </div>
 
-            <form onSubmit={onSubmit} style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
-                <input
-                    style={{ flex: 1, padding: '8px 10px' }}
-                    value={user}
-                    onChange={(e) => {
-                        setUser(e.target.value);
-                        setError(null);
-                    }}
-                    placeholder="username"
-                    autoFocus
-                />
-                <button type="submit">Login</button>
-            </form>
+            <div className="card" style={{ maxWidth: 520 }}>
+                <div className="muted" style={{ fontSize: 12 }}>
+                    Enter any username for this demo.
+                </div>
 
-            {error ? <div style={{ marginTop: 10, color: 'crimson' }}>{error}</div> : null}
+                <form onSubmit={onSubmit} style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                        style={{ flex: 1 }}
+                        value={user}
+                        onChange={(e) => {
+                            setUser(e.target.value);
+                            setError(null);
+                        }}
+                        placeholder="username"
+                        autoFocus
+                    />
+                    <button type="submit">Login</button>
+                </form>
 
-            <div style={{ marginTop: 12, fontSize: 12 }}>
-                <Link to="/">Go to Home</Link>
+                {error ? <div style={{ marginTop: 10, color: '#b91c1c', fontSize: 12 }}>{error}</div> : null}
             </div>
         </div>
     );

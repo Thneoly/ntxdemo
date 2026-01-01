@@ -1,4 +1,5 @@
 mod app;
+mod config;
 mod oras;
 mod respond;
 mod routes;
@@ -12,7 +13,10 @@ use std::sync::Arc;
 use clap::Parser;
 use tracing::info;
 
-use crate::state::{AppState, Args, ensure_layout};
+use crate::{
+    config::{BackendConfig, load_config_file},
+    state::{AppState, Args, ensure_layout},
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -25,6 +29,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let Args {
+        config,
         bind,
         data_dir,
         cors_any_origin,
@@ -37,23 +42,49 @@ async fn main() -> anyhow::Result<()> {
         wasm_artifact_type,
     } = args;
 
-    ensure_layout(&data_dir).await?;
+    let file_cfg = load_config_file(&config)?;
+    let cfg = BackendConfig::defaults()?
+        .apply_file(file_cfg)
+        .apply_cli_overrides(
+            bind,
+            data_dir,
+            cors_any_origin,
+            oras_bin,
+            harbor_ca_file,
+            harbor_user,
+            harbor_pass,
+            ingest_keep_tmp,
+            catalog_auto_ingest,
+            wasm_artifact_type,
+        );
+
+    ensure_layout(&cfg.data_dir).await?;
 
     let state = Arc::new(AppState {
-        data_dir,
-        oras_bin,
-        harbor_ca_file,
-        harbor_user,
-        harbor_pass,
-        ingest_keep_tmp,
-        catalog_auto_ingest,
-        wasm_artifact_type,
+        data_dir: cfg.data_dir,
+        oras_bin: cfg.oras_bin,
+        harbor_ca_file: cfg.harbor_ca_file,
+        harbor_user: cfg.harbor_user,
+        harbor_pass: cfg.harbor_pass,
+        ingest_keep_tmp: cfg.ingest_keep_tmp,
+        catalog_auto_ingest: cfg.catalog_auto_ingest,
+        wasm_artifact_type: cfg.wasm_artifact_type,
     });
 
-    let app = app::build_app(state, cors_any_origin);
+    let app = app::build_app(state, cfg.cors_any_origin);
 
-    let listener = tokio::net::TcpListener::bind(bind).await?;
-    info!(bind = %bind, "ntx-backend listening");
+    let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
+    let git_sha = option_env!("NTX_BACKEND_GIT_SHA");
+    let git_dirty = option_env!("NTX_BACKEND_GIT_DIRTY");
+    info!(
+        bind = %cfg.bind,
+        config = %config.display(),
+        name = env!("CARGO_PKG_NAME"),
+        version = env!("CARGO_PKG_VERSION"),
+        git_sha = git_sha.unwrap_or(""),
+        git_dirty = git_dirty.unwrap_or(""),
+        "ntx-backend listening"
+    );
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown::shutdown_signal())

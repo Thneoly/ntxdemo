@@ -1,4 +1,5 @@
 import { defaultBackendBaseUrl } from './ntxBackend';
+import type { ActionsCatalog } from '../types/catalog';
 
 export type WasmEntry = {
     sha256: string;
@@ -69,4 +70,20 @@ export async function pushWasmToHarbor(opts: {
         throw new Error(`push failed: ${res.status} ${res.statusText}${text ? `: ${text}` : ''}`);
     }
     return (await res.json()) as PushWasmResp;
+}
+
+export async function getWasmGeneratedCatalog(sha256: string): Promise<ActionsCatalog> {
+    const res = await fetch(`${baseUrl()}/api/v1/wasm/${encodeURIComponent(sha256)}/catalog`);
+    if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        if (res.status === 404 && !text.trim()) {
+            throw new Error(
+                `failed to load wasm catalog: 404 Not Found (backend missing /api/v1/wasm/{sha256}/catalog; please rebuild/restart ntx-backend)`
+            );
+        }
+        throw new Error(
+            `failed to load wasm catalog: ${res.status} ${res.statusText}${text ? `: ${text}` : ''}`
+        );
+    }
+    return (await res.json()) as ActionsCatalog;
 }
