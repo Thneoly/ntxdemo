@@ -25,6 +25,7 @@ export function BuilderSidebar(props: {
     runPackaging: boolean;
     runPackageError: string | null;
     runPackageResult: { id: string; dir: string } | null;
+    runOutputUrl: string | null;
     runStarting: boolean;
     runStartError: string | null;
     runStartResult: { pid: number } | null;
@@ -190,6 +191,15 @@ export function BuilderSidebar(props: {
                         <button disabled={props.runPackaging} onClick={props.onPackage}>
                             {props.runPackaging ? 'Packaging…' : 'Package'}
                         </button>
+                        <button
+                            disabled={!props.runOutputUrl}
+                            onClick={() => {
+                                if (!props.runOutputUrl) return;
+                                window.open(props.runOutputUrl, '_blank', 'noopener,noreferrer');
+                            }}
+                        >
+                            View
+                        </button>
                         <button disabled={!props.runPackageResult || props.runStarting} onClick={props.onRun}>
                             {props.runStarting ? 'Starting…' : 'Run'}
                         </button>
@@ -229,7 +239,7 @@ export function BuilderSidebar(props: {
 
                 {props.runPackageResult ? (
                     <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
-                        bundled: <code>{props.runPackageResult.dir}</code>
+                        output: <code>{props.runPackageResult.dir}/output</code>
                     </div>
                 ) : null}
 

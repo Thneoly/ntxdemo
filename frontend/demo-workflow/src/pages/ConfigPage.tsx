@@ -22,6 +22,13 @@ const DEFAULT_CONFIG_YAML = `nic:
   iface: "ntx0"
 resource:
   path: "config/resource/resources.yaml"
+
+# Optional: host-side packet capture (pcap, Ethernet/L2 frames).
+capture:
+    enabled: true
+    dir: "./pcap"
+    rotate_max_bytes: 104857600  # 100 MiB
+    rotate_interval_secs: 60
 `;
 
 const DEFAULT_RESOURCES_YAML = `ipv4:

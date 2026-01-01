@@ -73,6 +73,7 @@ pub struct Args {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub config_path: PathBuf,
     pub data_dir: PathBuf,
     pub oras_bin: String,
     pub harbor_ca_file: Option<PathBuf>,

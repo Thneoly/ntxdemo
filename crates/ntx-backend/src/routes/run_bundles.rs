@@ -1,4 +1,5 @@
 use std::{
+    path::Component,
     path::{Path, PathBuf},
     process::Stdio,
     time::{SystemTime, UNIX_EPOCH},
@@ -46,7 +47,7 @@ fn find_repo_root() -> Option<std::path::PathBuf> {
     None
 }
 
-fn resolve_ntx_bin(raw: &str) -> String {
+fn resolve_ntx_bin(raw: &str, backend_config_path: Option<&Path>) -> String {
     let raw = raw.trim();
     if raw.is_empty() {
         return "ntx".to_string();
@@ -61,6 +62,16 @@ fn resolve_ntx_bin(raw: &str) -> String {
     // If it exists relative to current working directory, use it.
     if p.exists() {
         return raw.to_string();
+    }
+
+    // If it exists relative to backend config file directory, use it.
+    if let Some(cfg_path) = backend_config_path {
+        if let Some(cfg_dir) = cfg_path.parent() {
+            let candidate = cfg_dir.join(p);
+            if candidate.exists() {
+                return candidate.display().to_string();
+            }
+        }
     }
 
     // If it looks like a repo-relative path, resolve against repo root.
@@ -134,6 +145,120 @@ fn to_abs_string(path: &Path) -> String {
     }
 
     path.display().to_string()
+}
+
+fn yaml_get_string<'a>(root: &'a YamlValue, path: &[&str]) -> Option<&'a str> {
+    let mut cur = root;
+    for key in path {
+        let YamlValue::Mapping(m) = cur else {
+            return None;
+        };
+        cur = m.get(&YamlValue::String((*key).to_string()))?;
+    }
+    match cur {
+        YamlValue::String(s) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+fn yaml_is_mapping(root: &YamlValue, path: &[&str]) -> bool {
+    let mut cur = root;
+    for key in path {
+        let YamlValue::Mapping(m) = cur else {
+            return false;
+        };
+        cur = match m.get(&YamlValue::String((*key).to_string())) {
+            Some(v) => v,
+            None => return false,
+        };
+    }
+    matches!(cur, YamlValue::Mapping(_))
+}
+
+fn yaml_get_bool(root: &YamlValue, path: &[&str]) -> Option<bool> {
+    let mut cur = root;
+    for key in path {
+        let YamlValue::Mapping(m) = cur else {
+            return None;
+        };
+        cur = m.get(&YamlValue::String((*key).to_string()))?;
+    }
+    match cur {
+        YamlValue::Bool(b) => Some(*b),
+        _ => None,
+    }
+}
+
+fn ensure_rel_no_parent(dir: &str) -> bool {
+    let p = Path::new(dir);
+    if p.is_absolute() {
+        return false;
+    }
+    !p.components().any(|c| matches!(c, Component::ParentDir))
+}
+
+fn is_safe_filename(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let p = Path::new(name);
+    p.components().all(|c| match c {
+        Component::Normal(_) => true,
+        _ => false,
+    })
+}
+
+fn html_escape(s: &str) -> String {
+    // Minimal escaping for embedding filesystem paths / names into HTML.
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+async fn resolve_run_bundle_capture_dir(run_dir: &Path) -> anyhow::Result<PathBuf> {
+    let config_yaml_path = run_dir.join("config").join("config.yaml");
+    let config_base_dir = config_yaml_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| run_dir.join("config"));
+
+    let raw = match fs::read_to_string(&config_yaml_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            // If config.yaml is missing, still default to a conventional location.
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return Ok(config_base_dir.join("captures"));
+            }
+            return Err(e.into());
+        }
+    };
+
+    let v: YamlValue = serde_yaml::from_str(&raw)?;
+    // Runtime reads capture config at the top-level of config.yaml:
+    //   capture:
+    //     enabled: true
+    //     dir: "./pcap"
+    // Keep backward-compat for older variants under kernel.capture.*
+    let dir_raw = yaml_get_string(&v, &["capture", "dir"])
+        .or_else(|| yaml_get_string(&v, &["kernel", "capture", "dir"]));
+
+    // If capture.dir is not set, default to run-bundle output directory.
+    let Some(dir_raw) = dir_raw else {
+        return Ok(run_dir.join("output").join("pcap"));
+    };
+
+    // Mirror the runtime behavior: relative capture.dir resolves relative to config.yaml directory.
+    // But for safety, disallow `..` traversal in the relative path.
+    if Path::new(dir_raw).is_absolute() {
+        Ok(PathBuf::from(dir_raw))
+    } else {
+        if !ensure_rel_no_parent(dir_raw) {
+            anyhow::bail!("invalid capture.dir (must not contain '..')");
+        }
+        Ok(config_base_dir.join(dir_raw))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -316,7 +441,12 @@ pub async fn create_run_bundle(
     //     executor.wasm
     //     catalog.json
     //     scheduler-composed.wasm
+    //   output/
+    //     logs/
+    //     pcap/
     let out_config_dir = out_dir.join("config");
+    let out_output_dir = out_dir.join("output");
+    let out_output_pcap_dir = out_output_dir.join("pcap");
     let out_scenario = out_config_dir.join("scenario.yaml");
     let out_wasm = out_dir.join("wasm").join("executor.wasm");
     let out_catalog = out_dir.join("wasm").join("catalog.json");
@@ -326,6 +456,13 @@ pub async fn create_run_bundle(
         return json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("create run bundle dir failed: {e}"),
+        );
+    }
+
+    if let Err(e) = fs::create_dir_all(&out_output_dir).await {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("create output dir failed: {e}"),
         );
     }
 
@@ -484,6 +621,22 @@ pub async fn create_run_bundle(
         &["resource", "path"],
         to_abs_string(&out_config_dir.join("resource").join("resources.yaml")),
     );
+
+    // Ensure capture output ends up under run-bundle output/pcap.
+    // If capture is enabled (or capture section exists), set capture.dir to an absolute path.
+    let capture_enabled = yaml_get_bool(&cfg_yaml, &["capture", "enabled"]).unwrap_or(false);
+    let capture_has_dir = yaml_get_string(&cfg_yaml, &["capture", "dir"]).is_some();
+    let capture_has_section = yaml_is_mapping(&cfg_yaml, &["capture"]);
+
+    if capture_enabled || capture_has_dir || capture_has_section {
+        // Create the pcap directory early so users can see it immediately under output/.
+        let _ = fs::create_dir_all(&out_output_pcap_dir).await;
+        yaml_set_string(
+            &mut cfg_yaml,
+            &["capture", "dir"],
+            to_abs_string(&out_output_pcap_dir),
+        );
+    }
     let new_cfg_raw = match serde_yaml::to_string(&cfg_yaml) {
         Ok(s) => s,
         Err(e) => {
@@ -560,7 +713,7 @@ pub async fn run_run_bundle(
         }
     }
 
-    let log_dir = run_dir.join("logs");
+    let log_dir = run_dir.join("output").join("logs");
     if let Err(e) = fs::create_dir_all(&log_dir).await {
         return json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -604,26 +757,7 @@ pub async fn run_run_bundle(
 
     // Resolve `ntx` binary path.
     // If `ntx` is not on PATH (common in dev), prefer a repo-local build output.
-    let resolved_ntx_bin = if state.ntx_bin == "ntx" {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let cand_debug_lower = cwd.join("target").join("debug").join("ntx");
-        let cand_debug_upper = cwd.join("target").join("debug").join("Ntx");
-        let cand_release_lower = cwd.join("target").join("release").join("ntx");
-        let cand_release_upper = cwd.join("target").join("release").join("Ntx");
-        if cand_debug_lower.exists() {
-            cand_debug_lower.display().to_string()
-        } else if cand_debug_upper.exists() {
-            cand_debug_upper.display().to_string()
-        } else if cand_release_lower.exists() {
-            cand_release_lower.display().to_string()
-        } else if cand_release_upper.exists() {
-            cand_release_upper.display().to_string()
-        } else {
-            state.ntx_bin.clone()
-        }
-    } else {
-        state.ntx_bin.clone()
-    };
+    let resolved_ntx_bin = resolve_ntx_bin(&state.ntx_bin, Some(&state.config_path));
 
     // Ensure required capabilities for AF_PACKET execution.
     // Root-friendly behavior: do NOT attempt to call `setcap` automatically.
@@ -665,10 +799,15 @@ pub async fn run_run_bundle(
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
+            let exists = std::path::Path::new(&resolved_ntx_bin).exists();
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!(
-                    "spawn ntx failed: {e}. Hint: set backend `ntx_bin` (crates/ntx-backend/conf/ntx-backend.yaml) or start backend with `--ntx-bin /abs/path/to/ntx`",
+                    "spawn ntx failed: {e}. ntx_bin(raw)={:?} ntx_bin(resolved)={:?} exists={} backend_config={}. Hint: set backend `ntx_bin` to an absolute path, or use a path relative to the backend config file directory, or start backend with `--ntx-bin /abs/path/to/ntx`",
+                    state.ntx_bin,
+                    resolved_ntx_bin,
+                    exists,
+                    state.config_path.display(),
                 ),
             );
         }
@@ -729,8 +868,8 @@ pub async fn get_run_bundle_status(
         return json_error(StatusCode::NOT_FOUND, "run bundle not found");
     }
 
-    let stdout_path = run_dir.join("logs").join("ntx.stdout.log");
-    let stderr_path = run_dir.join("logs").join("ntx.stderr.log");
+    let stdout_path = run_dir.join("output").join("logs").join("ntx.stdout.log");
+    let stderr_path = run_dir.join("output").join("logs").join("ntx.stderr.log");
 
     let mut procs = state.run_processes.lock().await;
     if let Some(mut proc) = procs.remove(&id) {
@@ -852,8 +991,8 @@ pub async fn get_run_bundle_logs(
             (proc.stdout_path.clone(), proc.stderr_path.clone())
         } else {
             (
-                run_dir.join("logs").join("ntx.stdout.log"),
-                run_dir.join("logs").join("ntx.stderr.log"),
+                run_dir.join("output").join("logs").join("ntx.stdout.log"),
+                run_dir.join("output").join("logs").join("ntx.stderr.log"),
             )
         }
     };
@@ -890,4 +1029,407 @@ pub async fn get_run_bundle_logs(
         }),
     )
         .into_response()
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunBundleCaptureFile {
+    pub name: String,
+    pub size_bytes: u64,
+    pub modified_ms: Option<u128>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunBundleCapturesResp {
+    pub id: String,
+    pub capture_dir: String,
+    pub files: Vec<RunBundleCaptureFile>,
+}
+
+pub async fn list_run_bundle_captures(
+    State(state): State<std::sync::Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let id = id.trim().to_string();
+    if !is_safe_id(&id) {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "invalid id (allowed: [A-Za-z0-9._-])",
+        );
+    }
+
+    let run_dir = run_bundle_dir(&state.data_dir, &id);
+    if !fs::try_exists(&run_dir).await.unwrap_or(false) {
+        return json_error(StatusCode::NOT_FOUND, "run bundle not found");
+    }
+
+    let capture_dir = match resolve_run_bundle_capture_dir(&run_dir).await {
+        Ok(p) => p,
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("resolve capture dir failed: {e}"),
+            );
+        }
+    };
+
+    let mut files: Vec<RunBundleCaptureFile> = Vec::new();
+    let mut rd = match fs::read_dir(&capture_dir).await {
+        Ok(rd) => rd,
+        Err(e) => {
+            // No captures yet => empty list.
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return (
+                    StatusCode::OK,
+                    Json(RunBundleCapturesResp {
+                        id,
+                        capture_dir: capture_dir.display().to_string(),
+                        files,
+                    }),
+                )
+                    .into_response();
+            }
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("read capture dir failed: {e}"),
+            );
+        }
+    };
+
+    while let Ok(Some(ent)) = rd.next_entry().await {
+        let name = ent.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".pcap") {
+            continue;
+        }
+        let meta = match ent.metadata().await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let modified_ms = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok().map(|d| d.as_millis()));
+        files.push(RunBundleCaptureFile {
+            name,
+            size_bytes: meta.len(),
+            modified_ms,
+        });
+    }
+
+    // Newest first.
+    files.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+
+    (
+        StatusCode::OK,
+        Json(RunBundleCapturesResp {
+            id,
+            capture_dir: capture_dir.display().to_string(),
+            files,
+        }),
+    )
+        .into_response()
+}
+
+pub async fn download_run_bundle_capture_latest(
+    State(state): State<std::sync::Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let id = id.trim().to_string();
+    if !is_safe_id(&id) {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "invalid id (allowed: [A-Za-z0-9._-])",
+        );
+    }
+
+    let run_dir = run_bundle_dir(&state.data_dir, &id);
+    if !fs::try_exists(&run_dir).await.unwrap_or(false) {
+        return json_error(StatusCode::NOT_FOUND, "run bundle not found");
+    }
+
+    let capture_dir = match resolve_run_bundle_capture_dir(&run_dir).await {
+        Ok(p) => p,
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("resolve capture dir failed: {e}"),
+            );
+        }
+    };
+
+    let mut rd = match fs::read_dir(&capture_dir).await {
+        Ok(rd) => rd,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return json_error(StatusCode::NOT_FOUND, "no captures yet");
+            }
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("read capture dir failed: {e}"),
+            );
+        }
+    };
+
+    let mut best: Option<(PathBuf, u128)> = None;
+    while let Ok(Some(ent)) = rd.next_entry().await {
+        let name = ent.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".pcap") {
+            continue;
+        }
+        let meta = match ent.metadata().await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let ms = match meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        {
+            Some(d) => d.as_millis(),
+            None => continue,
+        };
+        let path = ent.path();
+        if best.as_ref().map(|(_, bms)| ms > *bms).unwrap_or(true) {
+            best = Some((path, ms));
+        }
+    }
+
+    let Some((path, _ms)) = best else {
+        return json_error(StatusCode::NOT_FOUND, "no captures yet");
+    };
+
+    // Prevent accidental huge allocations.
+    let meta = match fs::metadata(&path).await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("stat capture file failed: {e}"),
+            );
+        }
+    };
+    let max_bytes: u64 = 128 * 1024 * 1024;
+    if meta.len() > max_bytes {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "latest capture is too large to download via API ({} bytes; max {} bytes)",
+                meta.len(),
+                max_bytes
+            ),
+        );
+    }
+
+    let bytes = match fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("read capture file failed: {e}"),
+            );
+        }
+    };
+
+    let filename = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "capture.pcap".to_string());
+
+    let mut resp = axum::response::Response::new(axum::body::Body::from(bytes));
+    *resp.status_mut() = StatusCode::OK;
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/vnd.tcpdump.pcap"),
+    );
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        match axum::http::HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")) {
+            Ok(v) => v,
+            Err(_) => axum::http::HeaderValue::from_static("attachment"),
+        },
+    );
+    resp
+}
+
+pub async fn view_run_bundle_output(
+    State(state): State<std::sync::Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let id = id.trim().to_string();
+    if !is_safe_id(&id) {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "invalid id (allowed: [A-Za-z0-9._-])",
+        );
+    }
+
+    let run_dir = run_bundle_dir(&state.data_dir, &id);
+    if !fs::try_exists(&run_dir).await.unwrap_or(false) {
+        return json_error(StatusCode::NOT_FOUND, "run bundle not found");
+    }
+
+    let output_dir = run_dir.join("output");
+    let output_dir_abs: PathBuf = std::fs::canonicalize(&output_dir).unwrap_or(output_dir.clone());
+
+    let logs_dir = output_dir.join("logs");
+    let pcap_dir = output_dir.join("pcap");
+
+    async fn list_names(dir: &Path) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut rd = match fs::read_dir(dir).await {
+            Ok(r) => r,
+            Err(_) => return out,
+        };
+        while let Ok(Some(ent)) = rd.next_entry().await {
+            let name = ent.file_name().to_string_lossy().to_string();
+            if is_safe_filename(&name) {
+                out.push(name);
+            }
+        }
+        out.sort();
+        out
+    }
+
+    let log_files = list_names(&logs_dir).await;
+    let pcap_files = list_names(&pcap_dir).await;
+
+    let mut html = String::new();
+    html.push_str("<!doctype html><html><head><meta charset=\"utf-8\"/>");
+    html.push_str("<title>Ntx run-bundle output</title>");
+    html.push_str("<style>body{font-family:system-ui,Arial,sans-serif;margin:16px} code,pre{font-family:ui-monospace,Menlo,monospace} a{color:#2563eb;text-decoration:none} a:hover{text-decoration:underline} .muted{color:#6b7280}</style>");
+    html.push_str("</head><body>");
+
+    html.push_str("<h2>Run bundle output</h2>");
+    html.push_str(&format!(
+        "<div class=\"muted\">id: <code>{}</code></div>",
+        html_escape(&id)
+    ));
+    html.push_str(&format!(
+        "<div class=\"muted\" style=\"margin-top:6px\">output dir: <code>{}</code></div>",
+        html_escape(&output_dir_abs.display().to_string())
+    ));
+
+    html.push_str("<h3 style=\"margin-top:16px\">logs</h3>");
+    if log_files.is_empty() {
+        html.push_str("<div class=\"muted\">(empty)</div>");
+    } else {
+        html.push_str("<ul>");
+        for name in log_files {
+            html.push_str(&format!(
+                "<li><a href=\"/api/v1/run-bundles/{}/output/files/logs/{}\">{}</a></li>",
+                html_escape(&id),
+                html_escape(&name),
+                html_escape(&name)
+            ));
+        }
+        html.push_str("</ul>");
+    }
+
+    html.push_str("<h3 style=\"margin-top:16px\">pcap</h3>");
+    if pcap_files.is_empty() {
+        html.push_str("<div class=\"muted\">(empty)</div>");
+    } else {
+        html.push_str("<ul>");
+        for name in pcap_files {
+            html.push_str(&format!(
+                "<li><a href=\"/api/v1/run-bundles/{}/output/files/pcap/{}\">{}</a></li>",
+                html_escape(&id),
+                html_escape(&name),
+                html_escape(&name)
+            ));
+        }
+        html.push_str("</ul>");
+    }
+
+    html.push_str("</body></html>");
+
+    (
+        StatusCode::OK,
+        [("content-type", "text/html; charset=utf-8")],
+        html,
+    )
+        .into_response()
+}
+
+pub async fn download_run_bundle_output_file(
+    State(state): State<std::sync::Arc<AppState>>,
+    axum::extract::Path((id, kind, name)): axum::extract::Path<(String, String, String)>,
+) -> impl IntoResponse {
+    let id = id.trim().to_string();
+    if !is_safe_id(&id) {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "invalid id (allowed: [A-Za-z0-9._-])",
+        );
+    }
+
+    let kind = kind.trim();
+    if kind != "logs" && kind != "pcap" {
+        return json_error(StatusCode::BAD_REQUEST, "invalid kind (expected logs|pcap)");
+    }
+    if !is_safe_filename(&name) {
+        return json_error(StatusCode::BAD_REQUEST, "invalid filename");
+    }
+
+    let run_dir = run_bundle_dir(&state.data_dir, &id);
+    if !fs::try_exists(&run_dir).await.unwrap_or(false) {
+        return json_error(StatusCode::NOT_FOUND, "run bundle not found");
+    }
+
+    let path = run_dir.join("output").join(kind).join(&name);
+    let meta = match fs::metadata(&path).await {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return json_error(StatusCode::NOT_FOUND, "file not found");
+        }
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("stat output file failed: {e}"),
+            );
+        }
+    };
+
+    let max_bytes: u64 = 256 * 1024 * 1024;
+    if meta.len() > max_bytes {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "file is too large to download via API ({} bytes; max {} bytes)",
+                meta.len(),
+                max_bytes
+            ),
+        );
+    }
+
+    let bytes = match fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("read output file failed: {e}"),
+            );
+        }
+    };
+
+    let content_type = if kind == "pcap" || name.ends_with(".pcap") {
+        "application/vnd.tcpdump.pcap"
+    } else {
+        "text/plain; charset=utf-8"
+    };
+
+    let mut resp = axum::response::Response::new(axum::body::Body::from(bytes));
+    *resp.status_mut() = StatusCode::OK;
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_str(content_type)
+            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream")),
+    );
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        match axum::http::HeaderValue::from_str(&format!("attachment; filename=\"{}\"", name)) {
+            Ok(v) => v,
+            Err(_) => axum::http::HeaderValue::from_static("attachment"),
+        },
+    );
+    resp
 }

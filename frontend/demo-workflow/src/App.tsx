@@ -234,6 +234,15 @@ export default function App() {
             .finally(() => setConfigBundlesLoading(false));
     }, []);
 
+    useEffect(() => {
+        // Default to the newest config bundle once loaded.
+        // Backend sorts ascending by name, so pick the last.
+        if (selectedConfigBundleName) return;
+        if (!configBundles.length) return;
+        void selectConfigBundle(configBundles[configBundles.length - 1]!.name);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [configBundles, selectedConfigBundleName]);
+
     const selectConfigBundle = async (name: string) => {
         setSelectedConfigBundleName(name);
         setSelectedConfigBundle(null);
@@ -619,6 +628,15 @@ export default function App() {
                 runPackaging={runPackaging}
                 runPackageError={runPackageError}
                 runPackageResult={runPackageResult ? { id: runPackageResult.id, dir: runPackageResult.dir } : null}
+                runOutputUrl={
+                    runPackageResult
+                        ? (() => {
+                            const baseUrl = defaultBackendBaseUrl().replace(/\/$/, '');
+                            const id = encodeURIComponent(runPackageResult.id);
+                            return `${baseUrl}/api/v1/run-bundles/${id}/output`;
+                        })()
+                        : null
+                }
                 runStarting={runStarting}
                 runStartError={runStartError}
                 runStartResult={runStartResult ? { pid: runStartResult.pid } : null}

@@ -69,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
     ensure_layout(&cfg.data_dir).await?;
 
     let state = Arc::new(AppState {
+        config_path: config.clone(),
         data_dir: cfg.data_dir,
         oras_bin: cfg.oras_bin,
         harbor_ca_file: cfg.harbor_ca_file,

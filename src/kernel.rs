@@ -17,9 +17,11 @@ use ntx_network::{
 
 use ntx_network::resources::NonSocketResourceValue;
 use once_cell::sync::Lazy;
+use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tracing::{error, info};
 
 /// Publish a fresh ABR snapshot that includes resources for *all* currently-registered
@@ -461,6 +463,15 @@ struct Kernel {
 
 static KERNEL: Lazy<Kernel> = Lazy::new(|| Kernel::new().expect("Kernel::new failed"));
 
+static KERNEL_CONFIG_PATH: OnceCell<PathBuf> = OnceCell::new();
+
+fn kernel_config_path() -> PathBuf {
+    KERNEL_CONFIG_PATH
+        .get()
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from("config/config.yaml"))
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct NicConfig {
     iface: String,
@@ -471,18 +482,125 @@ struct ResourceConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+struct CaptureConfig {
+    /// Enable capture.
+    enabled: bool,
+
+    /// Output directory for capture files.
+    dir: Option<String>,
+
+    /// Rotate capture file when it reaches this many bytes.
+    /// Default: 100 MiB.
+    rotate_max_bytes: u64,
+
+    /// Rotate capture file after this many seconds.
+    /// Default: 60 seconds.
+    rotate_interval_secs: u64,
+}
+
+impl Default for CaptureConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dir: None,
+            rotate_max_bytes: 100 * 1024 * 1024,
+            rotate_interval_secs: 60,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct Config {
     nic: NicConfig,
     resource: ResourceConfig,
+
+    #[serde(default)]
+    capture: CaptureConfig,
+}
+
+struct CaptureNic {
+    inner: Box<dyn Nic + Send + Sync>,
+    cap: Arc<crate::capture::PcapCapture>,
+}
+
+impl Nic for CaptureNic {
+    fn ifindex(&self) -> i32 {
+        self.inner.ifindex()
+    }
+
+    fn ifname(&self) -> &str {
+        self.inner.ifname()
+    }
+
+    fn iface_mac(&self) -> Option<[u8; 6]> {
+        self.inner.iface_mac()
+    }
+
+    fn send(&self, frame: &[u8]) -> anyhow::Result<usize> {
+        let n = self.inner.send(frame)?;
+        self.cap.record_tx(&frame[..n.min(frame.len())]);
+        Ok(n)
+    }
+
+    fn recv(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
+        let n = self.inner.recv(buf)?;
+        self.cap.record_rx(&buf[..n]);
+        Ok(n)
+    }
+
+    fn recv_nonblocking(&mut self, buf: &mut [u8]) -> anyhow::Result<Option<usize>> {
+        let n = self.inner.recv_nonblocking(buf)?;
+        if let Some(n) = n {
+            self.cap.record_rx(&buf[..n]);
+        }
+        Ok(n)
+    }
+
+    fn poll_readable(&self, timeout: Option<std::time::Duration>) -> anyhow::Result<bool> {
+        self.inner.poll_readable(timeout)
+    }
+
+    fn last_pkttype(&self) -> Option<u8> {
+        self.inner.last_pkttype()
+    }
 }
 
 impl Kernel {
     fn new() -> Result<Self> {
-        let cfg = Config::load_yaml_file("config/config.yaml")
-            .context("load kernel config (config/config.yaml)")?;
-        let nic: Mutex<Box<dyn Nic + Send + Sync>> = Mutex::new(Box::new(
-            AfPacketNic::open(&cfg.nic.iface).context("open afpacket nic")?,
-        ));
+        let cfg_path = kernel_config_path();
+        let cfg = Config::load_yaml_file(&cfg_path)
+            .with_context(|| format!("load kernel config ({})", cfg_path.display()))?;
+
+        let base_nic: Box<dyn Nic + Send + Sync> =
+            Box::new(AfPacketNic::open(&cfg.nic.iface).context("open afpacket nic")?);
+
+        let nic: Mutex<Box<dyn Nic + Send + Sync>> = if cfg.capture.enabled {
+            let Some(dir) = cfg.capture.dir.clone() else {
+                anyhow::bail!("capture.enabled=true but capture.dir is not set");
+            };
+
+            // Resolve capture dir relative to the kernel config.yaml location.
+            let base_dir = cfg_path.parent().unwrap_or_else(|| Path::new("."));
+            let dir_path = PathBuf::from(dir);
+            let resolved_dir = if dir_path.is_absolute() {
+                dir_path
+            } else {
+                base_dir.join(dir_path)
+            };
+
+            let cap = crate::capture::PcapCapture::start(
+                resolved_dir,
+                cfg.capture.rotate_max_bytes,
+                std::time::Duration::from_secs(cfg.capture.rotate_interval_secs),
+            )?;
+            Mutex::new(Box::new(CaptureNic {
+                inner: base_nic,
+                cap,
+            }))
+        } else {
+            Mutex::new(base_nic)
+        };
 
         let reg: LayerRegistry = default_registry();
         let arp_cache = Mutex::new(ArpCache::new(std::time::Duration::from_secs(60)));
@@ -548,7 +666,8 @@ impl Config {
 }
 
 // init function to setup networking stack
-pub fn init(_path: impl AsRef<Path>) -> Result<()> {
+pub fn init(path: impl AsRef<Path>) -> Result<()> {
+    let _ = KERNEL_CONFIG_PATH.set(path.as_ref().to_path_buf());
     let _ = &*KERNEL;
     Ok(())
 }
