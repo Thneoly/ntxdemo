@@ -514,6 +514,7 @@ export default function App() {
                         <Link to="/">Home</Link>
                         <Link to="/builder">Builder</Link>
                         <Link to="/wasm">WASM</Link>
+                        <Link to="/config">Config</Link>
                         <Link to="/health">Health</Link>
                     </div>
                 </div>
