@@ -45,6 +45,15 @@ impl EngineManager {
         self.default.is_some()
     }
 
+    /// Try to move the default engine out of the manager.
+    ///
+    /// Returns `None` if no default engine is registered.
+    pub fn try_take_default_engine(&mut self) -> Option<ComponentEngine> {
+        let default = self.default.clone()?;
+        let idx = self.engines.iter().position(|(h, _)| *h == default)?;
+        Some(self.engines.swap_remove(idx).1)
+    }
+
     /// Move the default engine out of the manager.
     ///
     /// This is used by the host "engine owner" task so that the long-running

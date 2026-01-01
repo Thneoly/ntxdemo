@@ -68,6 +68,7 @@ pub struct AppState {
 
 pub async fn ensure_layout(data_dir: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(data_dir.join("catalog")).await?;
+    fs::create_dir_all(data_dir.join("config-bundles")).await?;
     fs::create_dir_all(data_dir.join("tmp")).await?;
     fs::create_dir_all(data_dir.join("wasm")).await?;
     fs::create_dir_all(data_dir.join("workflows")).await?;

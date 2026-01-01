@@ -5,6 +5,7 @@ import { RequireAuth } from './RequireAuth';
 import { HealthPage } from './pages/HealthPage';
 import { HomePage } from './pages/HomePage';
 import { LoginPage } from './pages/LoginPage';
+import { ConfigPage } from './pages/ConfigPage';
 import { WasmListPage } from './pages/WasmListPage';
 import { WasmUploadPage } from './pages/WasmUploadPage';
 
@@ -26,6 +27,14 @@ export default function AppRouter() {
                 element={
                     <RequireAuth>
                         <App />
+                    </RequireAuth>
+                }
+            />
+            <Route
+                path="/config"
+                element={
+                    <RequireAuth>
+                        <ConfigPage />
                     </RequireAuth>
                 }
             />

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use ntx::{app_config::AppConfig, kernel, logger, scheduler};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Parser)]
 #[command(name = "ntx")]
@@ -9,6 +9,22 @@ struct Cli {
     /// Unified app config file path (YAML).
     #[arg(long, default_value = "config/app.yaml")]
     config: PathBuf,
+}
+
+fn resolve_app_config_path(p: &Path) -> PathBuf {
+    // Accept either a YAML file path, or a directory produced by ntx-backend
+    // config bundles: <bundle>/config/app.yaml.
+    if p.is_dir() {
+        let candidate = p.join("config").join("app.yaml");
+        if candidate.is_file() {
+            return candidate;
+        }
+        let candidate = p.join("app.yaml");
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    p.to_path_buf()
 }
 
 /// Host entrypoint.
@@ -24,12 +40,14 @@ async fn main() -> Result<()> {
 
     // Unified app config (kernel + scheduler/wasm). We fall back to defaults
     // if the file doesn't exist so the binary remains runnable.
-    let cfg = match AppConfig::load_yaml_file(&cli.config) {
+    let resolved_config = resolve_app_config_path(&cli.config);
+    let cfg = match AppConfig::load_yaml_file(&resolved_config) {
         Ok(cfg) => cfg,
         Err(e) => {
             tracing::warn!(
                 target: "ntx::main",
                 config = %cli.config.display(),
+                resolved_config = %resolved_config.display(),
                 error = %e,
                 "failed to load app config; falling back to defaults"
             );
@@ -66,7 +84,16 @@ async fn main() -> Result<()> {
         let mut mgr = ntx::wasm_engine::EngineManager::global()
             .lock()
             .expect("engine manager poisoned");
-        mgr.take_default_engine()
+        mgr.try_take_default_engine()
+    };
+
+    let engine = match engine {
+        Some(engine) => engine,
+        None => {
+            return Err(anyhow::anyhow!(
+                "wasm engine not initialized (no default engine registered). Check your app config has scheduler.wasm.component_path set and that it points to a valid .wasm component."
+            ));
+        }
     };
 
     // Spawn the engine owner and give scheduler the TX for RX batches.

@@ -1,0 +1,97 @@
+package ntx:scenario-actions-executor@0.1.0;
+
+use ntx:scenario-eventbus/event-bus@0.1.0;
+use ntx:core-types/types@0.1.0;
+
+/// actions-executor：只负责执行 action，不负责调度。
+interface action-component {
+    use types.{action-def, action-outcome, action-context, json};
+
+    /// Minimal action info for palette listing.
+    record action-summary {
+        id: string,
+        call: string,
+        title: string,
+        description: option<string>,
+        tags: list<string>,
+    }
+
+    /// Capabilities are intentionally coarse-grained; keep stable over time.
+    enum action-capability {
+        /// Action may emit `packet.tx-request` events (scheduler/host will do actual tx).
+        emits-packet-tx-request,
+
+        /// Action may depend on user resources (ip/mac/port etc) provided via ctx.resources.
+        needs-user-resources,
+
+        /// Action may emit topology/workflow control events.
+        emits-topology-control,
+    }
+
+    /// Detailed action specification for building node property panels and validation.
+    record action-spec {
+        id: string,
+        call: string,
+        title: string,
+        description: option<string>,
+
+        /// JSON Schema (recommended: Draft-07 subset) serialized as string.
+        /// The schema describes the JSON object passed to `action-def.params`.
+        input-schema-json: json,
+
+        /// Default params JSON string (object). Used when user drags a new action onto canvas.
+        defaults-json: option<json>,
+
+        /// Optional UI schema / form hints for frontend (layout/order/widgets) as JSON.
+        ui-schema-json: option<json>,
+
+        /// Example params JSON string for quick-start.
+        examples-json: option<json>,
+
+        /// High-level capabilities for editor hints / compile-time checks.
+        capabilities: list<action-capability>,
+
+        /// Executor build identity for caching / diagnosing mismatches.
+        /// Suggested format: git sha/version string (no strict format).
+        executor-version: option<string>,
+    }
+
+    /// Action Catalog schema version for the self-describing APIs below.
+    ///
+    /// - This version is about the *metadata contract* (list/describe output), not the executor implementation.
+    /// - Host/platform can cache Action Catalog by (component hash, schema-version).
+    schema-version: func() -> u32;
+
+    /// Lightweight action list for frontends (palette) and basic validation.
+    ///
+    /// Requirements (MUST):
+    /// - Pure metadata: do not depend on event-bus, hostnet, filesystem, or other imports.
+    /// - Deterministic and fast: should not perform IO.
+    list-actions: func() -> list<action-summary>;
+
+    /// Get a single action's full specification (schema, defaults, capabilities).
+    ///
+    /// Requirements (MUST):
+    /// - Pure metadata: do not depend on event-bus, hostnet, filesystem, or other imports.
+    /// - Return `err` if action-id is unknown.
+    describe-action: func(action-id: string) -> result<action-spec, string>;
+
+    init-component: func() -> result<_, string>;
+
+    /// 执行一个 action
+    /// - action: 来自配置的 action 定义，包含 call 类型和参数（已由 scheduler 进行模板展开）
+    /// - ctx: 运行时上下文（user/task/action 关联信息、资源绑定、变量等）
+    /// - 返回: action 执行结果（成功/失败状态 + 详情）
+    /// - 注意：执行过程中如需发包，应通过 eventbus 发布 packet.tx-request 事件，由 scheduler 处理
+    execute-action: func(action: action-def, ctx: option<action-context>) -> result<action-outcome, string>;
+
+    release-component: func() -> result<_, string>;
+}
+
+world action-executor-component {
+    import event-bus;
+    import types;
+    export action-component;
+}
+
+

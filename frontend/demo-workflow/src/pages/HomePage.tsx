@@ -11,6 +11,7 @@ export function HomePage() {
                 <h1 className="pageTitle">Home</h1>
                 <div className="pageActions">
                     <Link to="/builder">Builder</Link>
+                    <Link to="/config">Config</Link>
                     <Link to="/wasm">WASM</Link>
                     <Link to="/health">Health</Link>
                 </div>

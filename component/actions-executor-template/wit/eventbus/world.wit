@@ -1,0 +1,47 @@
+package ntx:scenario-eventbus@0.1.0;
+
+/// 事件总线是状态变更的唯一入口/出口。
+interface event-bus {
+    record event {
+        id: string,
+        kind: string,
+        user-id: option<string>,
+        task-id: option<string>,
+        action-id: option<string>,
+        payload: string,
+        timestamp-ms: u64,
+        correlation-id: option<string>,
+    }
+
+    /// 发布事件到 eventbus（实现可异步）
+    publish: func(event: event) -> result<_, string>;
+
+    /// 订阅事件（通过 topic 过滤，支持通配符如 "scheduler.control.*"）
+    /// - topic-filter: 事件类型过滤模式，支持通配符 "*" 后缀匹配
+    /// - 返回: 订阅 ID，可用于后续取消订阅
+    subscribe: func(topic-filter: string) -> result<string, string>;
+
+    /// 取消订阅
+    unsubscribe: func(subscription-id: string) -> result<_, string>;
+
+    /// 轮询获取订阅的事件（非阻塞，返回已就绪的事件列表）
+    /// - subscription-id: 订阅 ID
+    /// - max-events: 本次最多返回的事件数量
+    /// - 返回: 事件列表（可能为空）
+    poll-events: func(subscription-id: string, max-events: u32) -> result<list<event>, string>;
+
+    /// 等待订阅事件（阻塞/带超时）。
+    ///
+    /// 语义：
+    /// - 若队列中已有事件，立即返回（最多 max-events 条）。
+    /// - 若队列为空且 timeout-ms > 0，则等待直到有事件或超时。
+    /// - 若队列为空且 timeout-ms == 0，立即返回空列表（等价于 poll-events）。
+    ///
+    /// 说明：这是为 scheduler 事件循环提供“无事件时阻塞等待”的能力，避免忙轮询耗 CPU。
+    wait-events: func(subscription-id: string, max-events: u32, timeout-ms: u32) -> result<list<event>, string>;
+}
+
+world event-bus-world {
+    export event-bus;
+}
+
