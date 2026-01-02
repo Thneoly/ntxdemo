@@ -1,0 +1,14 @@
+[actions-executor]
+url = "https://github.com/Thneoly/ntxdemo/releases/download/v0.0.1/ntx-wit-actions-executor-0.0.1.tar.gz"
+sha256 = "7ee40df82d3772d927c64eda02b7be6a3cc29170a90509a9c11654153def68cf"
+sha512 = "57657bffc70707cdf0a7d6d3883b92ea1960563fe45ad1a2104b01ffbc41f75fa70b90b4ffa52569dc29fd7b934d5b7ff7827b4464e03b30607583eb7121054c"
+
+[core-types]
+url = "https://github.com/Thneoly/ntxdemo/releases/download/v0.0.1/ntx-wit-core-types-0.0.1.tar.gz"
+sha256 = "04d6ea2eeb7f0334230b327e2a91774ffe31ebb83ffcaa5750a7f58fc88f7fdc"
+sha512 = "7cac51e635ddbd1b8757ce2976115b284ed2cefce7ba25702ed2591f2cf9b915c53280e422ea6df6b5fa34991520dc46af92e736b050dc9c398278626cca2403"
+
+[eventbus]
+url = "https://github.com/Thneoly/ntxdemo/releases/download/v0.0.1/ntx-wit-eventbus-0.0.1.tar.gz"
+sha256 = "482c1b6bdb6054fae7cb9246dea72b42e64e1d91bf5bb7f1f77c12b1a331647c"
+sha512 = "5a4240ddb20f6d40ff30e0f3b15dfc000e1363d48e3b4c4924896536d931d0a1e5cbe8f03e624c2d61995f7979a5e9af5f35de4053d16aecc4c04721eb926dd1"

@@ -311,3 +311,20 @@ WASM 插件架构：
 https://github.com/aya-rs/aya
 https://aya-rs.dev/book/start/hello-xdp 这是一个教程
 ```
+# tag 发布
+```shell 
+git log -1 --oneline
+git tag -a v0.0.1 -m "v0.0.1" 
+# 创建 annotated tag：git tag -a v0.0.1 -m "v0.0.1"
+# 推送 tag（会触发 ​.github/workflows/release.yml）：git push origin v0.0.1
+# 去 GitHub → Actions 看 release 工作流跑完；然后去 Releases 看 v0.0.1，并确认附件来自 dist/*
+
+#如果打错了 tag（常见于第一次发版），回滚方式：
+#删远端 tag：
+git push --delete origin v0.0.1
+# 删本地 
+git tag -d v0.0.1
+# 然后重新打正确的 tag 再 push。
+```
+---
+

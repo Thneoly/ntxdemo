@@ -1,0 +1,4 @@
+# WASI dependencies for socket support
+actions-executor = "https://github.com/Thneoly/ntxdemo/releases/download/v0.0.1/ntx-wit-actions-executor-0.0.1.tar.gz"
+core-types = "https://github.com/Thneoly/ntxdemo/releases/download/v0.0.1/ntx-wit-core-types-0.0.1.tar.gz"
+eventbus = "https://github.com/Thneoly/ntxdemo/releases/download/v0.0.1/ntx-wit-eventbus-0.0.1.tar.gz"
