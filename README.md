@@ -2,6 +2,22 @@
 
 这是一个演示仓库，包含若干插件（位于 `plugins/`）和一个顶层的 Rust 可执行/库。仓库中的 build 脚本会监视插件目录的变动，并在必要时为指定插件触发子构建或运行脚本（例如将插件构建为 wasm 目标）。
 
+## 子模块（submodule）
+
+本仓库通过 git submodule 引入组件模板：`component/actions-executor-template`。
+
+如果你克隆后发现该目录为空，请执行：
+
+```bash
+git submodule update --init --recursive
+```
+
+或者克隆时直接使用：
+
+```bash
+git clone --recurse-submodules <repo-url>
+```
+
 ## 主要特性
 - 自动检测 `plugins/core`、`plugins/demo`、`plugins/tcp-client`、`plugins/wac` 的文件变更。
 - 对 `core`、`demo`、`tcp-client` 在变更时执行 `cargo build --target wasm32-wasip2`。

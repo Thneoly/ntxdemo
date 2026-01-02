@@ -1,3 +1,0 @@
-[build]
-# This template is fixed to wasm32-wasip2.
-target = "wasm32-wasip2"

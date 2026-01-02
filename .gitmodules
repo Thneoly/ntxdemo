@@ -1,0 +1,3 @@
+[submodule "component/actions-executor-template"]
+	path = component/actions-executor-template
+	url = https://github.com/Thneoly/ntx-executor-template
