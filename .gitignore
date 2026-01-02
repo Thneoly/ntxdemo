@@ -4,7 +4,7 @@
 # Local environment overrides
 .env
 
-# Local docker-compose overrides (do not commit secrets)
+# Local docker-compose overrides (do not commit secrets) for localhost only
 .build/.env
 .build/certs/
 
