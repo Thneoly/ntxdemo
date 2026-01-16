@@ -16,7 +16,18 @@ use super::timers::schedule_timer;
 use super::workflow_helpers::node_priority;
 
 pub(crate) fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result<bool, String> {
-    let mut did = false;
+    Ok(dispatch_ready_tasks_count(ctx, max)? > 0)
+}
+
+/// Dispatch up to `max` ready tasks and return the number of dispatched tasks.
+///
+/// Note: "dispatched" here means we popped a ready node and progressed it through
+/// the dispatch pipeline far enough to attempt action execution.
+pub(crate) fn dispatch_ready_tasks_count(
+    ctx: &SchedulerContext,
+    max: usize,
+) -> Result<u32, String> {
+    let mut dispatched: u32 = 0;
 
     for _ in 0..max {
         let next = {
@@ -28,6 +39,7 @@ pub(crate) fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result
         };
 
         eprintln!("[scheduler] dispatch: pop_ready user_id={user_id} node_id={node_id}");
+        dispatched = dispatched.saturating_add(1);
 
         // per-user scenario (old users do not migrate)
         let (_ver, sc_arc, wf_idx) =
@@ -265,10 +277,10 @@ pub(crate) fn dispatch_ready_tasks(ctx: &SchedulerContext, max: usize) -> Result
             def.id
         );
 
-        did = true;
+        // Each successful pop is counted as a dispatch attempt.
     }
 
-    Ok(did)
+    Ok(dispatched)
 }
 
 pub(crate) fn publish_action_result_event(

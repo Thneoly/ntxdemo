@@ -5,5 +5,8 @@ pub mod shared_mem {
     pub use crate::rx_layout::*;
 }
 
-pub use engine::{ComponentEngine, EngineConfig, EngineError};
+pub use engine::{
+    ComponentEngine, EngineConfig, EngineError, SchedulerStepArgs, SchedulerStepResult,
+    SchedulerStepperState,
+};
 pub use manager::{EngineHandle, EngineManager};

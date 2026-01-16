@@ -25,6 +25,14 @@ pub struct KernelConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum WasmEngineMode {
+    #[default]
+    Run,
+    Stepper,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct SchedulerConfig {
     #[serde(default)]
     pub wasm: WasmConfig,
@@ -45,6 +53,15 @@ pub struct WasmConfig {
     #[serde(default)]
     pub component_path: Option<PathBuf>,
 
+    /// How the host drives the guest scheduler.
+    ///
+    /// - `run`: call `scheduler-component.run(config-dir)` once and let guest own the loop.
+    /// - `stepper`: call `scheduler-stepper.init(config-dir)` then repeatedly `step(args)`.
+    ///
+    /// Default: `run`.
+    #[serde(default)]
+    pub mode: WasmEngineMode,
+
     /// Scenario config directory passed to `scheduler-component.run(config-dir)`.
     ///
     /// If not set, the host will default to the current working directory (".").
@@ -61,6 +78,7 @@ impl Default for AppConfig {
             scheduler: SchedulerConfig {
                 wasm: WasmConfig {
                     component_path: None,
+                    mode: WasmEngineMode::Run,
                     config_dir: None,
                 },
                 no_idle_wait: false,
@@ -81,6 +99,7 @@ impl Default for WasmConfig {
     fn default() -> Self {
         Self {
             component_path: None,
+            mode: WasmEngineMode::Run,
             config_dir: None,
         }
     }

@@ -120,8 +120,168 @@ impl bindmod::exports::ntx::scenario_scheduler::scheduler_component::Guest for S
     }
 }
 
-fn pump_rx_once_nonblocking() {
+fn pump_rx_once_nonblocking() -> u32 {
     rx_pump::pump_rx_once_nonblocking()
+}
+
+#[derive(Debug, Default, Clone)]
+struct StepperSubs {
+    sub_tx: Option<String>,
+    sub_send: Option<String>,
+    sub_ar: Option<String>,
+    sub_rx: Option<String>,
+    sub_ctrl: Option<String>,
+    sub_timer: Option<String>,
+    sub_user: Option<String>,
+    sub_topo: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct StepperRuntime {
+    initialized: bool,
+    ctx: Option<SchedulerContext>,
+    subs: StepperSubs,
+}
+
+static STEPPER_RT: Lazy<Mutex<StepperRuntime>> =
+    Lazy::new(|| Mutex::new(StepperRuntime::default()));
+
+impl bindmod::exports::ntx::scenario_scheduler::scheduler_stepper::Guest for SchedulerExports {
+    fn init(config_dir: String) -> Result<(), String> {
+        let rt_guard = STEPPER_RT
+            .lock()
+            .map_err(|_| "lock stepper runtime".to_string())?;
+        // Re-lock as mutable only after the early-exit check.
+        drop(rt_guard);
+
+        let mut rt = STEPPER_RT
+            .lock()
+            .map_err(|_| "lock stepper runtime".to_string())?;
+        if rt.initialized {
+            return Ok(());
+        }
+
+        println!("[scheduler] init with config dir: {config_dir}");
+        let scenario = scenario_loader::load_scenario_config(&config_dir)?;
+        scenario_loader::log_config_summary(&scenario)?;
+        let ctx = SchedulerContext { scenario };
+
+        // Subscribe first (best-effort), then init/publish.
+        rt.subs.sub_tx = driver::subscribe_or_log(TopicFilter::Exact(EventKind::PacketTxRequest));
+        rt.subs.sub_send =
+            driver::subscribe_or_log(TopicFilter::Exact(EventKind::SendScheduleRequest));
+        rt.subs.sub_ar =
+            driver::subscribe_or_log(TopicFilter::Exact(EventKind::SchedulerActionResult));
+        rt.subs.sub_rx = driver::subscribe_or_log(TopicFilter::Exact(EventKind::PacketRx));
+        rt.subs.sub_ctrl = driver::subscribe_or_log(TopicFilter::SchedulerControlAll);
+        rt.subs.sub_timer = driver::subscribe_or_log(TopicFilter::SchedulerTimerAll);
+        rt.subs.sub_user = driver::subscribe_or_log(TopicFilter::SchedulerUserAll);
+        rt.subs.sub_topo = driver::subscribe_or_log(TopicFilter::Exact(EventKind::TopologyChanged));
+
+        driver::init_runtime(&ctx)?;
+        publish_scheduler_state(SchedulerState::Running, None);
+
+        rt.ctx = Some(ctx);
+        rt.initialized = true;
+        Ok(())
+    }
+
+    fn step(
+        args: bindmod::exports::ntx::scenario_scheduler::scheduler_stepper::StepArgs,
+    ) -> Result<bindmod::exports::ntx::scenario_scheduler::scheduler_stepper::StepResult, String>
+    {
+        let rt = STEPPER_RT
+            .lock()
+            .map_err(|_| "lock stepper runtime".to_string())?;
+
+        let state = if !rt.initialized {
+            bindmod::exports::ntx::scenario_scheduler::scheduler_stepper::SchedulerState::Uninitialized
+        } else if crate::runtime::runtime_state::RUNTIME
+            .lock()
+            .map(|r| r.stop)
+            .unwrap_or(false)
+        {
+            bindmod::exports::ntx::scenario_scheduler::scheduler_stepper::SchedulerState::Stopping
+        } else if crate::runtime::runtime_state::RUNTIME
+            .lock()
+            .map(|r| r.paused)
+            .unwrap_or(false)
+        {
+            bindmod::exports::ntx::scenario_scheduler::scheduler_stepper::SchedulerState::Paused
+        } else {
+            bindmod::exports::ntx::scenario_scheduler::scheduler_stepper::SchedulerState::Running
+        };
+
+        if !rt.initialized {
+            return Ok(
+                bindmod::exports::ntx::scenario_scheduler::scheduler_stepper::StepResult {
+                    did_work: false,
+                    processed_events: 0,
+                    dispatched: 0,
+                    rx_batches: 0,
+                    suggested_wait_ms: 1,
+                    state,
+                },
+            );
+        }
+
+        let ctx = rt
+            .ctx
+            .as_ref()
+            .ok_or_else(|| "stepper runtime missing ctx".to_string())?;
+
+        let stats = driver::step_once(
+            ctx,
+            rt.subs.sub_tx.as_deref(),
+            rt.subs.sub_send.as_deref(),
+            rt.subs.sub_ar.as_deref(),
+            rt.subs.sub_rx.as_deref(),
+            rt.subs.sub_ctrl.as_deref(),
+            rt.subs.sub_timer.as_deref(),
+            rt.subs.sub_user.as_deref(),
+            rt.subs.sub_topo.as_deref(),
+            driver::StepArgsLite {
+                max_events: args.max_events,
+                max_dispatch: args.max_dispatch.try_into().unwrap_or(0usize),
+                timeout_ms: args.timeout_ms,
+            },
+        )?;
+
+        let state = if crate::runtime::runtime_state::RUNTIME
+            .lock()
+            .map(|r| r.stop)
+            .unwrap_or(false)
+        {
+            bindmod::exports::ntx::scenario_scheduler::scheduler_stepper::SchedulerState::Stopping
+        } else if crate::runtime::runtime_state::RUNTIME
+            .lock()
+            .map(|r| r.paused)
+            .unwrap_or(false)
+        {
+            bindmod::exports::ntx::scenario_scheduler::scheduler_stepper::SchedulerState::Paused
+        } else {
+            bindmod::exports::ntx::scenario_scheduler::scheduler_stepper::SchedulerState::Running
+        };
+
+        Ok(
+            bindmod::exports::ntx::scenario_scheduler::scheduler_stepper::StepResult {
+                did_work: stats.did_work,
+                processed_events: stats.processed_events,
+                dispatched: stats.dispatched,
+                rx_batches: stats.rx_batches,
+                suggested_wait_ms: stats.suggested_wait_ms,
+                state,
+            },
+        )
+    }
+
+    fn request_stop() -> Result<(), String> {
+        // Best-effort: set stop flag; step_once will converge quickly.
+        if let Ok(mut rt) = crate::runtime::runtime_state::RUNTIME.lock() {
+            rt.stop = true;
+        }
+        Ok(())
+    }
 }
 
 /// 运行期上下文，占位后续扩展。

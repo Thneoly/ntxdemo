@@ -13,6 +13,60 @@ interface scheduler-component {
     run: func(config-dir: string) -> result<_, string>;
 }
 
+/// Host-driven scheduler interface (0.1.0 additive export).
+interface scheduler-stepper {
+    /// Initialize scheduler runtime.
+    ///
+    /// Contract:
+    /// - Should be idempotent (calling twice returns ok).
+    /// - Must subscribe before publishing any initial events.
+    init: func(config-dir: string) -> result<_, string>;
+
+    /// Step args provided by the host.
+    record step-args {
+        /// Total event budget for this step (implementation may split across subscriptions).
+        max-events: u32,
+        /// Max number of ready tasks to dispatch in this step.
+        max-dispatch: u32,
+        /// Max time allowed to block/wait inside this step.
+        /// - 0 => pure poll (non-blocking)
+        /// - >0 => bounded wait (must not exceed timeout-ms)
+        timeout-ms: u32,
+        /// Optional injected current time (ms) for simulation/testing.
+        now-ms: option<u64>,
+    }
+
+    /// Scheduler state summary.
+    enum scheduler-state {
+        uninitialized,
+        running,
+        paused,
+        stopping,
+        stopped,
+        error,
+    }
+
+    /// Step result returned to the host.
+    record step-result {
+        did-work: bool,
+        processed-events: u32,
+        dispatched: u32,
+        rx-batches: u32,
+        /// Suggested wait time before the next step (0 means call again immediately).
+        suggested-wait-ms: u32,
+        state: scheduler-state,
+    }
+
+    /// Drive the scheduler for one step.
+    step: func(args: step-args) -> result<step-result, string>;
+
+    /// Request the scheduler to stop.
+    ///
+    /// After this returns ok, subsequent `step` calls should converge to
+    /// state=stopping/stopped and eventually stop producing work.
+    request-stop: func() -> result<_, string>;
+}
+
 world scheduler-main {
     import action-component;
     import event-bus;
@@ -21,5 +75,6 @@ world scheduler-main {
     import udp-socket-control;
     import types;
     export scheduler-component;
+    export scheduler-stepper;
 }
 

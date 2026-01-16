@@ -26,3 +26,4 @@ let scheduler = new component:scheduler {
 
 // End-state: remove host->guest RX injection export (packet-ingest). RX is pulled via host import `ntx:host/rx-ring@0.1.0` inside `scheduler-component.run()`.
 export scheduler["ntx:scenario-scheduler/scheduler-component@0.1.0"];
+export scheduler["ntx:scenario-scheduler/scheduler-stepper@0.1.0"];

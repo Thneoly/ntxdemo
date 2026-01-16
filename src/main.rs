@@ -72,7 +72,11 @@ async fn main() -> Result<()> {
 
     let scheduler_cfg = cfg.scheduler.clone();
     scheduler::init_with_config(scheduler_cfg.clone());
-    tracing::info!(target: "ntx::main", "scheduler initialized; starting guest scheduler run() task");
+    tracing::info!(
+        target: "ntx::main",
+        mode = ?scheduler_cfg.wasm.mode,
+        "scheduler initialized; starting guest scheduler engine owner"
+    );
 
     // End-state: WASM engine initialization is async and must be explicit.
     scheduler::init_wasm_engine_with_config(scheduler_cfg.wasm.clone()).await;
@@ -97,7 +101,8 @@ async fn main() -> Result<()> {
     };
 
     // Spawn the engine owner and give scheduler the TX for RX batches.
-    let engine_tx = ntx::engine_owner::spawn_engine_owner(engine, cfg_dir);
+    let engine_mode = scheduler_cfg.wasm.mode.clone();
+    let engine_tx = ntx::engine_owner::spawn_engine_owner(engine, cfg_dir, engine_mode);
     scheduler::set_engine_tx(engine_tx);
 
     // Keep WasmCall tasks reserved for future non-blocking guest calls.

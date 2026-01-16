@@ -278,6 +278,41 @@ pub struct ComponentEngine {
     cfg: EngineConfig,
     store: Store<State>,
     run: Func,
+    stepper: Option<SchedulerStepperFuncs>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SchedulerStepperState {
+    Uninitialized,
+    Running,
+    Paused,
+    Stopping,
+    Stopped,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub struct SchedulerStepArgs {
+    pub max_events: u32,
+    pub max_dispatch: u32,
+    pub timeout_ms: u32,
+    pub now_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SchedulerStepResult {
+    pub did_work: bool,
+    pub processed_events: u32,
+    pub dispatched: u32,
+    pub rx_batches: u32,
+    pub suggested_wait_ms: u32,
+    pub state: SchedulerStepperState,
+}
+
+struct SchedulerStepperFuncs {
+    init: Func,
+    step: Func,
+    request_stop: Func,
 }
 
 impl ComponentEngine {
@@ -287,6 +322,10 @@ impl ComponentEngine {
     /// borrow of the Wasmtime `Store` (and without calling into wasm).
     pub fn rx_ring(&self) -> crate::rx_ring::RxRing {
         self.store.data().rx_ring.clone()
+    }
+
+    pub fn config(&self) -> &EngineConfig {
+        &self.cfg
     }
 
     pub async fn new(cfg: EngineConfig) -> Result<Self, EngineError> {
@@ -350,7 +389,20 @@ impl ComponentEngine {
             "scheduler-component",
         ];
         let run = find_scheduler_component_run(&iframe_names, &mut store, &instance)?;
-        Ok(Self { cfg, store, run })
+
+        // Optional: host-driven stepper interface.
+        let stepper_names = [
+            "ntx:scenario-scheduler/scheduler-stepper@0.1.0",
+            "scheduler-stepper",
+        ];
+        let stepper = find_scheduler_stepper_funcs(&stepper_names, &mut store, &instance).ok();
+
+        Ok(Self {
+            cfg,
+            store,
+            run,
+            stepper,
+        })
     }
 
     /// Start the guest scheduler main loop.
@@ -380,8 +432,236 @@ impl ComponentEngine {
         }
     }
 
-    pub fn config(&self) -> &EngineConfig {
-        &self.cfg
+    pub fn supports_stepper(&self) -> bool {
+        self.stepper.is_some()
+    }
+
+    pub async fn init_stepper(&mut self, config_dir: String) -> Result<(), EngineError> {
+        let Some(stepper) = self.stepper.as_ref() else {
+            return Err(EngineError::EntryNotFound {
+                candidates: vec![
+                    "ntx:scenario-scheduler/scheduler-stepper@0.1.0#init".to_string(),
+                    "scheduler-stepper#init".to_string(),
+                ],
+            });
+        };
+
+        let typed = stepper
+            .init
+            .typed::<(String,), (Result<(), String>,)>(&self.store)
+            .context("init signature mismatch")
+            .map_err(EngineError::Call)?;
+
+        match typed
+            .call_async(&mut self.store, (config_dir,))
+            .await
+            .context("init call")
+            .map_err(EngineError::Call)?
+            .0
+        {
+            Ok(()) => Ok(()),
+            Err(e) => Err(EngineError::Call(anyhow::anyhow!(e))),
+        }
+    }
+
+    pub async fn request_stop_stepper(&mut self) -> Result<(), EngineError> {
+        let Some(stepper) = self.stepper.as_ref() else {
+            return Err(EngineError::EntryNotFound {
+                candidates: vec![
+                    "ntx:scenario-scheduler/scheduler-stepper@0.1.0#request-stop".to_string(),
+                    "scheduler-stepper#request-stop".to_string(),
+                ],
+            });
+        };
+
+        let typed = stepper
+            .request_stop
+            .typed::<(), (Result<(), String>,)>(&self.store)
+            .context("request-stop signature mismatch")
+            .map_err(EngineError::Call)?;
+
+        match typed
+            .call_async(&mut self.store, ())
+            .await
+            .context("request-stop call")
+            .map_err(EngineError::Call)?
+            .0
+        {
+            Ok(()) => Ok(()),
+            Err(e) => Err(EngineError::Call(anyhow::anyhow!(e))),
+        }
+    }
+
+    pub async fn step_stepper(
+        &mut self,
+        args: SchedulerStepArgs,
+    ) -> Result<SchedulerStepResult, EngineError> {
+        use wasmtime::component::Val;
+
+        let Some(stepper) = self.stepper.as_ref() else {
+            return Err(EngineError::EntryNotFound {
+                candidates: vec![
+                    "ntx:scenario-scheduler/scheduler-stepper@0.1.0#step".to_string(),
+                    "scheduler-stepper#step".to_string(),
+                ],
+            });
+        };
+
+        // Dynamic call to avoid tightly coupling host to record/enum ABI details.
+        // Records are represented as (field_name, value) pairs.
+        let now_val = Val::Option(args.now_ms.map(|v| Box::new(Val::U64(v))));
+        let arg0 = Val::Record(vec![
+            ("max-events".to_string(), Val::U32(args.max_events)),
+            ("max-dispatch".to_string(), Val::U32(args.max_dispatch)),
+            ("timeout-ms".to_string(), Val::U32(args.timeout_ms)),
+            ("now-ms".to_string(), now_val),
+        ]);
+
+        let result_arity = stepper.step.ty(&self.store).results().len();
+        let mut results: Vec<Val> = Vec::with_capacity(result_arity);
+        if result_arity == 1 {
+            // result<step-result, string>
+            let ok_payload = Val::Record(vec![
+                ("did-work".to_string(), Val::Bool(false)),
+                ("processed-events".to_string(), Val::U32(0)),
+                ("dispatched".to_string(), Val::U32(0)),
+                ("rx-batches".to_string(), Val::U32(0)),
+                ("suggested-wait-ms".to_string(), Val::U32(0)),
+                ("state".to_string(), Val::Enum("uninitialized".to_string())),
+            ]);
+            results.push(Val::Result(Ok(Some(Box::new(ok_payload)))));
+        } else {
+            for _ in 0..result_arity {
+                results.push(Val::Result(Ok(None)));
+            }
+        }
+        stepper
+            .step
+            .call_async(&mut self.store, &[arg0], &mut results)
+            .await
+            .context("step call")
+            .map_err(EngineError::Call)?;
+
+        // Expected result is a single `result<step-result, string>`.
+        if results.len() != 1 {
+            return Err(EngineError::Call(anyhow::anyhow!(
+                "step returned unexpected result arity: {}",
+                results.len()
+            )));
+        }
+        let first = results.remove(0);
+
+        decode_step_result(first)
+    }
+}
+
+fn decode_step_result(v: wasmtime::component::Val) -> Result<SchedulerStepResult, EngineError> {
+    use std::collections::HashMap;
+    use wasmtime::component::Val;
+
+    // Expect: result<step-result,string>
+    let Val::Result(r) = v else {
+        return Err(EngineError::Call(anyhow::anyhow!(
+            "unexpected step result value: {:?}",
+            v
+        )));
+    };
+
+    match r {
+        Ok(Some(okv)) => {
+            let Val::Record(fields) = *okv else {
+                return Err(EngineError::Call(anyhow::anyhow!(
+                    "unexpected ok step result: {:?}",
+                    okv
+                )));
+            };
+
+            let mut map: HashMap<String, Val> = fields.into_iter().collect();
+
+            let did_work = match map.remove("did-work") {
+                Some(Val::Bool(b)) => b,
+                other => {
+                    return Err(EngineError::Call(anyhow::anyhow!(
+                        "bad did-work: {:?}",
+                        other
+                    )));
+                }
+            };
+            let processed_events = match map.remove("processed-events") {
+                Some(Val::U32(n)) => n,
+                other => {
+                    return Err(EngineError::Call(anyhow::anyhow!(
+                        "bad processed-events: {:?}",
+                        other
+                    )));
+                }
+            };
+            let dispatched = match map.remove("dispatched") {
+                Some(Val::U32(n)) => n,
+                other => {
+                    return Err(EngineError::Call(anyhow::anyhow!(
+                        "bad dispatched: {:?}",
+                        other
+                    )));
+                }
+            };
+            let rx_batches = match map.remove("rx-batches") {
+                Some(Val::U32(n)) => n,
+                other => {
+                    return Err(EngineError::Call(anyhow::anyhow!(
+                        "bad rx-batches: {:?}",
+                        other
+                    )));
+                }
+            };
+            let suggested_wait_ms = match map.remove("suggested-wait-ms") {
+                Some(Val::U32(n)) => n,
+                other => {
+                    return Err(EngineError::Call(anyhow::anyhow!(
+                        "bad suggested-wait-ms: {:?}",
+                        other
+                    )));
+                }
+            };
+            let state = match map.remove("state") {
+                Some(Val::Enum(name)) => match name.as_str() {
+                    "uninitialized" => SchedulerStepperState::Uninitialized,
+                    "running" => SchedulerStepperState::Running,
+                    "paused" => SchedulerStepperState::Paused,
+                    "stopping" => SchedulerStepperState::Stopping,
+                    "stopped" => SchedulerStepperState::Stopped,
+                    "error" => SchedulerStepperState::Error,
+                    other => {
+                        return Err(EngineError::Call(anyhow::anyhow!(
+                            "unknown scheduler-state: {other}"
+                        )));
+                    }
+                },
+                other => return Err(EngineError::Call(anyhow::anyhow!("bad state: {:?}", other))),
+            };
+
+            Ok(SchedulerStepResult {
+                did_work,
+                processed_events,
+                dispatched,
+                rx_batches,
+                suggested_wait_ms,
+                state,
+            })
+        }
+        Ok(None) => Err(EngineError::Call(anyhow::anyhow!(
+            "step returned ok without value"
+        ))),
+        Err(Some(errv)) => {
+            let msg = match *errv {
+                Val::String(s) => s,
+                other => format!("{:?}", other),
+            };
+            Err(EngineError::Call(anyhow::anyhow!(msg)))
+        }
+        Err(None) => Err(EngineError::Call(anyhow::anyhow!(
+            "step returned err without value"
+        ))),
     }
 }
 
@@ -408,6 +688,85 @@ fn find_scheduler_component_run(
                     }
                 }
             }
+        }
+    }
+
+    Err(EngineError::EntryNotFound { candidates: tried })
+}
+
+fn find_scheduler_stepper_funcs(
+    iface_names: &[&str],
+    store: &mut Store<State>,
+    instance: &Instance,
+) -> Result<SchedulerStepperFuncs, EngineError> {
+    let mut tried: Vec<String> = vec![];
+
+    for iface in iface_names {
+        tried.push(iface.to_string());
+        if let Some((iface_item, iface_idx)) = instance.get_export(&mut *store, None, iface) {
+            if !matches!(iface_item, ComponentItem::ComponentInstance(_)) {
+                continue;
+            }
+
+            let init = {
+                let func_name = "init";
+                tried.push(format!("{iface}::{func_name}"));
+                let Some((func_item, func_idx)) =
+                    instance.get_export(&mut *store, Some(&iface_idx), func_name)
+                else {
+                    continue;
+                };
+                if !matches!(func_item, ComponentItem::ComponentFunc(_)) {
+                    continue;
+                }
+                instance.get_func(&mut *store, func_idx).ok_or_else(|| {
+                    EngineError::EntryNotFound {
+                        candidates: tried.clone(),
+                    }
+                })?
+            };
+
+            let step = {
+                let func_name = "step";
+                tried.push(format!("{iface}::{func_name}"));
+                let Some((func_item, func_idx)) =
+                    instance.get_export(&mut *store, Some(&iface_idx), func_name)
+                else {
+                    continue;
+                };
+                if !matches!(func_item, ComponentItem::ComponentFunc(_)) {
+                    continue;
+                }
+                instance.get_func(&mut *store, func_idx).ok_or_else(|| {
+                    EngineError::EntryNotFound {
+                        candidates: tried.clone(),
+                    }
+                })?
+            };
+
+            let request_stop = {
+                let func_name = "request-stop";
+                tried.push(format!("{iface}::{func_name}"));
+                let Some((func_item, func_idx)) =
+                    instance.get_export(&mut *store, Some(&iface_idx), func_name)
+                else {
+                    continue;
+                };
+                if !matches!(func_item, ComponentItem::ComponentFunc(_)) {
+                    continue;
+                }
+                instance.get_func(&mut *store, func_idx).ok_or_else(|| {
+                    EngineError::EntryNotFound {
+                        candidates: tried.clone(),
+                    }
+                })?
+            };
+
+            return Ok(SchedulerStepperFuncs {
+                init,
+                step,
+                request_stop,
+            });
         }
     }
 

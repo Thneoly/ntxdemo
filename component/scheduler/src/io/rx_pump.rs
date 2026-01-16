@@ -8,7 +8,7 @@ use crate::io::rx_decode;
 /// - Must never panic.
 /// - Must be non-blocking (0ms wait) so it doesn't stall the main event loop.
 /// - Always release the handle.
-pub(crate) fn pump_rx_once_nonblocking() {
+pub(crate) fn pump_rx_once_nonblocking() -> u32 {
     struct PumpStats {
         polls: u64,
         timeouts: u64,
@@ -42,7 +42,7 @@ pub(crate) fn pump_rx_once_nonblocking() {
         .map(|rt| rt.stop)
         .unwrap_or(false)
     {
-        return;
+        return 0;
     }
 
     // Non-blocking poll: timeout 0ms.
@@ -50,7 +50,7 @@ pub(crate) fn pump_rx_once_nonblocking() {
     let Some(batch) = batch else {
         let mut s = STATS.lock().unwrap();
         s.timeouts = s.timeouts.saturating_add(1);
-        return;
+        return 0;
     };
 
     println!(
@@ -74,7 +74,7 @@ pub(crate) fn pump_rx_once_nonblocking() {
             let mut s = STATS.lock().unwrap();
             s.read_errors = s.read_errors.saturating_add(1);
             let _ = crate::bindmod::ntx::host::rx_ring::release(handle);
-            return;
+            return 1;
         }
     };
 
@@ -86,7 +86,7 @@ pub(crate) fn pump_rx_once_nonblocking() {
                 let mut s = STATS.lock().unwrap();
                 s.read_errors = s.read_errors.saturating_add(1);
                 let _ = crate::bindmod::ntx::host::rx_ring::release(handle);
-                return;
+                return 1;
             }
         };
 
@@ -97,4 +97,6 @@ pub(crate) fn pump_rx_once_nonblocking() {
     }
 
     let _ = crate::bindmod::ntx::host::rx_ring::release(handle);
+
+    1
 }
